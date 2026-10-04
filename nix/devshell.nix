@@ -6,6 +6,8 @@
         # dependencies on PYTHONPATH, which breaks ESP-IDF's Python.
         (runCommand "esptool-bin" { } "mkdir $out && ln -s ${esptool}/bin $out/bin")
         espflash
+        esp-generate
+        probe-rs-tools
         config.packages.esp-idf
         config.packages.esp-wipe
         config.packages.bootloader-menuconfig
