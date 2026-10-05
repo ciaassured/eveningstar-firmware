@@ -7,6 +7,7 @@
         (runCommand "esptool-bin" { } "mkdir $out && ln -s ${esptool}/bin $out/bin")
         espflash
         esp-generate
+        gdb
         probe-rs-tools
         config.packages.esp-idf
         config.packages.esp-wipe
