@@ -18,10 +18,17 @@ impl Board {
     /// Takes ownership of the chip's peripherals and splits them by role.
     #[must_use]
     pub fn new(peripherals: Peripherals) -> Self {
-        let Peripherals { GPIO20, .. } = peripherals;
+        let Peripherals {
+            GPIO20,
+            TIMG0,
+            FROM_CPU_INTR0,
+            ..
+        } = peripherals;
 
         Self {
             status_led: GPIO20.into(),
+            timg0: TIMG0,
+            from_cpu_intr0: FROM_CPU_INTR0,
         }
     }
 }

@@ -13,11 +13,13 @@ test = false
 bench = false
 
 [dependencies]
-critical-section.workspace = true
 defmt.workspace = true
+embassy-executor.workspace = true
+embassy-time.workspace = true
 eveningstar-board = { workspace = true, features = ["v2"] }
 esp-bootloader-esp-idf.workspace = true
 esp-hal.workspace = true
+esp-rtos.workspace = true
 rtt-target.workspace = true
 
 [lints]
