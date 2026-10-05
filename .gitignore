@@ -7,7 +7,12 @@ debug/
 target/
 
 # Editor configuration
-.vscode/
+# Shared VS Code project files are committed; everything else stays local.
+.vscode/*
+!.vscode/extensions.json
+!.vscode/launch.json
+!.vscode/settings.json
+!.vscode/tasks.json
 .zed/
 .helix/
 .nvim.lua
