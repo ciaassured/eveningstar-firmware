@@ -1,11 +1,5 @@
 #![no_std]
 #![no_main]
-#![deny(
-    clippy::mem_forget,
-    reason = "mem::forget is generally not safe to do with esp_hal types, especially those \
-    holding buffers for the duration of a data transfer."
-)]
-#![deny(clippy::large_stack_frames)]
 
 use defmt::{error, info};
 use esp_hal::clock::CpuClock;
@@ -45,13 +39,20 @@ fn main() -> ! {
     // - GPIO9
     // - GPIO15
     // These GPIO pins are in use by some feature of the module and should not be used.
-    let _gpio24 = peripherals.GPIO24;
-    let _gpio25 = peripherals.GPIO25;
-    let _gpio26 = peripherals.GPIO26;
-    let _gpio27 = peripherals.GPIO27;
-    let _gpio28 = peripherals.GPIO28;
-    let _gpio29 = peripherals.GPIO29;
-    let _gpio30 = peripherals.GPIO30;
+    // Binding them takes them out of `peripherals` so they cannot be used by accident.
+    #[allow(
+        clippy::no_effect_underscore_binding,
+        reason = "the bindings reserve pins used by the module"
+    )]
+    let (_gpio24, _gpio25, _gpio26, _gpio27, _gpio28, _gpio29, _gpio30) = (
+        peripherals.GPIO24,
+        peripherals.GPIO25,
+        peripherals.GPIO26,
+        peripherals.GPIO27,
+        peripherals.GPIO28,
+        peripherals.GPIO29,
+        peripherals.GPIO30,
+    );
 
     let mut led = Output::new(peripherals.GPIO20, Level::Low, OutputConfig::default());
 

@@ -1,3 +1,4 @@
 [toolchain]
 channel    = "stable"
-targets = ["riscv32imac-unknown-none-elf"]
+components = ["clippy", "rustfmt"]
+targets    = ["riscv32imac-unknown-none-elf"]

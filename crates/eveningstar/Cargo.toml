@@ -1,0 +1,23 @@
+[package]
+name = "eveningstar"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "eveningstar"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+critical-section.workspace = true
+defmt.workspace = true
+esp-bootloader-esp-idf.workspace = true
+esp-hal.workspace = true
+rtt-target.workspace = true
+
+[lints]
+workspace = true

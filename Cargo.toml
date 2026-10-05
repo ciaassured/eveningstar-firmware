@@ -1,23 +1,48 @@
-[package]
-edition      = "2024"
-name         = "eveningstar"
-rust-version = "1.95"
+[workspace]
+resolver = "3"
+members  = ["crates/*"]
+
+[workspace.package]
 version      = "0.1.0"
+edition      = "2024"
+rust-version = "1.95"
+license      = "AGPL-3.0-or-later"
+publish      = false
 
-[[bin]]
-name = "eveningstar"
-path = "./src/bin/main.rs"
-
-[dependencies]
-esp-hal = { version = "~1.2.2", features = ["defmt", "esp32c6"] }
-
-
+[workspace.dependencies]
+# Chip and logging features are project-wide, so they are set once here.
+critical-section       = "1.2.0"
 defmt                  = "1.0.1"
 esp-bootloader-esp-idf = { version = "0.6.0", features = ["defmt", "esp32c6"] }
+esp-hal                = { version = "~1.2.2", features = ["defmt", "esp32c6"] }
+rtt-target             = { version = "0.6.2", features = ["defmt"] }
 
-critical-section = "1.2.0"
-rtt-target       = { version = "0.6.2", features = ["defmt"] }
+[workspace.lints.rust]
+missing_debug_implementations = "warn"
+unreachable_pub               = "warn"
+unsafe_op_in_unsafe_fn        = "deny"
+unused_qualifications         = "warn"
 
+[workspace.lints.clippy]
+all      = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+
+# mem::forget is generally not safe with esp-hal types, especially those holding
+# buffers for the duration of a data transfer.
+mem_forget = "deny"
+# Threshold is `stack-size-threshold` in `.clippy.toml`.
+large_stack_frames = "deny"
+
+# no_std hygiene.
+alloc_instead_of_core = "warn"
+std_instead_of_alloc  = "warn"
+std_instead_of_core   = "warn"
+
+# Leftovers and unsafe documentation.
+dbg_macro                   = "warn"
+todo                        = "warn"
+undocumented_unsafe_blocks  = "warn"
+unimplemented               = "warn"
 
 # For fine tuning these settings, please refer to https://doc.rust-lang.org/cargo/reference/profiles.html
 [profile.dev]
@@ -26,7 +51,7 @@ rtt-target       = { version = "0.6.2", features = ["defmt"] }
 opt-level = "s"
 
 [profile.release]
-codegen-units = 1     # LLVM can perform better optimizations using a single thread
-debug         = 2     # prefer slower builds but better debugging experience
-lto           = 'fat'
-opt-level     = 's'
+codegen-units = 1      # LLVM can perform better optimizations using a single thread
+debug         = 2      # prefer slower builds but better debugging experience
+lto           = "fat"
+opt-level     = "s"
