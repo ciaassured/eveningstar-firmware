@@ -10,6 +10,9 @@ license      = "AGPL-3.0-or-later"
 publish      = false
 
 [workspace.dependencies]
+# Workspace crates.
+eveningstar-board = { path = "crates/eveningstar-board" }
+
 # Chip and logging features are project-wide, so they are set once here.
 critical-section       = "1.2.0"
 defmt                  = "1.0.1"

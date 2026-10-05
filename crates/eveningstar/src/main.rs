@@ -6,6 +6,7 @@ use esp_hal::clock::CpuClock;
 use esp_hal::gpio::{Level, Output, OutputConfig};
 use esp_hal::main;
 use esp_hal::time::{Duration, Instant};
+use eveningstar_board::Board;
 
 #[panic_handler]
 fn panic(panic_info: &core::panic::PanicInfo) -> ! {
@@ -29,32 +30,9 @@ fn main() -> ! {
     rtt_target::rtt_init_defmt!();
 
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
-    let peripherals = esp_hal::init(config);
+    let board = Board::new(esp_hal::init(config));
 
-    // The following pins are used to bootstrap the chip. They are available
-    // for use, but check the datasheet of the module for more information on them.
-    // - GPIO4
-    // - GPIO5
-    // - GPIO8
-    // - GPIO9
-    // - GPIO15
-    // These GPIO pins are in use by some feature of the module and should not be used.
-    // Binding them takes them out of `peripherals` so they cannot be used by accident.
-    #[allow(
-        clippy::no_effect_underscore_binding,
-        reason = "the bindings reserve pins used by the module"
-    )]
-    let (_gpio24, _gpio25, _gpio26, _gpio27, _gpio28, _gpio29, _gpio30) = (
-        peripherals.GPIO24,
-        peripherals.GPIO25,
-        peripherals.GPIO26,
-        peripherals.GPIO27,
-        peripherals.GPIO28,
-        peripherals.GPIO29,
-        peripherals.GPIO30,
-    );
-
-    let mut led = Output::new(peripherals.GPIO20, Level::Low, OutputConfig::default());
+    let mut led = Output::new(board.status_led, Level::Low, OutputConfig::default());
 
     loop {
         info!("Hello world!");

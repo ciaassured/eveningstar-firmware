@@ -1,0 +1,21 @@
+[package]
+name = "eveningstar-board"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+test = false
+bench = false
+
+[features]
+# Board revision. Exactly one must be enabled.
+v2 = []
+
+[dependencies]
+esp-hal.workspace = true
+
+[lints]
+workspace = true

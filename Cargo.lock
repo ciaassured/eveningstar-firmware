@@ -728,7 +728,15 @@ dependencies = [
  "defmt 1.1.1",
  "esp-bootloader-esp-idf",
  "esp-hal",
+ "eveningstar-board",
  "rtt-target",
+]
+
+[[package]]
+name = "eveningstar-board"
+version = "0.1.0"
+dependencies = [
+ "esp-hal",
 ]
 
 [[package]]
