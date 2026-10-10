@@ -10,25 +10,21 @@
 //! - GPIO8, GPIO9: boot mode (GPIO9 low at reset enters download mode)
 //! - GPIO15: JTAG source select
 
+use esp_hal::gpio::Level;
 use esp_hal::peripherals::Peripherals;
 
-use crate::Board;
+use crate::{Board, CfgButton, StatusLed};
 
 impl Board {
     /// Takes ownership of the chip's peripherals and splits them by role.
     #[must_use]
     pub fn new(peripherals: Peripherals) -> Self {
-        let Peripherals {
-            GPIO20,
-            TIMG0,
-            FROM_CPU_INTR0,
-            ..
-        } = peripherals;
 
         Self {
-            status_led: GPIO20.into(),
-            timg0: TIMG0,
-            from_cpu_intr0: FROM_CPU_INTR0,
+            status_led: StatusLed::new(peripherals.GPIO20.into(), Level::High),
+            cfg_button: CfgButton::new(peripherals.GPIO21.into(), Level::Low, esp_hal::gpio::Pull::Up),
+            timg0: peripherals.TIMG0,
+            from_cpu_intr0: peripherals.FROM_CPU_INTR0,
         }
     }
 }

@@ -5,9 +5,8 @@ use defmt::{error, info};
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Ticker};
 use esp_hal::clock::CpuClock;
-use esp_hal::gpio::{AnyPin, Level, Output, OutputConfig};
 use esp_hal::timer::timg::TimerGroup;
-use eveningstar_board::Board;
+use eveningstar_board::{Board, CfgButton, StatusLed};
 
 #[panic_handler]
 fn panic(panic_info: &core::panic::PanicInfo) -> ! {
@@ -39,16 +38,19 @@ async fn main(spawner: Spawner) {
     esp_rtos::start(timg0.timer0, board.from_cpu_intr0);
     info!("Embassy initialized");
 
-    spawner.spawn(defmt::unwrap!(blink(board.status_led)));
+    spawner.spawn(defmt::unwrap!(blink(board.status_led, board.cfg_button)));
 }
 
 #[embassy_executor::task]
-async fn blink(pin: AnyPin<'static>) -> ! {
-    let mut led = Output::new(pin, Level::Low, OutputConfig::default());
+async fn blink(mut led: StatusLed, button: CfgButton) -> ! {
     let mut ticker = Ticker::every(BLINK_PERIOD);
 
     loop {
-        led.toggle();
+        if button.is_pressed() {
+            led.set_on();
+        } else {
+            led.set_off();
+        }
         ticker.next().await;
     }
 }
