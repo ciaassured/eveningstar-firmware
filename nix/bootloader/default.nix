@@ -14,6 +14,8 @@ let
     PARTITION_TABLE_OFFSET = board.partitionTableOffset;
     SECURE_BOOT = false;
     SECURE_FLASH_ENC_ENABLED = false;
+    BOOTLOADER_APP_ROLLBACK_ENABLE = true;
+    BOOTLOADER_COMPILE_TIME_DATE = false;
   };
 
   reservedPrefixes = [ "IDF_TARGET" "ESPTOOLPY_FLASH" "PARTITION_TABLE_" "SECURE_" ];
