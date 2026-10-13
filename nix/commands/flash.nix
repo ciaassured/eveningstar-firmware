@@ -11,12 +11,14 @@ in
 {
   perSystem = { config, pkgs, ... }:
     let
-      inherit (config.packages) bootloader partition-table;
+      inherit (config.packages) bootloader partition-table app;
 
       # Shared setup: parses -p/--port, looks up the resolved layout, and
       # defines helpers. Everything is written with one esptool connection;
       # espflash only converts ELFs to app images, so its bundled bootloader
-      # never reaches the device.
+      # never reaches the device. Without an ELF argument, the app package
+      # of the flake in the current directory is built at flash time; depending
+      # on it here would rebuild the app whenever the dev shell is entered.
       prelude = ''
         port_args=()
         args=()
@@ -53,25 +55,21 @@ in
           "$otadata_offset" "$work/otadata.bin"
         )
 
+        # App image to write: the app package, or an ELF given on the command line.
         app_image() {
-          local elf=$1
+          if (( ''${#args[@]} == 0 )); then
+            local app
+            app=$(nix build --no-link --print-out-paths .#app)
+            echo "$app/eveningstar.bin"
+            return
+          fi
+
+          local elf=''${args[0]}
           if [[ ! -f "$elf" ]]; then
             echo "No such ELF: $elf" >&2
             exit 1
           fi
-
-          espflash save-image --chip ${board.chip} \
-            --flash-size ${lib.toLower board.flash.size} \
-            --flash-mode ${board.flash.mode} \
-            --flash-freq ${board.flash.freq}hz \
-            "$elf" "$work/app.bin" >&2
-
-          local size
-          size=$(stat -c %s "$work/app.bin")
-          if (( size > app_size )); then
-            echo "App image is $size bytes, ${appPartition} holds $app_size" >&2
-            exit 1
-          fi
+          espflash save-image ${app.saveImageArgs} "$elf" "$work/app.bin" >&2
           echo "$work/app.bin"
         }
 
@@ -79,9 +77,9 @@ in
           esptool --chip ${board.chip} "''${port_args[@]}" write-flash "$@"
         }
 
-        require_elf() {
-          if (( ''${#args[@]} != 1 )); then
-            echo "Usage: $1 [-p PORT] <app.elf>" >&2
+        optional_elf() {
+          if (( ''${#args[@]} > 1 )); then
+            echo "Usage: $1 [-p PORT] [app.elf]" >&2
             exit 1
           fi
         }
@@ -108,19 +106,18 @@ in
         '';
 
         # App into the first app slot, plus blank otadata so it is the one booted.
-        # Stub: takes an ELF for now; will default to the Rust firmware package.
-        # Usage: flash-app [-p PORT] <app.elf>
+        # Usage: flash-app [-p PORT] [app.elf]
         flash-app = mkFlashCommand "flash-app" ''
-          require_elf flash-app
-          image=$(app_image "''${args[0]}")
+          optional_elf flash-app
+          image=$(app_image)
           write_flash "$app_offset" "$image" "$otadata_offset" "$work/otadata.bin"
         '';
 
         # Everything: bootloader, partition table, blank otadata and app.
-        # Usage: flash-all [-p PORT] <app.elf>
+        # Usage: flash-all [-p PORT] [app.elf]
         flash-all = mkFlashCommand "flash-all" ''
-          require_elf flash-all
-          image=$(app_image "''${args[0]}")
+          optional_elf flash-all
+          image=$(app_image)
           write_flash "''${boot_regions[@]}" "$app_offset" "$image"
         '';
       };
