@@ -1,0 +1,4 @@
+pre-commit:
+  commands:
+    checks:
+      run: nix run .#checks
