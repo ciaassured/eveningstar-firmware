@@ -16,6 +16,9 @@
 //! handles were fed, resets the chip if any task has gone longer than its
 //! timeout, and otherwise feeds both hardware watchdogs.
 //!
+//! A task can instead [retire](WatchdogHandle::retire) its handle, which ends
+//! its supervision for the rest of the boot.
+//!
 //! # Usage
 //!
 //! Declare the supervised tasks once with [`watchdog!`], inside a module:
@@ -58,11 +61,21 @@ const TIMER0_WD_TIMEOUT: esp_hal::time::Duration =
 const RTC_WD_TIMEOUT: esp_hal::time::Duration =
     esp_hal::time::Duration::from_millis(TIMER0_WD_TIMEOUT.as_millis() * 3);
 
-/// Carries "still alive" from a task's [`WatchdogHandle`] to the [`Supervisor`].
+/// What a task's [`WatchdogHandle`] last told the [`Supervisor`].
+#[derive(Clone, Copy, Debug, defmt::Format)]
+pub(crate) enum Message {
+    /// The task is still making progress.
+    Fed,
+    /// The task is no longer supervised.
+    Retired,
+}
+
+/// Carries a task's latest [`Message`] to the [`Supervisor`].
 ///
-/// A [`Signal`] only remembers that it was fed since the last poll, not how
-/// often, which is all the supervisor needs.
-pub(crate) type Mailbox = Signal<CriticalSectionRawMutex, ()>;
+/// A [`Signal`] only keeps the latest message since the last poll, not how
+/// many were sent, which is all the supervisor needs. A retire sent after a
+/// feed replaces it.
+pub(crate) type Mailbox = Signal<CriticalSectionRawMutex, Message>;
 
 /// Marker for a supervised task. [`watchdog!`] generates one type per task, so
 /// each task's handle has a distinct type and can't be passed to another task.
@@ -86,7 +99,13 @@ impl<T: WatchdogType> WatchdogHandle<T> {
     }
 
     pub(crate) fn feed(&self) {
-        self.mailbox.signal(());
+        self.mailbox.signal(Message::Fed);
+    }
+
+    /// Ends supervision of this task for the rest of the boot. The handle is
+    /// consumed, so the task can't feed again.
+    pub(crate) fn retire(self) {
+        self.mailbox.signal(Message::Retired);
     }
 }
 
@@ -99,7 +118,18 @@ pub(crate) struct WatchdogInfo {
     /// When the supervisor last saw a feed. Detection is per poll, so this can
     /// lag the real feed by up to one [`POLL_INTERVAL`].
     pub last_fed: Instant,
+    /// Set once the task retires its handle; its deadline is no longer checked.
+    pub retired: bool,
     pub mailbox: &'static Mailbox,
+}
+
+impl WatchdogInfo {
+    fn retire(&mut self) {
+        if !self.retired {
+            self.retired = true;
+            info!("Task watchdog `{}` retired", self.name);
+        }
+    }
 }
 
 /// Owns the hardware watchdogs and checks every task's deadline.
@@ -138,10 +168,13 @@ impl<const N: usize> Supervisor<N> {
 
     /// Polls forever and monitors each task for feed timeouts.
     pub(crate) async fn run(mut self) -> ! {
-        // Reset all task watchdog timers to the start of the supervisor.
+        // Reset all task watchdog timers to the start of the supervisor. Feeds
+        // sent before now are dropped; a retire is kept.
         let start = Instant::now();
         for wd in &mut self.task_watchdogs {
-            wd.mailbox.reset();
+            if let Some(Message::Retired) = wd.mailbox.try_take() {
+                wd.retire();
+            }
             wd.last_fed = start;
         }
 
@@ -156,13 +189,14 @@ impl<const N: usize> Supervisor<N> {
 
             let now = Instant::now();
             for wd in &mut self.task_watchdogs {
-                // Check if this task watchdog has been fed.
-                if wd.mailbox.try_take().is_some() {
-                    wd.last_fed = now;
+                match wd.mailbox.try_take() {
+                    Some(Message::Fed) => wd.last_fed = now,
+                    Some(Message::Retired) => wd.retire(),
+                    None => {}
                 }
 
                 // Check the timeout hasn't elapsed.
-                if now.duration_since(wd.last_fed) > wd.timeout {
+                if !wd.retired && now.duration_since(wd.last_fed) > wd.timeout {
                     error!("Task watchdog `{}` missed its deadline", wd.name);
                     esp_hal::system::software_reset();
                 }
@@ -224,6 +258,7 @@ macro_rules! watchdog {
                             name: stringify!($field),
                             timeout: $timeout,
                             last_fed: Instant::MIN,
+                            retired: false,
                             mailbox: &MAILBOXES[Index::$Kind as usize],
                         },
                     )*
