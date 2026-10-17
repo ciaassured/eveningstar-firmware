@@ -2,6 +2,7 @@
 #![no_main]
 
 mod device_id;
+mod reboot;
 mod watchdog;
 
 use defmt::{error, info};
@@ -30,6 +31,7 @@ mod wd {
 
     watchdog::watchdog! {
         blinky: Blinky = Duration::from_millis(2000),
+        reboot: Reboot = crate::reboot::WATCHDOG_TIMEOUT,
     }
 }
 
@@ -55,6 +57,7 @@ async fn main(spawner: Spawner) {
     esp_rtos::start(timg0.timer0, board.from_cpu_intr0);
     info!("Embassy initialized");
     spawner.spawn(defmt::unwrap!(wd::supervise(wd_supervisor)));
+    spawner.spawn(defmt::unwrap!(reboot::reboot_task(wd_handles.reboot)));
 
     info!("reset reason: {}", defmt::Debug2Format(&esp_hal::system::reset_reason()));
     let device_id = device_id::DeviceId::read();

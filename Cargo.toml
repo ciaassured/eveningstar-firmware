@@ -17,6 +17,7 @@ eveningstar-board = { path = "crates/eveningstar-board" }
 defmt                  = "1.0.1"
 embassy-embedded-hal   = { version = "0.6.0", features = ["defmt"] }
 embassy-executor       = { version = "0.10.0", features = ["defmt"] }
+embassy-futures        = { version = "0.1.2", features = ["defmt"] }
 embassy-time           = { version = "0.5.1", features = ["defmt"] }
 embassy-sync           = { version = "0.8.0", features = ["defmt"] }
 embedded-hal           = "1.0.0"
