@@ -917,6 +917,7 @@ dependencies = [
  "esp-hal",
  "esp-rtos",
  "eveningstar-board",
+ "heapless 0.9.3",
  "rtt-target",
 ]
 

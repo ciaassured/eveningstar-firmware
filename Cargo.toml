@@ -23,6 +23,7 @@ embedded-hal           = "1.0.0"
 esp-bootloader-esp-idf = { version = "0.6.0", features = ["defmt", "esp32c6"] }
 esp-hal                = { version = "~1.2.2", features = ["defmt", "esp32c6", "unstable"] }
 esp-rtos               = { version = "0.4.0", features = ["defmt", "embassy", "esp32c6"] }
+heapless               = "0.9.3"
 rtt-target             = { version = "0.6.2", features = ["defmt"] }
 static_cell            = "2.1.1"
 
