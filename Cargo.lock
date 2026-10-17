@@ -334,6 +334,7 @@ version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b0641612053b2f34fc250bb63f6630ae75de46e02ade7f457268447081d709ce"
 dependencies = [
+ "defmt 1.1.1",
  "embassy-futures",
  "embassy-hal-internal",
  "embassy-sync 0.8.0",
@@ -923,7 +924,11 @@ dependencies = [
 name = "eveningstar-board"
 version = "0.1.0"
 dependencies = [
+ "embassy-embedded-hal",
+ "embassy-sync 0.8.0",
+ "embedded-hal 1.0.0",
  "esp-hal",
+ "static_cell",
 ]
 
 [[package]]

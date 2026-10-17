@@ -15,7 +15,11 @@ bench = false
 v2 = []
 
 [dependencies]
+embassy-embedded-hal.workspace = true
+embassy-sync.workspace = true
+embedded-hal.workspace = true
 esp-hal.workspace = true
+static_cell.workspace = true
 
 [lints]
 workspace = true
