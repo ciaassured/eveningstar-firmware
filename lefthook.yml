@@ -1,4 +1,9 @@
 pre-commit:
   commands:
-    checks:
-      run: nix run .#checks
+    lint:
+      run: nix run .#checks -- lint
+
+pre-push:
+  commands:
+    build:
+      run: nix run .#checks -- build
