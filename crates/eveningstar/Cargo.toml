@@ -16,6 +16,7 @@ bench = false
 defmt.workspace = true
 embassy-executor.workspace = true
 embassy-time.workspace = true
+embassy-sync.workspace = true
 eveningstar-board = { workspace = true, features = ["v2"] }
 esp-bootloader-esp-idf.workspace = true
 esp-hal.workspace = true

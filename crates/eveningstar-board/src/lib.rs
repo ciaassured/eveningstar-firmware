@@ -13,13 +13,14 @@ compile_error!("no board revision selected; enable one of the features: `v2`");
 mod v2;
 
 use esp_hal::gpio::{AnyPin, Input, InputConfig, Level, Output, OutputConfig, Pull};
-use esp_hal::peripherals::{FROM_CPU_INTR0, TIMG0};
+use esp_hal::peripherals::{FROM_CPU_INTR0, RTC_TIMER, TIMG0};
 
 #[derive(Debug)]
 pub struct Board {
     pub status_led: StatusLed,
     pub cfg_button: CfgButton,
     pub timg0: TIMG0<'static>,
+    pub rtc_timer: RTC_TIMER<'static>,
     pub from_cpu_intr0: FROM_CPU_INTR0<'static>,
 }
 
