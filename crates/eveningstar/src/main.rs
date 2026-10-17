@@ -75,10 +75,11 @@ async fn main(spawner: Spawner) {
         "reset reason: {}",
         defmt::Debug2Format(&esp_hal::system::reset_reason())
     );
-    let device_id = device_id::DeviceId::read();
+    let device_id = device_id::DeviceId::from_base_mac(board.base_mac);
+    let device_name = device_id.name();
     info!(
         "device {} (serial {})",
-        device_id.name().as_str(),
+        device_name.as_str(),
         device_id.serial().as_str()
     );
 
@@ -101,7 +102,7 @@ async fn main(spawner: Spawner) {
     if let Err(err) = ethernet::start(
         spawner,
         board.ethernet,
-        device_id.name(),
+        device_name,
         seed,
         wd_handles.w5500,
         wd_handles.link,

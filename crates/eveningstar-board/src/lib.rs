@@ -23,6 +23,9 @@ use esp_hal::peripherals::{ADC1, FROM_CPU_INTR0, RNG, RTC_TIMER, TIMG0};
 
 #[derive(Debug)]
 pub struct Board {
+    /// The chip's factory base MAC address, from eFuse. Every interface's MAC
+    /// address, such as [`Ethernet::mac`], is derived from it.
+    pub base_mac: [u8; 6],
     pub status_led: StatusLed,
     pub cfg_button: CfgButton,
     pub ethernet: Ethernet,
