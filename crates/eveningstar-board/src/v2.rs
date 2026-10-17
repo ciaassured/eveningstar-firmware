@@ -25,7 +25,9 @@ use embassy_embedded_hal::shared_bus::asynch::spi::SpiDevice;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
 use esp_hal::Async;
-use esp_hal::gpio::{Input, InputConfig, Level, Output, OutputConfig, OutputSignal, Pull};
+use esp_hal::gpio::{
+    DriveMode, Input, InputConfig, Level, Output, OutputConfig, OutputSignal, Pull,
+};
 use esp_hal::peripherals::Peripherals;
 use esp_hal::spi::Mode;
 use esp_hal::spi::master::{Config as SpiConfig, Spi};
@@ -135,8 +137,14 @@ impl Board {
                 peripherals.GPIO10,
                 InputConfig::default().with_pull(Pull::Up),
             ),
-            // Starts low, holding the W5500 in reset.
-            reset: Output::new(peripherals.GPIO11, Level::Low, OutputConfig::default()),
+            // Starts low, holding the W5500 in reset. Open drain: the board's
+            // 10 kΩ pull-up (R59) takes the line high when released, and the
+            // pin never drives against something else pulling the line low.
+            reset: Output::new(
+                peripherals.GPIO11,
+                Level::Low,
+                OutputConfig::default().with_drive_mode(DriveMode::OpenDrain),
+            ),
             mac,
         };
 
