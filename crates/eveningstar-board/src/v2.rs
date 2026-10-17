@@ -37,6 +37,14 @@ use crate::{Board, CfgButton, Ethernet, Flash, StatusLed};
 /// The SPI bus shared by the Ethernet controller and the external flash.
 type SpiBus = Mutex<CriticalSectionRawMutex, Spi<'static, Async>>;
 
+/// The Ethernet controller on this revision.
+pub type EthernetChip = embassy_net_wiznet::chip::W5500;
+
+/// SPI frame header that reads the Ethernet controller's source MAC address:
+/// the W5500's SHAR register, address 0x0009 in the common register block. The
+/// 6 address bytes follow it.
+pub const ETHERNET_MAC_READ: [u8; 3] = [0x00, 0x09, 0x00];
+
 /// SPI device for the Ethernet controller, on the bus it shares with the flash.
 pub type EthernetSpi =
     SpiDevice<'static, CriticalSectionRawMutex, Spi<'static, Async>, Output<'static>>;

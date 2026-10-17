@@ -45,7 +45,7 @@ mod wd {
     watchdog::watchdog! {
         blinky: Blinky = Duration::from_millis(5000),
         // Tolerates two missed probes.
-        w5500: W5500Probe = Duration::from_ticks(crate::ethernet::PROBE_INTERVAL.as_ticks() * 3),
+        ethernet: EthernetProbe = Duration::from_ticks(crate::ethernet::PROBE_INTERVAL.as_ticks() * 3),
         // Tolerates two missed checks.
         link: LinkMonitor = Duration::from_ticks(crate::ethernet::LINK_CHECK_INTERVAL.as_ticks() * 3),
         reboot: Reboot = crate::reboot::WATCHDOG_TIMEOUT,
@@ -104,7 +104,7 @@ async fn main(spawner: Spawner) {
         board.ethernet,
         device_name,
         seed,
-        wd_handles.w5500,
+        wd_handles.ethernet,
         wd_handles.link,
     )
     .await
