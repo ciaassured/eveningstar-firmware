@@ -79,21 +79,27 @@ impl fmt::Debug for Flash {
 #[derive(Debug)]
 pub struct StatusLed {
     pin: Output<'static>,
-    active_level: Level
+    active_level: Level,
 }
 
 impl StatusLed {
     #[must_use]
     pub fn new(pin: AnyPin<'static>, active_level: Level) -> Self {
-        Self { 
+        Self {
             pin: Output::new(pin, !active_level, OutputConfig::default()),
-            active_level
+            active_level,
         }
     }
 
-    pub fn set_on(&mut self) { self.pin.set_level(self.active_level); }
-    pub fn set_off(&mut self) { self.pin.set_level(!self.active_level); }
-    pub fn toggle(&mut self) { self.pin.toggle(); }
+    pub fn set_on(&mut self) {
+        self.pin.set_level(self.active_level);
+    }
+    pub fn set_off(&mut self) {
+        self.pin.set_level(!self.active_level);
+    }
+    pub fn toggle(&mut self) {
+        self.pin.toggle();
+    }
 }
 
 #[derive(Debug)]
@@ -107,7 +113,7 @@ impl CfgButton {
     pub fn new(pin: AnyPin<'static>, pressed_level: Level, pull: Pull) -> Self {
         Self {
             pin: Input::new(pin, InputConfig::default().with_pull(pull)),
-            pressed_level
+            pressed_level,
         }
     }
 

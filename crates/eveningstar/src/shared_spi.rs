@@ -21,7 +21,10 @@ impl<S: ErrorType> ErrorType for SharedSpi<S> {
 }
 
 impl<S: SpiDevice> SpiDevice for SharedSpi<S> {
-    async fn transaction(&mut self, operations: &mut [Operation<'_, u8>]) -> Result<(), Self::Error> {
+    async fn transaction(
+        &mut self,
+        operations: &mut [Operation<'_, u8>],
+    ) -> Result<(), Self::Error> {
         self.0.lock().await.transaction(operations).await
     }
 }

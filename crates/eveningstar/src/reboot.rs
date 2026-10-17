@@ -56,6 +56,7 @@ pub(crate) fn is_pending() -> bool {
 }
 
 /// Holds off a requested reboot until the returned guard is dropped.
+#[expect(dead_code, reason = "no task holds off reboots yet")]
 pub(crate) fn hold() -> RebootHold {
     HOLDS.fetch_add(1, Ordering::AcqRel);
     RebootHold(())
@@ -64,6 +65,7 @@ pub(crate) fn hold() -> RebootHold {
 /// Holds off a requested reboot while alive; see [`hold`].
 #[must_use = "the reboot is only held off while the guard is alive"]
 #[derive(Debug)]
+#[expect(dead_code, reason = "no task holds off reboots yet")]
 pub(crate) struct RebootHold(());
 
 impl Drop for RebootHold {
