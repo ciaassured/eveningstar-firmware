@@ -16,6 +16,8 @@
 //! the flash's separate SCK is driven.
 //!
 //! The external flash is a `GD5F2GM7UE` SPI NAND.
+//!
+//! No board signals are wired to ADC1.
 
 use core::convert::Infallible;
 
@@ -142,6 +144,8 @@ impl Board {
             timg0: peripherals.TIMG0,
             rtc_timer: peripherals.RTC_TIMER,
             from_cpu_intr0: peripherals.FROM_CPU_INTR0,
+            rng: peripherals.RNG,
+            adc1: peripherals.ADC1,
         }
     }
 }

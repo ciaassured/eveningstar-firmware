@@ -19,7 +19,7 @@ pub use v2::{EthernetSpi, FlashCs, FlashSpi};
 use core::fmt;
 
 use esp_hal::gpio::{AnyPin, Input, InputConfig, Level, Output, OutputConfig, Pull};
-use esp_hal::peripherals::{FROM_CPU_INTR0, RTC_TIMER, TIMG0};
+use esp_hal::peripherals::{ADC1, FROM_CPU_INTR0, RNG, RTC_TIMER, TIMG0};
 
 #[derive(Debug)]
 pub struct Board {
@@ -30,6 +30,11 @@ pub struct Board {
     pub timg0: TIMG0<'static>,
     pub rtc_timer: RTC_TIMER<'static>,
     pub from_cpu_intr0: FROM_CPU_INTR0<'static>,
+    /// Hardware random number generator.
+    pub rng: RNG<'static>,
+    /// ADC1. Together with [`Board::rng`] it can serve as the entropy source for
+    /// true random numbers; see [`esp_hal::rng::TrngSource`].
+    pub adc1: ADC1<'static>,
 }
 
 /// W5500 Ethernet controller (MAC + PHY), with its SPI device and control
