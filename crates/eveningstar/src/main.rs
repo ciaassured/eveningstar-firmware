@@ -34,7 +34,7 @@ mod wd {
     use embassy_time::Duration;
 
     watchdog::watchdog! {
-        blinky: Blinky = Duration::from_millis(2000),
+        blinky: Blinky = Duration::from_millis(5000),
         // Tolerates two missed probes.
         w5500: W5500Probe = Duration::from_ticks(crate::ethernet::PROBE_INTERVAL.as_ticks() * 3),
         // Tolerates two missed checks.
@@ -43,7 +43,11 @@ mod wd {
     }
 }
 
-const BLINK_PERIOD: Duration = Duration::from_millis(500);
+const BLINK_PERIOD: Duration = Duration::from_millis(1000);
+
+/// Fast flashes shown once when the blink task starts.
+const BOOT_FLASHES: u32 = 10;
+const BOOT_FLASH_PERIOD: Duration = Duration::from_millis(300);
 
 #[allow(
     clippy::large_stack_frames,
@@ -58,6 +62,10 @@ async fn main(spawner: Spawner) {
 
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let mut board = Board::new(esp_hal::init(config));
+    info!("reset reason: {}", defmt::Debug2Format(&esp_hal::system::reset_reason()));
+    let device_id = device_id::DeviceId::read();
+    info!("device {} (serial {})", device_id.name().as_str(), device_id.serial().as_str());
+
     let timg0 = TimerGroup::new(board.timg0);
     let rtc = esp_hal::rtc_cntl::Rtc::new(board.rtc_timer);
     let (wd_supervisor, wd_handles) = wd::supervisor(rtc.rwdt, timg0.wdt);
@@ -66,10 +74,6 @@ async fn main(spawner: Spawner) {
     info!("Embassy initialized");
     spawner.spawn(defmt::unwrap!(wd::supervise(wd_supervisor)));
     spawner.spawn(defmt::unwrap!(reboot::reboot_task(wd_handles.reboot)));
-
-    info!("reset reason: {}", defmt::Debug2Format(&esp_hal::system::reset_reason()));
-    let device_id = device_id::DeviceId::read();
-    info!("device {} (serial {})", device_id.name().as_str(), device_id.serial().as_str());
 
     spawner.spawn(defmt::unwrap!(blink(
         board.status_led,
@@ -95,6 +99,15 @@ fn random_seed(rng: RNG<'_>, adc1: ADC1<'_>) -> u64 {
 
 #[embassy_executor::task]
 async fn blink(mut led: StatusLed, button: CfgButton, wd: WatchdogHandle<Blinky>) -> ! {
+    let mut ticker = Ticker::every(BOOT_FLASH_PERIOD / 2);
+    for _ in 0..BOOT_FLASHES {
+        led.set_on();
+        ticker.next().await;
+        led.set_off();
+        ticker.next().await;
+        wd.feed();
+    }
+
     let mut ticker = Ticker::every(BLINK_PERIOD);
 
     loop {
