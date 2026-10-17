@@ -38,7 +38,8 @@ use crate::{Board, CfgButton, Ethernet, Flash, StatusLed};
 type SpiBus = Mutex<CriticalSectionRawMutex, Spi<'static, Async>>;
 
 /// SPI device for the Ethernet controller, on the bus it shares with the flash.
-pub type EthernetSpi = SpiDevice<'static, CriticalSectionRawMutex, Spi<'static, Async>, Output<'static>>;
+pub type EthernetSpi =
+    SpiDevice<'static, CriticalSectionRawMutex, Spi<'static, Async>, Output<'static>>;
 
 /// SPI device for the external flash, on the bus it shares with the Ethernet
 /// controller.
@@ -120,7 +121,10 @@ impl Board {
                 Output::new(peripherals.GPIO18, Level::High, OutputConfig::default()),
             ),
             // The board has no external pull-up on INTn.
-            int: Input::new(peripherals.GPIO10, InputConfig::default().with_pull(Pull::Up)),
+            int: Input::new(
+                peripherals.GPIO10,
+                InputConfig::default().with_pull(Pull::Up),
+            ),
             // Starts low, holding the W5500 in reset.
             reset: Output::new(peripherals.GPIO11, Level::Low, OutputConfig::default()),
             mac,

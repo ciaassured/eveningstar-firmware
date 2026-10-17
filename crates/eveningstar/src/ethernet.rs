@@ -80,7 +80,10 @@ async fn w5500_probe(mut spi: W5500Spi, wd: WatchdogHandle<W5500Probe>) -> ! {
     loop {
         let mut version = [0u8];
         let result = spi
-            .transaction(&mut [Operation::Write(&VERSIONR_READ), Operation::Read(&mut version)])
+            .transaction(&mut [
+                Operation::Write(&VERSIONR_READ),
+                Operation::Read(&mut version),
+            ])
             .await;
         match result {
             Ok(()) if version[0] == W5500_VERSION => wd.feed(),
@@ -128,9 +131,14 @@ async fn net_status(stack: Stack<'static>) -> ! {
         info!("Ethernet link up, waiting for an IPv4 address");
         if let Either::First(()) = select(stack.wait_config_up(), stack.wait_link_down()).await {
             if let Some(config) = stack.config_v4() {
-                info!("IPv4 address {}, gateway {}", config.address, config.gateway);
+                info!(
+                    "IPv4 address {}, gateway {}",
+                    config.address, config.gateway
+                );
             }
-            if let Either::First(()) = select(stack.wait_config_down(), stack.wait_link_down()).await {
+            if let Either::First(()) =
+                select(stack.wait_config_down(), stack.wait_link_down()).await
+            {
                 warn!("IPv4 address lost");
             }
         }

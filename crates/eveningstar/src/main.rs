@@ -62,9 +62,16 @@ async fn main(spawner: Spawner) {
 
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let mut board = Board::new(esp_hal::init(config));
-    info!("reset reason: {}", defmt::Debug2Format(&esp_hal::system::reset_reason()));
+    info!(
+        "reset reason: {}",
+        defmt::Debug2Format(&esp_hal::system::reset_reason())
+    );
     let device_id = device_id::DeviceId::read();
-    info!("device {} (serial {})", device_id.name().as_str(), device_id.serial().as_str());
+    info!(
+        "device {} (serial {})",
+        device_id.name().as_str(),
+        device_id.serial().as_str()
+    );
 
     let timg0 = TimerGroup::new(board.timg0);
     let rtc = esp_hal::rtc_cntl::Rtc::new(board.rtc_timer);
@@ -82,9 +89,15 @@ async fn main(spawner: Spawner) {
     )));
 
     let seed = random_seed(board.rng.reborrow(), board.adc1.reborrow());
-    if let Err(err) =
-        ethernet::start(spawner, board.ethernet, device_id.name(), seed, wd_handles.w5500, wd_handles.link)
-            .await
+    if let Err(err) = ethernet::start(
+        spawner,
+        board.ethernet,
+        device_id.name(),
+        seed,
+        wd_handles.w5500,
+        wd_handles.link,
+    )
+    .await
     {
         error!("Ethernet unavailable: {}", err);
     }
@@ -113,7 +126,6 @@ async fn blink(mut led: StatusLed, button: CfgButton, wd: WatchdogHandle<Blinky>
     loop {
         ticker.next().await;
 
-        
         led.toggle();
         wd.feed();
 
