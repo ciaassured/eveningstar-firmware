@@ -13,11 +13,9 @@ pub(crate) const NAME_MAX_LEN: usize = 32;
 pub(crate) struct DeviceId([u8; 6]);
 
 impl DeviceId {
-    /// Reads the ID from eFuse.
-    pub(crate) fn read() -> Self {
-        let mut id = [0u8; 6];
-        id.copy_from_slice(esp_hal::efuse::base_mac_address().as_bytes());
-        Self(id)
+    /// The ID of a chip with factory base MAC address `base_mac`.
+    pub(crate) const fn from_base_mac(base_mac: [u8; 6]) -> Self {
+        Self(base_mac)
     }
 
     /// The full ID as 12 lowercase hex digits, e.g. `a1b2c3d4e5f6`.

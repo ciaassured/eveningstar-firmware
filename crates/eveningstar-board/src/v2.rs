@@ -94,11 +94,13 @@ impl Board {
     pub fn new(peripherals: Peripherals) -> Self {
         static SPI_BUS: StaticCell<SpiBus> = StaticCell::new();
 
+        let mut base_mac = [0u8; 6];
+        base_mac.copy_from_slice(esp_hal::efuse::base_mac_address().as_bytes());
+
         // Ethernet uses the base MAC address + 3, following ESP-IDF's MAC address
         // allocation. See:
         // https://docs.espressif.com/projects/esp-idf/en/stable/esp32c6/api-reference/system/misc_system_api.html#mac-address-allocation
-        let mut mac = [0u8; 6];
-        mac.copy_from_slice(esp_hal::efuse::base_mac_address().as_bytes());
+        let mut mac = base_mac;
         mac[5] = mac[5].wrapping_add(3);
 
         let spi = Spi::new(
@@ -141,6 +143,7 @@ impl Board {
         };
 
         Self {
+            base_mac,
             status_led: StatusLed::new(peripherals.GPIO20.into(), Level::High),
             cfg_button: CfgButton::new(peripherals.GPIO21.into(), Level::Low, Pull::Up),
             ethernet,
