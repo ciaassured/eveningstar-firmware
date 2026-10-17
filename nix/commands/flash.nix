@@ -20,6 +20,10 @@ in
       # of the flake in the current directory is built at flash time; depending
       # on it here would rebuild the app whenever the dev shell is entered.
       prelude = ''
+        # Command substitutions keep errexit, so a failure inside one, such as
+        # the app build in image=$(app_image), stops the script.
+        shopt -s inherit_errexit
+
         port_args=()
         args=()
         while (( $# )); do
