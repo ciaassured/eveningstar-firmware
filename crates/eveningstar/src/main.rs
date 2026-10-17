@@ -22,8 +22,17 @@ use crate::wd::Blinky;
 #[panic_handler]
 fn panic(panic_info: &core::panic::PanicInfo) -> ! {
     error!("{}", panic_info);
-    loop {}
+    // Gives the log time to reach the host. A spin rather than a timer, because
+    // a panic can come before the timers run.
+    for _ in 0..PANIC_LOG_SPINS {
+        core::hint::spin_loop();
+    }
+    esp_hal::system::software_reset()
 }
+
+/// Busy-wait iterations between logging a panic and resetting: a fraction of a
+/// second at full CPU clock, longer if the panic comes before it is raised.
+const PANIC_LOG_SPINS: u32 = 10_000_000;
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
 // For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
