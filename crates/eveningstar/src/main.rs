@@ -2,13 +2,17 @@
 #![no_main]
 
 mod device_id;
+mod ethernet;
 mod reboot;
+mod shared_spi;
 mod watchdog;
 
 use defmt::{error, info};
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Ticker, Timer};
 use esp_hal::clock::CpuClock;
+use esp_hal::peripherals::{ADC1, RNG};
+use esp_hal::rng::{Trng, TrngSource};
 use esp_hal::timer::timg::TimerGroup;
 use eveningstar_board::{Board, CfgButton, StatusLed};
 
@@ -31,6 +35,10 @@ mod wd {
 
     watchdog::watchdog! {
         blinky: Blinky = Duration::from_millis(2000),
+        // Tolerates two missed probes.
+        w5500: W5500Probe = Duration::from_ticks(crate::ethernet::PROBE_INTERVAL.as_ticks() * 3),
+        // Tolerates two missed checks.
+        link: LinkMonitor = Duration::from_ticks(crate::ethernet::LINK_CHECK_INTERVAL.as_ticks() * 3),
         reboot: Reboot = crate::reboot::WATCHDOG_TIMEOUT,
     }
 }
@@ -49,7 +57,7 @@ async fn main(spawner: Spawner) {
     rtt_target::rtt_init_defmt!();
 
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
-    let board = Board::new(esp_hal::init(config));
+    let mut board = Board::new(esp_hal::init(config));
     let timg0 = TimerGroup::new(board.timg0);
     let rtc = esp_hal::rtc_cntl::Rtc::new(board.rtc_timer);
     let (wd_supervisor, wd_handles) = wd::supervisor(rtc.rwdt, timg0.wdt);
@@ -68,6 +76,21 @@ async fn main(spawner: Spawner) {
         board.cfg_button,
         wd_handles.blinky
     )));
+
+    let seed = random_seed(board.rng.reborrow(), board.adc1.reborrow());
+    if let Err(err) =
+        ethernet::start(spawner, board.ethernet, device_id.name(), seed, wd_handles.w5500, wd_handles.link)
+            .await
+    {
+        error!("Ethernet unavailable: {}", err);
+    }
+}
+
+/// Draws a true random seed, briefly enabling ADC1 as the RNG's entropy source.
+fn random_seed(rng: RNG<'_>, adc1: ADC1<'_>) -> u64 {
+    let _source = TrngSource::new(rng, adc1);
+    let trng = defmt::unwrap!(Trng::try_new());
+    (u64::from(trng.random()) << 32) | u64::from(trng.random())
 }
 
 #[embassy_executor::task]
