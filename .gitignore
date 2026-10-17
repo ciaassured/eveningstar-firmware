@@ -2,6 +2,9 @@
 result
 result-*
 
+# Local Git hook overrides
+lefthook-local.yml
+
 # will have compiled files and executables
 debug/
 target/

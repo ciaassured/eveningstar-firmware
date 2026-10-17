@@ -8,7 +8,9 @@
         espflash
         esp-generate
         gdb
+        lefthook
         probe-rs-tools
+        config.packages.checks
         config.packages.esp-idf
         config.packages.esp-wipe
         config.packages.bootloader-menuconfig
@@ -19,6 +21,15 @@
 
       # Default target for idf.py when a project has no sdkconfig yet.
       IDF_TARGET = "esp32c6";
+
+      shellHook = ''
+        if ${pkgs.git}/bin/git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+          if ! ${pkgs.lefthook}/bin/lefthook install >/dev/null; then
+            echo "warning: could not install the Eveningstar Git hooks" >&2
+            echo "run 'lefthook install' for details" >&2
+          fi
+        fi
+      '';
     };
   };
 }
