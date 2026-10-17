@@ -18,12 +18,16 @@ embassy-executor.workspace = true
 embassy-futures.workspace = true
 embassy-time.workspace = true
 embassy-sync.workspace = true
+embassy-net.workspace = true
+embassy-net-wiznet.workspace = true
+embedded-hal-async.workspace = true
 eveningstar-board = { workspace = true, features = ["v2"] }
 esp-bootloader-esp-idf.workspace = true
 esp-hal.workspace = true
 esp-rtos.workspace = true
 heapless.workspace = true
 rtt-target.workspace = true
+static_cell.workspace = true
 
 [lints]
 workspace = true
