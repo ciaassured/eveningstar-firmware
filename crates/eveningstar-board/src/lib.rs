@@ -14,7 +14,7 @@ mod v2;
 
 // Types whose definition depends on how the selected revision wires the board.
 #[cfg(feature = "v2")]
-pub use v2::{EthernetSpi, FlashCs, FlashSpi};
+pub use v2::{ETHERNET_MAC_READ, EthernetChip, EthernetSpi, FlashCs, FlashSpi};
 
 use core::fmt;
 
@@ -40,18 +40,18 @@ pub struct Board {
     pub adc1: ADC1<'static>,
 }
 
-/// W5500 Ethernet controller (MAC + PHY), with its SPI device and control
-/// lines configured.
+/// Ethernet controller (MAC + PHY), with its SPI device and control
+/// lines configured. The part is given by [`EthernetChip`].
 pub struct Ethernet {
     /// SPI device, mode 0.
     pub spi: EthernetSpi,
     /// Interrupt request, active low.
     pub int: Input<'static>,
-    /// Hardware reset, active low. Starts asserted (low), holding the W5500 in
-    /// reset.
+    /// Hardware reset, active low. Starts asserted (low), holding the controller
+    /// in reset.
     pub reset: Output<'static>,
-    /// MAC address assigned to the Ethernet interface. The W5500 has none of its
-    /// own.
+    /// MAC address assigned to the Ethernet interface. The controller has none of
+    /// its own.
     pub mac: [u8; 6],
 }
 

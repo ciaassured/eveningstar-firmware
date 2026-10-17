@@ -1,24 +1,24 @@
-//! Wired Ethernet: the W5500 driver and the embassy-net IP stack on top of it.
+//! Wired Ethernet: the Ethernet controller's driver and the embassy-net IP
+//! stack on top of it.
 
 use defmt::{error, info, warn};
 use embassy_executor::Spawner;
 use embassy_futures::select::{Either, select};
 use embassy_net::{Config, DhcpConfig, Stack, StackResources};
-use embassy_net_wiznet::chip::W5500;
 use embassy_net_wiznet::{Device, InitError, Runner, State};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Instant, Ticker};
 use embedded_hal_async::spi::{Operation, SpiDevice};
 use esp_hal::gpio::{Input, Output};
-use eveningstar_board::{Ethernet, EthernetSpi};
+use eveningstar_board::{ETHERNET_MAC_READ, Ethernet, EthernetChip, EthernetSpi};
 use static_cell::{ConstStaticCell, StaticCell};
 
 use crate::device_id::NAME_MAX_LEN;
 use crate::reboot;
 use crate::shared_spi::SharedSpi;
 use crate::watchdog::WatchdogHandle;
-use crate::wd::{LinkMonitor, W5500Probe};
+use crate::wd::{EthernetProbe, LinkMonitor};
 
 /// Packet queue depth in each direction; each slot holds one 1514-byte frame.
 const QUEUE_LEN: usize = 4;
@@ -26,7 +26,7 @@ const QUEUE_LEN: usize = 4;
 /// Sockets in the IP stack. DHCP takes one; the rest are for the application.
 const SOCKETS: usize = 6;
 
-/// How often the W5500 probe reads the chip's version register.
+/// How often the probe reads the controller's MAC address back.
 pub(crate) const PROBE_INTERVAL: Duration = Duration::from_secs(30);
 
 /// How often the link monitor checks the Ethernet link.
@@ -36,19 +36,13 @@ pub(crate) const LINK_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 /// monitor requests a reboot.
 const LINK_DOWN_REBOOT: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// W5500 SPI frame reading VERSIONR: address 0x0039, common register block, read.
-const VERSIONR_READ: [u8; 3] = [0x00, 0x39, 0x00];
-
-/// The fixed value of the W5500's VERSIONR register.
-const W5500_VERSION: u8 = 0x04;
-
-type W5500Spi = SharedSpi<EthernetSpi>;
+type ControllerSpi = SharedSpi<EthernetSpi>;
 type SpiError = <EthernetSpi as embedded_hal_async::spi::ErrorType>::Error;
-type WiznetRunner = Runner<'static, W5500, W5500Spi, Input<'static>, Output<'static>>;
+type WiznetRunner = Runner<'static, EthernetChip, ControllerSpi, Input<'static>, Output<'static>>;
 
 #[derive(Debug, defmt::Format)]
 pub(crate) enum EthernetError {
-    /// The W5500 failed to initialise.
+    /// The Ethernet controller failed to initialise.
     Init(InitError<SpiError>),
 }
 
@@ -68,30 +62,31 @@ async fn net_task(mut runner: embassy_net::Runner<'static, Device<'static>>) -> 
     runner.run().await
 }
 
-/// Reads the W5500's version register on every tick and feeds the watchdog
-/// only when it reads back correctly.
+/// Reads the controller's MAC address back on every tick and feeds the
+/// watchdog only when it matches `mac`, the address the driver programmed.
 ///
 /// A transaction that never completes (the SPI bus or device lock never
-/// released, or a hung transfer) or a wrong value (the chip not responding
-/// properly) stops the feeds. The state of the Ethernet link plays no part.
+/// released, or a hung transfer) or a different address (the chip not
+/// responding properly, or reset and so no longer configured) stops the feeds.
+/// The state of the Ethernet link plays no part.
 #[embassy_executor::task]
-async fn w5500_probe(mut spi: W5500Spi, wd: WatchdogHandle<W5500Probe>) -> ! {
+async fn probe(mut spi: ControllerSpi, mac: [u8; 6], wd: WatchdogHandle<EthernetProbe>) -> ! {
     let mut ticker = Ticker::every(PROBE_INTERVAL);
     loop {
-        let mut version = [0u8];
+        let mut read = [0u8; 6];
         let result = spi
             .transaction(&mut [
-                Operation::Write(&VERSIONR_READ),
-                Operation::Read(&mut version),
+                Operation::Write(&ETHERNET_MAC_READ),
+                Operation::Read(&mut read),
             ])
             .await;
         match result {
-            Ok(()) if version[0] == W5500_VERSION => wd.feed(),
+            Ok(()) if read == mac => wd.feed(),
             Ok(()) => error!(
-                "W5500 VERSIONR reads {=u8:#x}, expected {=u8:#x}",
-                version[0], W5500_VERSION
+                "Ethernet controller MAC reads {=[u8]:02x}, expected {=[u8]:02x}",
+                read, mac
             ),
-            Err(err) => error!("W5500 probe failed: {}", err),
+            Err(err) => error!("Ethernet controller probe failed: {}", err),
         }
         ticker.next().await;
     }
@@ -100,7 +95,7 @@ async fn w5500_probe(mut spi: W5500Spi, wd: WatchdogHandle<W5500Probe>) -> ! {
 /// Requests a graceful reboot once the Ethernet link has been down, or up without
 /// an IPv4 address (static or from DHCP), for [`LINK_DOWN_REBOOT`].
 ///
-/// With no stack, because the W5500 never initialised, the link counts as down
+/// With no stack, because the controller never initialised, the link counts as down
 /// from boot, so the reboot also retries initialisation.
 #[embassy_executor::task]
 async fn link_monitor(stack: Option<Stack<'static>>, wd: WatchdogHandle<LinkMonitor>) -> ! {
@@ -148,10 +143,10 @@ async fn net_status(stack: Stack<'static>) -> ! {
     }
 }
 
-/// Brings up the W5500 and the IP stack, and spawns the tasks that drive,
+/// Brings up the Ethernet controller and the IP stack, and spawns the tasks that drive,
 /// probe and monitor them.
 ///
-/// If the W5500 fails to initialise, the probe's watchdog is retired, the link
+/// If the controller fails to initialise, the probe's watchdog is retired, the link
 /// monitor runs with no link, and the error is returned.
 #[allow(
     clippy::large_stack_frames,
@@ -162,7 +157,7 @@ pub(crate) async fn start(
     ethernet: Ethernet,
     hostname: heapless::String<NAME_MAX_LEN>,
     seed: u64,
-    probe_wd: WatchdogHandle<W5500Probe>,
+    probe_wd: WatchdogHandle<EthernetProbe>,
     link_wd: WatchdogHandle<LinkMonitor>,
 ) -> Result<Stack<'static>, EthernetError> {
     // Built at compile time, so the packet buffers never pass through the stack.
@@ -174,7 +169,7 @@ pub(crate) async fn start(
     let mut dhcp = DhcpConfig::default();
     dhcp.hostname = Some(hostname);
 
-    let result = embassy_net_wiznet::new::<QUEUE_LEN, QUEUE_LEN, W5500, _, _, _>(
+    let result = embassy_net_wiznet::new::<QUEUE_LEN, QUEUE_LEN, EthernetChip, _, _, _>(
         ethernet.mac,
         STATE.take(),
         SharedSpi::new(spi),
@@ -191,7 +186,11 @@ pub(crate) async fn start(
         }
     };
     spawner.spawn(defmt::unwrap!(wiznet_task(runner)));
-    spawner.spawn(defmt::unwrap!(w5500_probe(SharedSpi::new(spi), probe_wd)));
+    spawner.spawn(defmt::unwrap!(probe(
+        SharedSpi::new(spi),
+        ethernet.mac,
+        probe_wd
+    )));
 
     let (stack, runner) = embassy_net::new(
         device,

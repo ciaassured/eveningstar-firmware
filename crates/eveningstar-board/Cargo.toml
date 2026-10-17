@@ -16,6 +16,7 @@ v2 = []
 
 [dependencies]
 embassy-embedded-hal.workspace = true
+embassy-net-wiznet.workspace = true
 embassy-sync.workspace = true
 embedded-hal.workspace = true
 esp-hal.workspace = true
