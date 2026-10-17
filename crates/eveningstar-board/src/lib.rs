@@ -106,6 +106,7 @@ impl CfgButton {
         }
     }
 
+    #[must_use]
     pub fn is_pressed(&self) -> bool {
         self.pin.level() == self.pressed_level
     }
