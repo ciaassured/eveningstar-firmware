@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 
+mod device_id;
 mod watchdog;
 
 use defmt::{error, info};
@@ -56,6 +57,8 @@ async fn main(spawner: Spawner) {
     spawner.spawn(defmt::unwrap!(wd::supervise(wd_supervisor)));
 
     info!("reset reason: {}", defmt::Debug2Format(&esp_hal::system::reset_reason()));
+    let device_id = device_id::DeviceId::read();
+    info!("device {} (serial {})", device_id.name().as_str(), device_id.serial().as_str());
 
     spawner.spawn(defmt::unwrap!(blink(
         board.status_led,
