@@ -24,6 +24,7 @@ impl Board {
             status_led: StatusLed::new(peripherals.GPIO20.into(), Level::High),
             cfg_button: CfgButton::new(peripherals.GPIO21.into(), Level::Low, esp_hal::gpio::Pull::Up),
             timg0: peripherals.TIMG0,
+            rtc_timer: peripherals.RTC_TIMER,
             from_cpu_intr0: peripherals.FROM_CPU_INTR0,
         }
     }
