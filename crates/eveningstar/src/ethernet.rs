@@ -116,7 +116,7 @@ async fn link_monitor(
                 "Ethernet link down or without an address for {} s, requesting a reboot",
                 LINK_DOWN_REBOOT.as_secs()
             );
-            reboot.request(Reason::LinkDown);
+            reboot.graceful(Reason::LinkDown);
         }
         ticker.next().await;
     }

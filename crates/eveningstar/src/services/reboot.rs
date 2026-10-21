@@ -3,12 +3,14 @@
 //! Faults (a panic, a missed task watchdog deadline, a hung executor) reset the
 //! chip at once, because the system's state can't be trusted. Other causes,
 //! such as the Ethernet link staying down or a fresh OTA update being ready,
-//! request a reboot instead, with a [`Reason`] and a [`Mode`].
+//! request a reboot instead, with a [`Reason`].
 //!
 //! Requesting a reboot takes a handle. [`start`] spawns the reboot task and
-//! returns the one [`Reboot`], which requests either mode. The narrower
-//! handles derive from it: a [`GracefulReboot`] only requests graceful
-//! reboots, and a [`RebootHolder`] only holds them off.
+//! returns the one [`Reboot`], which requests graceful and immediate reboots.
+//! The narrower handles derive from it: a [`GracefulReboot`] only requests
+//! graceful reboots, and a [`RebootHolder`] only holds them off. A narrower
+//! handle's methods match the [`Reboot`] methods they keep, so the handle
+//! types are interchangeable wherever only those methods are used.
 //!
 //! A graceful reboot waits until no [`RebootHold`] is alive, so a task can hold
 //! it off while it has work it must finish, such as flushing logged data. The
@@ -53,13 +55,10 @@ pub(crate) enum Reason {
     LinkDown,
 }
 
-/// How a requested reboot treats work in progress.
+/// The kind of a reboot, for the log.
 #[derive(Clone, Copy, Debug, defmt::Format)]
-pub(crate) enum Mode {
-    /// Waits, in the reboot task, until no [`RebootHold`] is alive or
-    /// [`DEADLINE`] has passed.
+enum Mode {
     Graceful,
-    /// Resets the chip during the request, ignoring holds.
     #[expect(dead_code, reason = "nothing reboots immediately yet")]
     Immediate,
 }
@@ -84,20 +83,24 @@ pub(crate) fn start(spawner: Spawner, wd: WatchdogHandle<wd::Reboot>) -> Reboot 
 pub(crate) struct Reboot(());
 
 impl Reboot {
-    /// Requests a reboot.
-    ///
-    /// A graceful request returns, and the reboot task reboots later; only the
-    /// first graceful request takes effect. An immediate request does not
-    /// return, even while a graceful reboot is waiting for holds.
-    #[expect(
-        dead_code,
-        reason = "nothing requests reboots with the full handle yet"
-    )]
-    pub(crate) fn request(self, reason: Reason, mode: Mode) {
-        match mode {
-            Mode::Graceful => request_graceful(reason),
-            Mode::Immediate => reset(reason, mode),
-        }
+    /// Requests a graceful reboot: the reboot task reboots once no hold is
+    /// alive or [`DEADLINE`] has passed. Only the first request takes effect.
+    #[expect(dead_code, reason = "nothing reboots with the full handle yet")]
+    pub(crate) fn graceful(self, reason: Reason) {
+        request_graceful(reason);
+    }
+
+    /// Reboots now, ignoring holds, even while a graceful reboot is waiting
+    /// for them.
+    #[expect(dead_code, reason = "nothing reboots immediately yet")]
+    pub(crate) fn immediate(self, reason: Reason) -> ! {
+        reset(reason, Mode::Immediate)
+    }
+
+    /// Whether a graceful reboot has been requested.
+    #[expect(dead_code, reason = "nothing reboots with the full handle yet")]
+    pub(crate) fn is_pending(self) -> bool {
+        is_pending()
     }
 
     /// A handle that can only request graceful reboots.
@@ -117,15 +120,14 @@ impl Reboot {
 pub(crate) struct GracefulReboot(());
 
 impl GracefulReboot {
-    /// Requests a graceful reboot: the reboot task reboots once no hold is
-    /// alive or [`DEADLINE`] has passed. Only the first request takes effect.
-    pub(crate) fn request(self, reason: Reason) {
+    /// See [`Reboot::graceful`].
+    pub(crate) fn graceful(self, reason: Reason) {
         request_graceful(reason);
     }
 
-    /// Whether a graceful reboot has been requested.
+    /// See [`Reboot::is_pending`].
     pub(crate) fn is_pending(self) -> bool {
-        PENDING.load(Ordering::Acquire)
+        is_pending()
     }
 }
 
@@ -160,6 +162,10 @@ fn request_graceful(reason: Reason) {
     if !PENDING.swap(true, Ordering::AcqRel) {
         REQUEST.signal(reason);
     }
+}
+
+fn is_pending() -> bool {
+    PENDING.load(Ordering::Acquire)
 }
 
 /// Waits for a graceful reboot request, then for every hold to be released or
