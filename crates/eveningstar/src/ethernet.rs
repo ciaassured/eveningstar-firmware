@@ -112,7 +112,7 @@ async fn link_monitor(stack: Option<Stack<'static>>, wd: WatchdogHandle<LinkMoni
                 "Ethernet link down or without an address for {} s, requesting a reboot",
                 LINK_DOWN_REBOOT.as_secs()
             );
-            reboot::request(reboot::Reason::LinkDown);
+            reboot::request(reboot::Reason::LinkDown, reboot::Mode::Graceful);
         }
         ticker.next().await;
     }
