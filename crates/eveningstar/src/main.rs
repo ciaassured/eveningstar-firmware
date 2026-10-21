@@ -3,7 +3,7 @@
 
 mod ethernet;
 mod identity;
-mod reboot;
+mod services;
 mod shared_spi;
 mod watchdog;
 
@@ -17,6 +17,7 @@ use esp_hal::timer::timg::TimerGroup;
 use eveningstar_api::DeviceId;
 use eveningstar_board::{Board, CfgButton, StatusLed};
 
+use crate::services::reboot;
 use crate::watchdog::WatchdogHandle;
 use crate::wd::Blinky;
 
@@ -53,7 +54,7 @@ mod wd {
         ethernet: EthernetProbe = Duration::from_ticks(crate::ethernet::PROBE_INTERVAL.as_ticks() * 3),
         // Tolerates two missed checks.
         link: LinkMonitor = Duration::from_ticks(crate::ethernet::LINK_CHECK_INTERVAL.as_ticks() * 3),
-        reboot: Reboot = crate::reboot::WATCHDOG_TIMEOUT,
+        reboot: Reboot = crate::services::reboot::WATCHDOG_TIMEOUT,
     }
 }
 
