@@ -14,7 +14,7 @@ use esp_hal::gpio::{Input, Output};
 use eveningstar_board::{ETHERNET_MAC_READ, Ethernet, EthernetChip, EthernetSpi};
 use static_cell::{ConstStaticCell, StaticCell};
 
-use crate::device_id::NAME_MAX_LEN;
+use crate::identity::NAME_MAX_LEN;
 use crate::reboot;
 use crate::shared_spi::SharedSpi;
 use crate::watchdog::WatchdogHandle;
