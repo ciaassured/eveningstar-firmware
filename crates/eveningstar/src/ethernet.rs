@@ -24,7 +24,7 @@ use crate::wd::{EthernetProbe, LinkMonitor};
 const QUEUE_LEN: usize = 4;
 
 /// Sockets in the IP stack. DHCP takes one; the rest are for the application.
-const SOCKETS: usize = 6;
+const SOCKETS: usize = 8;
 
 /// How often the probe reads the controller's MAC address back.
 pub(crate) const PROBE_INTERVAL: Duration = Duration::from_secs(30);
