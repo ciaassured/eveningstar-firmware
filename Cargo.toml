@@ -29,8 +29,9 @@ esp-bootloader-esp-idf = { version = "0.6.0", features = ["defmt", "esp32c6"] }
 esp-hal                = { version = "~1.2.2", features = ["defmt", "esp32c6", "unstable"] }
 esp-rtos               = { version = "0.4.0", features = ["defmt", "embassy", "esp32c6"] }
 heapless               = "0.9.3"
+picoserve              = { version = "0.20.1", features = ["defmt", "embassy", "json"] }
 rtt-target             = { version = "0.6.2", features = ["defmt"] }
-serde                  = { version = "1.0.229", default-features = false }
+serde                  = { version = "1.0.229", default-features = false, features = ["derive"] }
 serde_json             = "1.0.154"
 static_cell            = "2.1.1"
 

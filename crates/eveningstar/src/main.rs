@@ -1,7 +1,11 @@
 #![no_std]
 #![no_main]
+// The HTTP workers' futures nest picoserve's router types deeper than the
+// default limit of 128 allows when computing their layout.
+#![recursion_limit = "256"]
 
 mod ethernet;
+mod http;
 mod identity;
 mod services;
 mod shared_spi;
@@ -16,8 +20,10 @@ use esp_hal::rng::{Trng, TrngSource};
 use esp_hal::timer::timg::TimerGroup;
 use eveningstar_api::DeviceId;
 use eveningstar_board::{Board, CfgButton, StatusLed};
+use static_cell::StaticCell;
 
 use crate::services::reboot;
+use crate::services::system::System;
 use crate::watchdog::WatchdogHandle;
 use crate::wd::Blinky;
 
@@ -73,6 +79,8 @@ async fn main(spawner: Spawner) {
     // generator version: 1.4.0
     // generator parameters: -o esp32c6 -o esp32c6-wroom-1 -o stack-smashing-protection -o probe-rs -o defmt -o ci -o claude -o vscode
 
+    static SYSTEM: StaticCell<System> = StaticCell::new();
+
     rtt_target::rtt_init_defmt!();
 
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
@@ -104,8 +112,10 @@ async fn main(spawner: Spawner) {
         wd_handles.blinky
     )));
 
+    let system = SYSTEM.init(System::new(device_id));
+
     let seed = random_seed(board.rng.reborrow(), board.adc1.reborrow());
-    if let Err(err) = ethernet::start(
+    match ethernet::start(
         spawner,
         board.ethernet,
         device_name,
@@ -116,7 +126,8 @@ async fn main(spawner: Spawner) {
     )
     .await
     {
-        error!("Ethernet unavailable: {}", err);
+        Ok(stack) => http::start(spawner, stack, http::AppState { system }),
+        Err(err) => error!("Ethernet unavailable: {}", err),
     }
 }
 

@@ -5,5 +5,6 @@
 #![cfg_attr(not(test), no_std)]
 
 mod device_id;
+pub mod v1;
 
 pub use device_id::{DEVICE_ID_LEN, DeviceId, ParseDeviceIdError};
