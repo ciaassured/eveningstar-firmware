@@ -1,1 +1,8 @@
 stack-size-threshold = 1024
+
+# Resetting the chip is reserved for the reboot service, the task watchdog
+# supervisor and the panic handler, which each expect this lint.
+disallowed-methods = [
+    { path = "esp_hal::system::software_reset", reason = "reboots go through the reboot service" },
+    { path = "esp_hal::system::software_reset_cpu", reason = "reboots go through the reboot service" },
+]

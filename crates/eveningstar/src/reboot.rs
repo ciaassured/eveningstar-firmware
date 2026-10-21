@@ -107,5 +107,9 @@ pub(crate) async fn reboot_task(wd: WatchdogHandle<Reboot>) -> ! {
             reason
         );
     }
-    esp_hal::system::software_reset()
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the reboot task performs requested reboots"
+    )]
+    esp_hal::system::software_reset();
 }

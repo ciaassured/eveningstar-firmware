@@ -198,6 +198,10 @@ impl<const N: usize> Supervisor<N> {
                 // Check the timeout hasn't elapsed.
                 if !wd.retired && now.duration_since(wd.last_fed) > wd.timeout {
                     error!("Task watchdog `{}` missed its deadline", wd.name);
+                    #[expect(
+                        clippy::disallowed_methods,
+                        reason = "a missed deadline resets at once, as the task may be hung"
+                    )]
                     esp_hal::system::software_reset();
                 }
             }
