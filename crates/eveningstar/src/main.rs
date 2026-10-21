@@ -1,8 +1,8 @@
 #![no_std]
 #![no_main]
 
-mod device_id;
 mod ethernet;
+mod identity;
 mod reboot;
 mod shared_spi;
 mod watchdog;
@@ -14,6 +14,7 @@ use esp_hal::clock::CpuClock;
 use esp_hal::peripherals::{ADC1, RNG};
 use esp_hal::rng::{Trng, TrngSource};
 use esp_hal::timer::timg::TimerGroup;
+use eveningstar_api::DeviceId;
 use eveningstar_board::{Board, CfgButton, StatusLed};
 
 use crate::watchdog::WatchdogHandle;
@@ -75,12 +76,12 @@ async fn main(spawner: Spawner) {
         "reset reason: {}",
         defmt::Debug2Format(&esp_hal::system::reset_reason())
     );
-    let device_id = device_id::DeviceId::from_base_mac(board.base_mac);
-    let device_name = device_id.name();
+    let device_id = DeviceId::from_mac(board.base_mac);
+    let device_name = identity::name(device_id);
     info!(
-        "device {} (serial {})",
+        "device {} (ID {})",
         device_name.as_str(),
-        device_id.serial().as_str()
+        device_id.encode().as_str()
     );
 
     let timg0 = TimerGroup::new(board.timg0);

@@ -21,6 +21,7 @@ embassy-sync.workspace = true
 embassy-net.workspace = true
 embassy-net-wiznet.workspace = true
 embedded-hal-async.workspace = true
+eveningstar-api.workspace = true
 eveningstar-board = { workspace = true, features = ["v2"] }
 esp-bootloader-esp-idf.workspace = true
 esp-hal.workspace = true
