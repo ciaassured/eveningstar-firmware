@@ -53,13 +53,14 @@ const FEED_INTERVAL: Duration = Duration::from_secs(30);
 pub(crate) enum Reason {
     /// The Ethernet link was down, or had no IPv4 address, for too long.
     LinkDown,
+    /// A client requested it through the API.
+    Api,
 }
 
 /// The kind of a reboot, for the log.
 #[derive(Clone, Copy, Debug, defmt::Format)]
 enum Mode {
     Graceful,
-    #[expect(dead_code, reason = "nothing reboots immediately yet")]
     Immediate,
 }
 
@@ -85,20 +86,21 @@ pub(crate) struct Reboot(());
 impl Reboot {
     /// Requests a graceful reboot: the reboot task reboots once no hold is
     /// alive or [`DEADLINE`] has passed. Only the first request takes effect.
-    #[expect(dead_code, reason = "nothing reboots with the full handle yet")]
     pub(crate) fn graceful(self, reason: Reason) {
         request_graceful(reason);
     }
 
     /// Reboots now, ignoring holds, even while a graceful reboot is waiting
     /// for them.
-    #[expect(dead_code, reason = "nothing reboots immediately yet")]
     pub(crate) fn immediate(self, reason: Reason) -> ! {
         reset(reason, Mode::Immediate)
     }
 
     /// Whether a graceful reboot has been requested.
-    #[expect(dead_code, reason = "nothing reboots with the full handle yet")]
+    #[expect(
+        dead_code,
+        reason = "nothing checks for a pending reboot with this handle yet"
+    )]
     pub(crate) fn is_pending(self) -> bool {
         is_pending()
     }
@@ -109,7 +111,6 @@ impl Reboot {
     }
 
     /// A handle that can only hold off graceful reboots.
-    #[expect(dead_code, reason = "no task holds off reboots yet")]
     pub(crate) fn holder(self) -> RebootHolder {
         RebootHolder(())
     }
@@ -137,7 +138,6 @@ pub(crate) struct RebootHolder(());
 
 impl RebootHolder {
     /// Holds off a graceful reboot until the returned guard is dropped.
-    #[expect(dead_code, reason = "no task holds off reboots yet")]
     pub(crate) fn hold(self) -> RebootHold {
         HOLDS.fetch_add(1, Ordering::AcqRel);
         RebootHold(())
@@ -147,7 +147,6 @@ impl RebootHolder {
 /// Holds off a graceful reboot while alive; see [`RebootHolder::hold`].
 #[must_use = "the reboot is only held off while the guard is alive"]
 #[derive(Debug)]
-#[expect(dead_code, reason = "no task holds off reboots yet")]
 pub(crate) struct RebootHold(());
 
 impl Drop for RebootHold {
