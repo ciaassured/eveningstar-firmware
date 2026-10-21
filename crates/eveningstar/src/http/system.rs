@@ -1,16 +1,18 @@
 //! `/system`: the device's identity and uptime, and reboots.
 
+use embassy_time::Instant;
+
 use eveningstar_api::v1;
 use picoserve::ResponseSent;
 use picoserve::Router;
 use picoserve::extract::State;
 use picoserve::io::Read;
 use picoserve::response::{Connection, IntoResponse, Json, NoContent, ResponseWriter, StatusCode};
-use picoserve::routing::{PathRouter, get, post};
+use picoserve::routing::{PathRouter, get};
 
 use super::AppState;
 use super::error::ApiJson;
-use crate::services::reboot::{Reason, Reboot};
+use crate::services::reboot::{self, Holder, Reason, Reboot};
 use crate::services::system::System;
 
 /// Adds the `/system` endpoints to `routes`.
@@ -19,7 +21,7 @@ pub(super) fn routes(
 ) -> Router<impl PathRouter<AppState>, AppState> {
     routes
         .route("/system", get(get_system))
-        .route("/system/reboot", post(post_reboot))
+        .route("/system/reboot", get(get_reboot).post(post_reboot))
 }
 
 async fn get_system(State(system): State<&'static System>) -> Json<v1::System> {
@@ -28,6 +30,36 @@ async fn get_system(State(system): State<&'static System>) -> Json<v1::System> {
         id: system.id(),
         uptime_s: System::uptime().as_secs(),
     })
+}
+
+// Every holder fits in a status.
+const _: () = assert!(reboot::HOLDERS <= v1::REBOOT_HOLDERS_MAX);
+
+async fn get_reboot(State(reboot): State<Reboot>) -> Json<v1::RebootStatus> {
+    let status = reboot.status();
+    let now = Instant::now();
+    Json(v1::RebootStatus {
+        pending: status.pending.map(|pending| v1::PendingReboot {
+            reason: reason(pending.reason),
+            remaining_s: pending.deadline.saturating_duration_since(now).as_secs(),
+        }),
+        holds: status
+            .holds()
+            .map(|(holder, count)| v1::RebootHold {
+                holder: match holder {
+                    Holder::Http => v1::RebootHolder::Http,
+                },
+                count,
+            })
+            .collect(),
+    })
+}
+
+fn reason(reason: Reason) -> v1::RebootReason {
+    match reason {
+        Reason::LinkDown => v1::RebootReason::LinkDown,
+        Reason::Api => v1::RebootReason::Api,
+    }
 }
 
 async fn post_reboot(
@@ -64,7 +96,7 @@ impl IntoResponse for RebootAccepted {
             v1::RebootMode::Graceful => {
                 // With no other hold, the reboot task would reset the chip
                 // before the response is written.
-                let _hold = self.reboot.holder().hold();
+                let _hold = self.reboot.holder(Holder::Http).hold();
                 self.reboot.graceful(Reason::Api);
                 accepted.write_to(connection, response_writer).await
             }

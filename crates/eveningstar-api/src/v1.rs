@@ -39,6 +39,57 @@ pub enum RebootMode {
     Immediate,
 }
 
+/// Most holders a [`RebootStatus`] can list.
+pub const REBOOT_HOLDERS_MAX: usize = 16;
+
+/// `GET /system/reboot`: the pending graceful reboot, if any, and what holds
+/// off graceful reboots.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RebootStatus {
+    pub pending: Option<PendingReboot>,
+    /// The holders a graceful reboot waits for, each with live holds.
+    pub holds: heapless::Vec<RebootHold, REBOOT_HOLDERS_MAX>,
+}
+
+/// A requested graceful reboot, waiting for holds to be released.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingReboot {
+    pub reason: RebootReason,
+    /// Seconds until the device reboots even if holds remain.
+    pub remaining_s: u64,
+}
+
+/// Why a reboot was requested.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RebootReason {
+    /// The Ethernet link was down, or had no IPv4 address, for too long.
+    LinkDown,
+    /// A client requested it through the API.
+    Api,
+    /// A reason this version of the crate does not know.
+    #[serde(other)]
+    Unknown,
+}
+
+/// Live holds of one holder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RebootHold {
+    pub holder: RebootHolder,
+    pub count: u16,
+}
+
+/// What holds off a graceful reboot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RebootHolder {
+    /// The HTTP server, while it answers a reboot request.
+    Http,
+    /// A holder this version of the crate does not know.
+    #[serde(other)]
+    Unknown,
+}
+
 /// Body of every error response.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Error {
@@ -74,6 +125,44 @@ mod tests {
         assert_eq!(request.mode, RebootMode::Graceful);
         assert!(serde_json::from_str::<RebootRequest>(r#"{"mode":"later"}"#).is_err());
         assert!(serde_json::from_str::<RebootRequest>("{}").is_err());
+    }
+
+    #[test]
+    fn reboot_status_round_trips() {
+        let mut holds = heapless::Vec::new();
+        holds
+            .push(RebootHold {
+                holder: RebootHolder::Http,
+                count: 1,
+            })
+            .unwrap();
+        let status = RebootStatus {
+            pending: Some(PendingReboot {
+                reason: RebootReason::LinkDown,
+                remaining_s: 287,
+            }),
+            holds,
+        };
+        let json = serde_json::to_string(&status).unwrap();
+        assert_eq!(
+            json,
+            r#"{"pending":{"reason":"link_down","remaining_s":287},"holds":[{"holder":"http","count":1}]}"#
+        );
+        assert_eq!(serde_json::from_str::<RebootStatus>(&json).unwrap(), status);
+
+        let idle: RebootStatus = serde_json::from_str(r#"{"pending":null,"holds":[]}"#).unwrap();
+        assert_eq!(idle.pending, None);
+        assert!(idle.holds.is_empty());
+    }
+
+    #[test]
+    fn unknown_reboot_reasons_and_holders_parse() {
+        let hold: RebootHold =
+            serde_json::from_str(r#"{"holder":"config_commit","count":2}"#).unwrap();
+        assert_eq!(hold.holder, RebootHolder::Unknown);
+        let pending: PendingReboot =
+            serde_json::from_str(r#"{"reason":"ota_update","remaining_s":1}"#).unwrap();
+        assert_eq!(pending.reason, RebootReason::Unknown);
     }
 
     #[test]
