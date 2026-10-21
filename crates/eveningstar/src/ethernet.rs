@@ -15,7 +15,7 @@ use eveningstar_board::{ETHERNET_MAC_READ, Ethernet, EthernetChip, EthernetSpi};
 use static_cell::{ConstStaticCell, StaticCell};
 
 use crate::identity::NAME_MAX_LEN;
-use crate::services::reboot;
+use crate::services::reboot::{GracefulReboot, Reason};
 use crate::shared_spi::SharedSpi;
 use crate::watchdog::WatchdogHandle;
 use crate::wd::{EthernetProbe, LinkMonitor};
@@ -98,7 +98,11 @@ async fn probe(mut spi: ControllerSpi, mac: [u8; 6], wd: WatchdogHandle<Ethernet
 /// With no stack, because the controller never initialised, the link counts as down
 /// from boot, so the reboot also retries initialisation.
 #[embassy_executor::task]
-async fn link_monitor(stack: Option<Stack<'static>>, wd: WatchdogHandle<LinkMonitor>) -> ! {
+async fn link_monitor(
+    stack: Option<Stack<'static>>,
+    reboot: GracefulReboot,
+    wd: WatchdogHandle<LinkMonitor>,
+) -> ! {
     let mut down_since: Option<Instant> = None;
     let mut ticker = Ticker::every(LINK_CHECK_INTERVAL);
     loop {
@@ -106,13 +110,13 @@ async fn link_monitor(stack: Option<Stack<'static>>, wd: WatchdogHandle<LinkMoni
         if stack.is_some_and(|stack| stack.is_link_up() && stack.is_config_up()) {
             down_since = None;
         } else if down_since.get_or_insert_with(Instant::now).elapsed() >= LINK_DOWN_REBOOT
-            && !reboot::is_pending()
+            && !reboot.is_pending()
         {
             warn!(
                 "Ethernet link down or without an address for {} s, requesting a reboot",
                 LINK_DOWN_REBOOT.as_secs()
             );
-            reboot::request(reboot::Reason::LinkDown, reboot::Mode::Graceful);
+            reboot.request(Reason::LinkDown);
         }
         ticker.next().await;
     }
@@ -157,6 +161,7 @@ pub(crate) async fn start(
     ethernet: Ethernet,
     hostname: heapless::String<NAME_MAX_LEN>,
     seed: u64,
+    reboot: GracefulReboot,
     probe_wd: WatchdogHandle<EthernetProbe>,
     link_wd: WatchdogHandle<LinkMonitor>,
 ) -> Result<Stack<'static>, EthernetError> {
@@ -181,7 +186,7 @@ pub(crate) async fn start(
         Ok(parts) => parts,
         Err(err) => {
             probe_wd.retire();
-            spawner.spawn(defmt::unwrap!(link_monitor(None, link_wd)));
+            spawner.spawn(defmt::unwrap!(link_monitor(None, reboot, link_wd)));
             return Err(err.into());
         }
     };
@@ -199,7 +204,7 @@ pub(crate) async fn start(
         seed,
     );
     spawner.spawn(defmt::unwrap!(net_task(runner)));
-    spawner.spawn(defmt::unwrap!(link_monitor(Some(stack), link_wd)));
+    spawner.spawn(defmt::unwrap!(link_monitor(Some(stack), reboot, link_wd)));
     spawner.spawn(defmt::unwrap!(net_status(stack)));
 
     Ok(stack)
