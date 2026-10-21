@@ -21,6 +21,10 @@ use crate::watchdog::WatchdogHandle;
 use crate::wd::Blinky;
 
 #[panic_handler]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "a panic resets at once, as the system's state can't be trusted"
+)]
 fn panic(panic_info: &core::panic::PanicInfo) -> ! {
     error!("{}", panic_info);
     // Gives the log time to reach the host. A spin rather than a timer, because
