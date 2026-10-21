@@ -27,7 +27,9 @@ esp-bootloader-esp-idf.workspace = true
 esp-hal.workspace = true
 esp-rtos.workspace = true
 heapless.workspace = true
+picoserve.workspace = true
 rtt-target.workspace = true
+serde.workspace = true
 static_cell.workspace = true
 
 [lints]

@@ -2,3 +2,4 @@
 //! reached over.
 
 pub(crate) mod reboot;
+pub(crate) mod system;
