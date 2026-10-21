@@ -6,7 +6,6 @@
 
 mod ethernet;
 mod http;
-mod identity;
 mod services;
 mod shared_spi;
 mod watchdog;
@@ -89,12 +88,11 @@ async fn main(spawner: Spawner) {
         "reset reason: {}",
         defmt::Debug2Format(&esp_hal::system::reset_reason())
     );
-    let device_id = DeviceId::from_mac(board.base_mac);
-    let device_name = identity::name(device_id);
+    let system = SYSTEM.init(System::new(DeviceId::from_mac(board.base_mac)));
     info!(
         "device {} (ID {})",
-        device_name.as_str(),
-        device_id.encode().as_str()
+        system.name().as_str(),
+        system.id().encode().as_str()
     );
 
     let timg0 = TimerGroup::new(board.timg0);
@@ -112,13 +110,11 @@ async fn main(spawner: Spawner) {
         wd_handles.blinky
     )));
 
-    let system = SYSTEM.init(System::new(device_id));
-
     let seed = random_seed(board.rng.reborrow(), board.adc1.reborrow());
     match ethernet::start(
         spawner,
         board.ethernet,
-        device_name,
+        system.name(),
         seed,
         reboot.graceful_only(),
         wd_handles.ethernet,

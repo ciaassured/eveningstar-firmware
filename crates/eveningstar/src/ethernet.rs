@@ -14,8 +14,8 @@ use esp_hal::gpio::{Input, Output};
 use eveningstar_board::{ETHERNET_MAC_READ, Ethernet, EthernetChip, EthernetSpi};
 use static_cell::{ConstStaticCell, StaticCell};
 
-use crate::identity::NAME_MAX_LEN;
 use crate::services::reboot::{GracefulReboot, Reason};
+use crate::services::system::NAME_MAX_LEN;
 use crate::shared_spi::SharedSpi;
 use crate::watchdog::WatchdogHandle;
 use crate::wd::{EthernetProbe, LinkMonitor};
