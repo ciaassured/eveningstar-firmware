@@ -18,20 +18,24 @@
 //! task itself stops, its task watchdog resets the chip after
 //! [`WATCHDOG_TIMEOUT`]. An immediate reboot ignores holds and resets the chip
 //! during the request.
+//!
+//! Each hold is taken for a [`Holder`], so the reboot [`Status`] names what a
+//! graceful reboot is waiting for.
 
 #![expect(
     clippy::unused_self,
     reason = "a handle's methods take it as proof of permission, not for data"
 )]
 
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::cell::RefCell;
 
 use defmt::{info, warn};
 use embassy_executor::Spawner;
 use embassy_futures::select::{Either, select};
+use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
-use embassy_time::{Duration, Timer, with_timeout};
+use embassy_time::{Duration, Instant, Timer, with_deadline};
 
 use crate::watchdog::WatchdogHandle;
 use crate::wd;
@@ -57,6 +61,21 @@ pub(crate) enum Reason {
     Api,
 }
 
+/// What holds off a graceful reboot, as named in the [`Status`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, defmt::Format)]
+pub(crate) enum Holder {
+    /// The HTTP server, while it answers a reboot request.
+    Http,
+}
+
+impl Holder {
+    /// Every holder, in the order of their values.
+    const ALL: [Self; 1] = [Self::Http];
+}
+
+/// Number of [`Holder`]s.
+pub(crate) const HOLDERS: usize = Holder::ALL.len();
+
 /// The kind of a reboot, for the log.
 #[derive(Clone, Copy, Debug, defmt::Format)]
 enum Mode {
@@ -64,10 +83,60 @@ enum Mode {
     Immediate,
 }
 
-static REQUEST: Signal<CriticalSectionRawMutex, Reason> = Signal::new();
-static PENDING: AtomicBool = AtomicBool::new(false);
-static HOLDS: AtomicUsize = AtomicUsize::new(0);
+/// A requested graceful reboot.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Pending {
+    pub(crate) reason: Reason,
+    /// When the chip resets, even if holds remain.
+    pub(crate) deadline: Instant,
+}
+
+/// The reboot service's state, shared by the handles and the reboot task.
+struct State {
+    /// The requested graceful reboot. Once set, it stays set until the reset.
+    pending: Option<Pending>,
+    /// Live holds per holder, indexed by the holder's value.
+    holds: [u16; HOLDERS],
+}
+
+impl State {
+    fn is_held(&self) -> bool {
+        self.holds.iter().any(|&count| count > 0)
+    }
+}
+
+static STATE: Mutex<CriticalSectionRawMutex, RefCell<State>> = Mutex::new(RefCell::new(State {
+    pending: None,
+    holds: [0; HOLDERS],
+}));
+
+/// Signalled once, when a graceful reboot is first requested.
+static REQUESTED: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+/// Signalled whenever a hold is released.
 static RELEASED: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+fn with_state<T>(f: impl FnOnce(&mut State) -> T) -> T {
+    STATE.lock(|state| f(&mut state.borrow_mut()))
+}
+
+/// Graceful reboots at one moment: the pending one, if any, and the holds a
+/// graceful reboot waits for.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Status {
+    pub(crate) pending: Option<Pending>,
+    holds: [u16; HOLDERS],
+}
+
+impl Status {
+    /// Each holder with live holds, and how many.
+    pub(crate) fn holds(&self) -> impl Iterator<Item = (Holder, u16)> + use<> {
+        Holder::ALL
+            .into_iter()
+            .zip(self.holds)
+            .filter(|&(_, count)| count > 0)
+    }
+}
 
 /// Spawns the reboot task and returns the handle that requests reboots.
 ///
@@ -105,14 +174,19 @@ impl Reboot {
         is_pending()
     }
 
+    /// The pending graceful reboot and the holds it waits for.
+    pub(crate) fn status(self) -> Status {
+        status()
+    }
+
     /// A handle that can only request graceful reboots.
     pub(crate) fn graceful_only(self) -> GracefulReboot {
         GracefulReboot(())
     }
 
-    /// A handle that can only hold off graceful reboots.
-    pub(crate) fn holder(self) -> RebootHolder {
-        RebootHolder(())
+    /// A handle that can only hold off graceful reboots, for `holder`.
+    pub(crate) fn holder(self, holder: Holder) -> RebootHolder {
+        RebootHolder(holder)
     }
 }
 
@@ -132,68 +206,99 @@ impl GracefulReboot {
     }
 }
 
-/// Permission to hold off graceful reboots only; see [`Reboot::holder`].
+/// Permission to hold off graceful reboots only, for one [`Holder`]; see
+/// [`Reboot::holder`].
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct RebootHolder(());
+pub(crate) struct RebootHolder(Holder);
 
 impl RebootHolder {
     /// Holds off a graceful reboot until the returned guard is dropped.
     pub(crate) fn hold(self) -> RebootHold {
-        HOLDS.fetch_add(1, Ordering::AcqRel);
-        RebootHold(())
+        with_state(|state| state.holds[self.0 as usize] += 1);
+        RebootHold(self.0)
     }
 }
 
 /// Holds off a graceful reboot while alive; see [`RebootHolder::hold`].
 #[must_use = "the reboot is only held off while the guard is alive"]
 #[derive(Debug)]
-pub(crate) struct RebootHold(());
+pub(crate) struct RebootHold(Holder);
 
 impl Drop for RebootHold {
     fn drop(&mut self) {
-        HOLDS.fetch_sub(1, Ordering::AcqRel);
+        with_state(|state| state.holds[self.0 as usize] -= 1);
         RELEASED.signal(());
     }
 }
 
-/// Signals the reboot task, unless a graceful reboot is already pending.
+/// Records a graceful reboot and signals the reboot task, unless one is
+/// already pending.
 fn request_graceful(reason: Reason) {
-    if !PENDING.swap(true, Ordering::AcqRel) {
-        REQUEST.signal(reason);
+    let first = with_state(|state| {
+        let first = state.pending.is_none();
+        if first {
+            state.pending = Some(Pending {
+                reason,
+                deadline: Instant::now() + DEADLINE,
+            });
+        }
+        first
+    });
+    if first {
+        REQUESTED.signal(());
     }
 }
 
 fn is_pending() -> bool {
-    PENDING.load(Ordering::Acquire)
+    with_state(|state| state.pending.is_some())
+}
+
+fn status() -> Status {
+    with_state(|state| Status {
+        pending: state.pending,
+        holds: state.holds,
+    })
 }
 
 /// Waits for a graceful reboot request, then for every hold to be released or
-/// [`DEADLINE`] to pass, and resets the chip.
+/// the deadline to pass, and resets the chip.
 #[embassy_executor::task]
 async fn reboot_task(wd: WatchdogHandle<wd::Reboot>) -> ! {
-    let reason = loop {
+    loop {
         wd.feed();
-        if let Either::First(reason) = select(REQUEST.wait(), Timer::after(FEED_INTERVAL)).await {
-            break reason;
+        if let Either::First(()) = select(REQUESTED.wait(), Timer::after(FEED_INTERVAL)).await {
+            break;
         }
-    };
+    }
 
+    // Set before the request is signalled, and never cleared.
+    let Status { pending, .. } = status();
+    let pending = defmt::unwrap!(pending);
     info!(
-        "Reboot requested ({}), waiting up to {} s for {} holds",
-        reason,
+        "Reboot requested ({}), waiting up to {} s",
+        pending.reason,
         DEADLINE.as_secs(),
-        HOLDS.load(Ordering::Acquire)
     );
-    let released = with_timeout(DEADLINE, async {
-        while HOLDS.load(Ordering::Acquire) > 0 {
+    log_holds("Waiting for");
+
+    let released = with_deadline(pending.deadline, async {
+        while with_state(|state| state.is_held()) {
             RELEASED.wait().await;
         }
     })
     .await;
     if released.is_err() {
         warn!("Reboot holds not released within {} s", DEADLINE.as_secs());
+        log_holds("Still held by");
     }
-    reset(reason, Mode::Graceful)
+    reset(pending.reason, Mode::Graceful)
+}
+
+/// Logs each holder with live holds, after `prefix`.
+fn log_holds(prefix: &str) {
+    for (holder, count) in status().holds() {
+        info!("{} {}: {} holds", prefix, holder, count);
+    }
 }
 
 /// Logs the reboot and resets the chip.
