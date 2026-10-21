@@ -122,7 +122,7 @@ async fn main(spawner: Spawner) {
     )
     .await
     {
-        Ok(stack) => http::start(spawner, stack, http::AppState { system }),
+        Ok(stack) => http::start(spawner, stack, http::AppState { system, reboot }),
         Err(err) => error!("Ethernet unavailable: {}", err),
     }
 }

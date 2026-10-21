@@ -16,6 +16,7 @@ use picoserve::routing::{PathRouter, get};
 use picoserve::{Router, Timeouts};
 use static_cell::ConstStaticCell;
 
+use crate::services::reboot::Reboot;
 use crate::services::system::System;
 
 const PORT: u16 = 80;
@@ -45,15 +46,23 @@ struct Buffers {
 }
 
 /// The services the handlers reach. Handlers extract the one they need with
-/// `State<&'static Service>`.
+/// `State<&'static Service>`, or `State<Handle>` for a service reached through
+/// a handle.
 #[derive(Clone, Copy)]
 pub(crate) struct AppState {
     pub(crate) system: &'static System,
+    pub(crate) reboot: Reboot,
 }
 
 impl FromRef<AppState> for &'static System {
     fn from_ref(state: &AppState) -> Self {
         state.system
+    }
+}
+
+impl FromRef<AppState> for Reboot {
+    fn from_ref(state: &AppState) -> Self {
+        state.reboot
     }
 }
 
