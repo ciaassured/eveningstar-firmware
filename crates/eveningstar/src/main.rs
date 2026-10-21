@@ -96,7 +96,7 @@ async fn main(spawner: Spawner) {
     esp_rtos::start(timg0.timer0, board.from_cpu_intr0);
     info!("Embassy initialized");
     spawner.spawn(defmt::unwrap!(wd::supervise(wd_supervisor)));
-    spawner.spawn(defmt::unwrap!(reboot::reboot_task(wd_handles.reboot)));
+    let reboot = reboot::start(spawner, wd_handles.reboot);
 
     spawner.spawn(defmt::unwrap!(blink(
         board.status_led,
@@ -110,6 +110,7 @@ async fn main(spawner: Spawner) {
         board.ethernet,
         device_name,
         seed,
+        reboot.graceful_only(),
         wd_handles.ethernet,
         wd_handles.link,
     )

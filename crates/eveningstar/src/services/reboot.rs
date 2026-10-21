@@ -3,7 +3,12 @@
 //! Faults (a panic, a missed task watchdog deadline, a hung executor) reset the
 //! chip at once, because the system's state can't be trusted. Other causes,
 //! such as the Ethernet link staying down or a fresh OTA update being ready,
-//! [`request`] a reboot instead, with a [`Reason`] and a [`Mode`].
+//! request a reboot instead, with a [`Reason`] and a [`Mode`].
+//!
+//! Requesting a reboot takes a handle. [`start`] spawns the reboot task and
+//! returns the one [`Reboot`], which requests either mode. The narrower
+//! handles derive from it: a [`GracefulReboot`] only requests graceful
+//! reboots, and a [`RebootHolder`] only holds them off.
 //!
 //! A graceful reboot waits until no [`RebootHold`] is alive, so a task can hold
 //! it off while it has work it must finish, such as flushing logged data. The
@@ -12,16 +17,22 @@
 //! [`WATCHDOG_TIMEOUT`]. An immediate reboot ignores holds and resets the chip
 //! during the request.
 
+#![expect(
+    clippy::unused_self,
+    reason = "a handle's methods take it as proof of permission, not for data"
+)]
+
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use defmt::{info, warn};
+use embassy_executor::Spawner;
 use embassy_futures::select::{Either, select};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Timer, with_timeout};
 
 use crate::watchdog::WatchdogHandle;
-use crate::wd::Reboot;
+use crate::wd;
 
 /// Longest a graceful reboot waits for holds to be released.
 pub(crate) const DEADLINE: Duration = Duration::from_secs(5 * 60);
@@ -58,35 +69,80 @@ static PENDING: AtomicBool = AtomicBool::new(false);
 static HOLDS: AtomicUsize = AtomicUsize::new(0);
 static RELEASED: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
-/// Requests a reboot.
+/// Spawns the reboot task and returns the handle that requests reboots.
 ///
-/// A graceful request returns, and the reboot task reboots later; only the
-/// first graceful request takes effect. An immediate request does not return,
-/// even while a graceful reboot is waiting for holds.
-pub(crate) fn request(reason: Reason, mode: Mode) {
-    match mode {
-        Mode::Graceful => {
-            if !PENDING.swap(true, Ordering::AcqRel) {
-                REQUEST.signal(reason);
-            }
+/// Takes the reboot task's watchdog handle, of which there is one, so there is
+/// one call and a [`Reboot`] exists only while the task runs.
+pub(crate) fn start(spawner: Spawner, wd: WatchdogHandle<wd::Reboot>) -> Reboot {
+    spawner.spawn(defmt::unwrap!(reboot_task(wd)));
+    Reboot(())
+}
+
+/// Permission to request graceful and immediate reboots. Only [`start`]
+/// creates one, and the narrower handles derive from it.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Reboot(());
+
+impl Reboot {
+    /// Requests a reboot.
+    ///
+    /// A graceful request returns, and the reboot task reboots later; only the
+    /// first graceful request takes effect. An immediate request does not
+    /// return, even while a graceful reboot is waiting for holds.
+    #[expect(
+        dead_code,
+        reason = "nothing requests reboots with the full handle yet"
+    )]
+    pub(crate) fn request(self, reason: Reason, mode: Mode) {
+        match mode {
+            Mode::Graceful => request_graceful(reason),
+            Mode::Immediate => reset(reason, mode),
         }
-        Mode::Immediate => reset(reason, mode),
+    }
+
+    /// A handle that can only request graceful reboots.
+    pub(crate) fn graceful_only(self) -> GracefulReboot {
+        GracefulReboot(())
+    }
+
+    /// A handle that can only hold off graceful reboots.
+    #[expect(dead_code, reason = "no task holds off reboots yet")]
+    pub(crate) fn holder(self) -> RebootHolder {
+        RebootHolder(())
     }
 }
 
-/// Whether a graceful reboot has been requested.
-pub(crate) fn is_pending() -> bool {
-    PENDING.load(Ordering::Acquire)
+/// Permission to request graceful reboots only; see [`Reboot::graceful_only`].
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct GracefulReboot(());
+
+impl GracefulReboot {
+    /// Requests a graceful reboot: the reboot task reboots once no hold is
+    /// alive or [`DEADLINE`] has passed. Only the first request takes effect.
+    pub(crate) fn request(self, reason: Reason) {
+        request_graceful(reason);
+    }
+
+    /// Whether a graceful reboot has been requested.
+    pub(crate) fn is_pending(self) -> bool {
+        PENDING.load(Ordering::Acquire)
+    }
 }
 
-/// Holds off a graceful reboot until the returned guard is dropped.
-#[expect(dead_code, reason = "no task holds off reboots yet")]
-pub(crate) fn hold() -> RebootHold {
-    HOLDS.fetch_add(1, Ordering::AcqRel);
-    RebootHold(())
+/// Permission to hold off graceful reboots only; see [`Reboot::holder`].
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RebootHolder(());
+
+impl RebootHolder {
+    /// Holds off a graceful reboot until the returned guard is dropped.
+    #[expect(dead_code, reason = "no task holds off reboots yet")]
+    pub(crate) fn hold(self) -> RebootHold {
+        HOLDS.fetch_add(1, Ordering::AcqRel);
+        RebootHold(())
+    }
 }
 
-/// Holds off a graceful reboot while alive; see [`hold`].
+/// Holds off a graceful reboot while alive; see [`RebootHolder::hold`].
 #[must_use = "the reboot is only held off while the guard is alive"]
 #[derive(Debug)]
 #[expect(dead_code, reason = "no task holds off reboots yet")]
@@ -99,10 +155,17 @@ impl Drop for RebootHold {
     }
 }
 
+/// Signals the reboot task, unless a graceful reboot is already pending.
+fn request_graceful(reason: Reason) {
+    if !PENDING.swap(true, Ordering::AcqRel) {
+        REQUEST.signal(reason);
+    }
+}
+
 /// Waits for a graceful reboot request, then for every hold to be released or
 /// [`DEADLINE`] to pass, and resets the chip.
 #[embassy_executor::task]
-pub(crate) async fn reboot_task(wd: WatchdogHandle<Reboot>) -> ! {
+async fn reboot_task(wd: WatchdogHandle<wd::Reboot>) -> ! {
     let reason = loop {
         wd.feed();
         if let Either::First(reason) = select(REQUEST.wait(), Timer::after(FEED_INTERVAL)).await {
