@@ -20,8 +20,8 @@ pub(super) fn routes(
     routes: Router<impl PathRouter<AppState>, AppState>,
 ) -> Router<impl PathRouter<AppState>, AppState> {
     routes
-        .route("/system", get(get_system))
-        .route("/system/reboot", get(get_reboot).post(post_reboot))
+        .route(v1::paths::SYSTEM, get(get_system))
+        .route(v1::paths::REBOOT, get(get_reboot).post(post_reboot))
 }
 
 async fn get_system(State(system): State<&'static System>) -> Json<v1::System> {
