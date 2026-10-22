@@ -56,7 +56,13 @@ let
       ''
       + lib.optionalString (has "build.rs") ''
         echo 'fn main() {}' > crates/${member}/build.rs
-      '')
+      ''
+      + lib.optionalString (has "examples") (lib.concatMapStrings
+        (example: ''
+          mkdir -p crates/${member}/examples
+          echo 'fn main() {}' > crates/${member}/examples/${example}
+        '')
+        (lib.attrNames (builtins.readDir (dir + "/examples")))))
     members;
 in
 {

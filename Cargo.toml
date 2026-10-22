@@ -34,7 +34,7 @@ picoserve              = { version = "0.20.1", features = ["defmt", "embassy", "
 rtt-target             = { version = "0.6.2", features = ["defmt"] }
 schemars               = { version = "1.2.3", default-features = false, features = ["derive"] }
 serde                  = { version = "1.0.229", default-features = false, features = ["derive"] }
-serde_json             = "1.0.154"
+serde_json             = { version = "1.0.154", default-features = false, features = ["alloc"] }
 static_cell            = "2.1.1"
 
 [workspace.lints.rust]
