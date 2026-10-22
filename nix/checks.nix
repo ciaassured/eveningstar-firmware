@@ -8,7 +8,8 @@
     {
       # Every repository check, with a combined result, so the Git hooks and CI
       # share one entry point. Arguments select check groups: `lint` (rustfmt
-      # and clippy) and `build` (a release build, which also links). With no
+      # and clippy), `build` (a release build, which also links) and `test`
+      # (the tests of the crates that also build on the host). With no
       # arguments, every group runs.
       packages.checks = pkgs.writeShellApplication {
         name = "eveningstar-checks";
@@ -38,20 +39,37 @@
 
           groups=("$@")
           if [ "''${#groups[@]}" -eq 0 ]; then
-            groups=(lint build)
+            groups=(lint build test)
           fi
+
+          # The crates that also build on the host, and the host's target.
+          # Their features stay out of the firmware's lint, as `--all-features`
+          # would otherwise enable them in the firmware's dependency on them.
+          host_crates=(eveningstar-api)
+          host_target="$(rustc --print host-tuple)"
 
           for group in "''${groups[@]}"; do
             case "$group" in
               lint)
                 run_check "rustfmt" cargo fmt --all -- --check
-                run_check "clippy" cargo clippy --all-features --workspace -- -D warnings
+                run_check "clippy" cargo clippy --all-features --workspace \
+                  "''${host_crates[@]/#/--exclude=}" -- -D warnings
+                run_check "clippy (host crates, chip target)" cargo clippy --all-features \
+                  "''${host_crates[@]/#/--package=}" -- -D warnings
+                # The stack frame limit is the chip's, which the run above checks.
+                run_check "clippy (host crates, host target)" cargo clippy --all-features \
+                  --all-targets "''${host_crates[@]/#/--package=}" --target "$host_target" \
+                  -- -D warnings -A clippy::large_stack_frames
                 ;;
               build)
                 run_check "release build" cargo build --release
                 ;;
+              test)
+                run_check "host tests" cargo test --all-features \
+                  "''${host_crates[@]/#/--package=}" --target "$host_target"
+                ;;
               *)
-                echo "unknown check group: $group (expected lint or build)" >&2
+                echo "unknown check group: $group (expected lint, build or test)" >&2
                 exit 2
                 ;;
             esac

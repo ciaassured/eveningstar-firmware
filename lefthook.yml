@@ -5,5 +5,5 @@ pre-commit:
 
 pre-push:
   commands:
-    build:
-      run: nix run .#checks -- build
+    build-test:
+      run: nix run .#checks -- build test

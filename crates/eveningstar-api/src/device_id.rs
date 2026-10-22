@@ -1,8 +1,9 @@
-//! Device IDs: a device's factory base MAC address, written for people.
+//! Device IDs: globally unique and stable, written for people.
 //!
-//! The 48-bit address is written in Crockford's Base32 as 10 symbols, followed
-//! by one Luhn mod 32 check symbol, in groups of 4, 4 and 3: `4WSG-0KD7-9C6`.
-//! Every MAC address is unique, and so is every ID.
+//! An ID is a 50-bit value, written in Crockford's Base32 as 10 symbols,
+//! followed by one Luhn mod 32 check symbol, in groups of 4, 4 and 3:
+//! `4WSG-0KD7-9C6`. [`DeviceId::from_mac`] makes one from a factory base MAC
+//! address, which is unique and never changes.
 //!
 //! Parsing accepts what a person might type: either case, any hyphens, and the
 //! letters `O`, `I` and `L` for the digits they resemble. The check symbol
@@ -18,8 +19,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 /// `O` and `U`.
 const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
-/// Symbols encoding the MAC address. 10 symbols hold 50 bits, so the first
-/// symbol is always `0` to `3`.
+/// Symbols encoding the value, 5 bits each.
 const VALUE_SYMBOLS: usize = 10;
 
 /// All symbols: the value and the check symbol.
@@ -28,30 +28,28 @@ const SYMBOLS: usize = VALUE_SYMBOLS + 1;
 /// Length of the written form: the symbols and two hyphens.
 pub const DEVICE_ID_LEN: usize = SYMBOLS + 2;
 
-/// A device's ID, derived from its factory base MAC address.
+/// A device's ID.
 ///
 /// Displays, serialises and parses as the written form, e.g. `4WSG-0KD7-9C6`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct DeviceId([u8; 6]);
+pub struct DeviceId(
+    /// The value, below 2^50.
+    u64,
+);
 
 impl DeviceId {
-    /// The ID of the device with factory base MAC address `mac`.
+    /// The ID made from factory base MAC address `mac`.
     #[must_use]
     pub const fn from_mac(mac: [u8; 6]) -> Self {
-        Self(mac)
-    }
-
-    /// The device's factory base MAC address.
-    #[must_use]
-    pub const fn mac(&self) -> [u8; 6] {
-        self.0
+        let [m0, m1, m2, m3, m4, m5] = mac;
+        Self(u64::from_be_bytes([0, 0, m0, m1, m2, m3, m4, m5]))
     }
 
     /// The written form, e.g. `4WSG-0KD7-9C6`.
     #[must_use]
     pub fn encode(&self) -> heapless::String<DEVICE_ID_LEN> {
         let mut symbols = [0u8; SYMBOLS];
-        let value = self.value();
+        let value = self.0;
         for (i, symbol) in symbols[..VALUE_SYMBOLS].iter_mut().enumerate() {
             let shift = 5 * (VALUE_SYMBOLS - 1 - i);
             *symbol = low_5_bits(value >> shift);
@@ -67,13 +65,6 @@ impl DeviceId {
         }
         out
     }
-
-    /// The MAC address as a number.
-    fn value(self) -> u64 {
-        let mut bytes = [0; 8];
-        bytes[2..].copy_from_slice(&self.0);
-        u64::from_be_bytes(bytes)
-    }
 }
 
 /// Why a string is not a device ID.
@@ -83,8 +74,6 @@ pub enum ParseDeviceIdError {
     InvalidCharacter,
     /// Not exactly 11 symbols, ignoring hyphens.
     InvalidLength,
-    /// The symbols encode a number larger than a MAC address.
-    OutOfRange,
     /// The check symbol does not match: the ID was mistyped.
     CheckFailed,
 }
@@ -94,7 +83,6 @@ impl fmt::Display for ParseDeviceIdError {
         f.write_str(match self {
             Self::InvalidCharacter => "invalid character in device ID",
             Self::InvalidLength => "device ID must have 11 symbols",
-            Self::OutOfRange => "device ID out of range",
             Self::CheckFailed => "device ID check symbol does not match",
         })
     }
@@ -122,13 +110,10 @@ impl FromStr for DeviceId {
         let value = symbols[..VALUE_SYMBOLS]
             .iter()
             .fold(0u64, |value, &symbol| (value << 5) | u64::from(symbol));
-        let [0, 0, mac @ ..] = value.to_be_bytes() else {
-            return Err(ParseDeviceIdError::OutOfRange);
-        };
         if check_symbol(&symbols[..VALUE_SYMBOLS]) != symbols[VALUE_SYMBOLS] {
             return Err(ParseDeviceIdError::CheckFailed);
         }
-        Ok(Self(mac))
+        Ok(Self(value))
     }
 }
 
@@ -161,6 +146,33 @@ impl<'de> Deserialize<'de> for DeviceId {
         }
 
         deserializer.deserialize_str(DeviceIdVisitor)
+    }
+}
+
+/// The written form: symbols of the alphabet, in groups of 4, 4 and 3.
+#[cfg(feature = "schema")]
+const PATTERN: &str = "^[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{3}$";
+
+#[cfg(feature = "schema")]
+impl schemars::JsonSchema for DeviceId {
+    fn schema_name() -> alloc::borrow::Cow<'static, str> {
+        "DeviceId".into()
+    }
+
+    fn schema_id() -> alloc::borrow::Cow<'static, str> {
+        concat!(module_path!(), "::DeviceId").into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "description": "A device's ID: globally unique, and the same for the life \
+                of the device. 11 symbols of Crockford's Base32, in groups of 4, 4 and 3; \
+                the last is a check symbol over the others, by the Luhn mod N algorithm \
+                with N = 32.",
+            "pattern": PATTERN,
+            "examples": ["4WSG-0KD7-9C6"],
+        })
     }
 }
 
@@ -206,17 +218,64 @@ mod tests {
     const MAC: [u8; 6] = [0x9c, 0xcc, 0x01, 0x36, 0x9d, 0x2c];
     const ID: &str = "4WSG-0KD7-9C6";
 
+    /// Values and their written forms, from a separate implementation of the
+    /// Luhn mod N algorithm.
+    const VECTORS: [(u64, &str); 6] = [
+        (0x9ccc_0136_9d2c, "4WSG-0KD7-9C6"),
+        (1, "0000-0000-01Y"),
+        ((1 << 50) - 1, "ZZZZ-ZZZZ-ZZA"),
+        (0x2_a5a5_a5a5_a5a5, "N5MP-JTB9-D55"),
+        (0x3_ca9d_52e6_b438, "YAKN-9EDD-1RJ"),
+        (0x1_944c_269e_0d37, "CM9G-K9W3-9Q2"),
+    ];
+
     #[test]
     fn encodes_known_id() {
         assert_eq!(DeviceId::from_mac(MAC).encode(), ID);
     }
 
     #[test]
+    fn matches_reference_vectors() {
+        for (value, written) in VECTORS {
+            assert_eq!(DeviceId(value).encode(), written);
+            assert_eq!(written.parse(), Ok(DeviceId(value)));
+        }
+    }
+
+    #[test]
+    fn reads_mac_addresses_big_endian() {
+        assert_eq!(DeviceId::from_mac([0, 0, 0, 0, 0, 1]), DeviceId(1));
+        assert_eq!(DeviceId::from_mac(MAC), DeviceId(0x9ccc_0136_9d2c));
+    }
+
+    #[test]
+    fn written_form_has_fixed_layout() {
+        for id in extremes() {
+            let written = id.encode();
+            assert_eq!(written.len(), DEVICE_ID_LEN);
+            for (i, c) in written.chars().enumerate() {
+                assert_eq!(c == '-', i == 4 || i == 9, "{written}");
+            }
+            assert_eq!(id.to_string(), written.as_str());
+        }
+    }
+
+    /// IDs at the ends of the range, and with every first symbol.
+    fn extremes() -> impl Iterator<Item = DeviceId> {
+        let first_symbols = (0..32).map(|symbol| DeviceId(symbol << 45));
+        [0, 1, (1 << 50) - 1]
+            .into_iter()
+            .map(DeviceId)
+            .chain(first_symbols)
+    }
+
+    #[test]
     fn round_trips_extremes() {
-        for mac in [[0; 6], [0xff; 6], [0x80, 0, 0, 0, 0, 1]] {
-            let id = DeviceId::from_mac(mac);
+        for id in extremes() {
             assert_eq!(id.encode().parse(), Ok(id));
         }
+        let id = DeviceId((1 << 50) - 1);
+        assert!(id.encode().starts_with("ZZZZ-ZZZZ-ZZ"));
     }
 
     #[test]
@@ -245,10 +304,27 @@ mod tests {
         assert_eq!(json, format!("\"{ID}\""));
         assert_eq!(serde_json::from_str::<DeviceId>(&json).unwrap(), id);
         assert!(serde_json::from_str::<DeviceId>("\"4WSG-0KD7-9C7\"").is_err());
+        assert!(serde_json::from_str::<DeviceId>("42").is_err());
     }
 
     #[test]
     fn rejects_malformed() {
+        assert_eq!(
+            "".parse::<DeviceId>(),
+            Err(ParseDeviceIdError::InvalidLength)
+        );
+        assert_eq!(
+            "----".parse::<DeviceId>(),
+            Err(ParseDeviceIdError::InvalidLength)
+        );
+        assert_eq!(
+            "4WSG-0KD7-9Cu".parse::<DeviceId>(),
+            Err(ParseDeviceIdError::InvalidCharacter)
+        );
+        assert_eq!(
+            "4WSG-0KD7-9C\u{e9}".parse::<DeviceId>(),
+            Err(ParseDeviceIdError::InvalidCharacter)
+        );
         assert_eq!(
             "4WSG-0KD7-9C".parse::<DeviceId>(),
             Err(ParseDeviceIdError::InvalidLength)
@@ -264,11 +340,6 @@ mod tests {
         assert_eq!(
             "4WSG 0KD7 9C6".parse::<DeviceId>(),
             Err(ParseDeviceIdError::InvalidCharacter)
-        );
-        // A first symbol above 3 encodes more than 48 bits.
-        assert_eq!(
-            "ZZZZ-ZZZZ-ZZ0".parse::<DeviceId>(),
-            Err(ParseDeviceIdError::OutOfRange)
         );
     }
 
@@ -304,5 +375,19 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[cfg(feature = "schema")]
+    #[test]
+    fn schema_matches_written_form() {
+        use crate::schema_accepts;
+
+        let accepts = |id: &str| schema_accepts::<DeviceId>(&serde_json::json!(id));
+        for id in extremes().chain([DeviceId::from_mac(MAC)]) {
+            assert!(accepts(&id.encode()));
+        }
+        assert!(!accepts("4WSG-0KD7-9CU"));
+        assert!(!accepts("4WSG0KD79C6"));
+        assert!(!accepts("4wsg-0kd7-9c6"));
     }
 }
