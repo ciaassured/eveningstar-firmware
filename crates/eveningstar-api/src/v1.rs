@@ -7,6 +7,15 @@ use crate::DeviceId;
 /// Path prefix of every version 1 endpoint.
 pub const PATH: &str = "/api/v1";
 
+/// Paths of the endpoints, relative to [`PATH`].
+pub mod paths {
+    /// `GET`: [`System`](super::System).
+    pub const SYSTEM: &str = "/system";
+    /// `GET`: [`RebootStatus`](super::RebootStatus). `POST`:
+    /// [`RebootRequest`](super::RebootRequest).
+    pub const REBOOT: &str = "/system/reboot";
+}
+
 /// Longest device name: the limit of a DHCP hostname or a Wi-Fi SSID.
 pub const DEVICE_NAME_MAX_LEN: usize = 32;
 
@@ -139,6 +148,21 @@ pub enum ErrorCode {
     #[serde(other)]
     #[cfg_attr(feature = "schema", schemars(skip))]
     Unknown,
+}
+
+impl ErrorCode {
+    /// The HTTP status code of responses with this code, or `None` for
+    /// [`Unknown`](Self::Unknown).
+    #[must_use]
+    pub const fn status(self) -> Option<u16> {
+        match self {
+            Self::BadRequest => Some(400),
+            Self::NotFound => Some(404),
+            Self::MethodNotAllowed => Some(405),
+            Self::PayloadTooLarge => Some(413),
+            Self::Unknown => None,
+        }
+    }
 }
 
 #[cfg(test)]

@@ -25,12 +25,10 @@ pub(super) enum ApiError {
 
 impl ApiError {
     fn status_code(self) -> StatusCode {
-        match self {
-            Self::BadRequest => StatusCode::BAD_REQUEST,
-            Self::NotFound => StatusCode::NOT_FOUND,
-            Self::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
-            Self::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
-        }
+        // Every code an error maps to has a status.
+        self.code()
+            .status()
+            .map_or(StatusCode::INTERNAL_SERVER_ERROR, StatusCode::new)
     }
 
     fn code(self) -> v1::ErrorCode {
