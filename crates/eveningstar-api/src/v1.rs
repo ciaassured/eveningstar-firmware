@@ -4,6 +4,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::DeviceId;
 
+#[cfg(feature = "schema")]
+mod openapi;
+
+#[cfg(feature = "schema")]
+pub use openapi::openapi;
+
 /// Path prefix of every version 1 endpoint.
 pub const PATH: &str = "/api/v1";
 

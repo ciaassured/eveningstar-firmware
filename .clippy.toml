@@ -1,5 +1,8 @@
 stack-size-threshold = 1024
 
+# Names written in prose, on top of clippy's defaults (`..`).
+doc-valid-idents = ["OpenAPI", ".."]
+
 # Resetting the chip is reserved for the reboot service, the task watchdog
 # supervisor and the panic handler, which each expect this lint.
 disallowed-methods = [
