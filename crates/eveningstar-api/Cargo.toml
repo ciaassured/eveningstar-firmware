@@ -6,11 +6,17 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+# JSON Schemas of the API's types.
+schema = ["dep:schemars"]
+
 [dependencies]
 heapless = { workspace = true, features = ["serde"] }
+schemars = { workspace = true, optional = true }
 serde.workspace = true
 
 [dev-dependencies]
+jsonschema.workspace = true
 serde_json.workspace = true
 
 [lints]
