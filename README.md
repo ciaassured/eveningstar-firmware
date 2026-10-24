@@ -52,6 +52,11 @@ Checks (formatting, Clippy and a release build), the same ones CI runs:
 nix run .#checks
 ```
 
+## Design
+
+[docs/architecture.md](docs/architecture.md) describes how the firmware is
+structured and why.
+
 ## License
 
 Licensed under the [GNU Affero General Public License v3.0 or later](LICENSE).
