@@ -2,9 +2,10 @@
 //! time.
 //!
 //! Handlers only translate between HTTP and the [services](crate::services).
-//! Each submodule adds one group of related API endpoints to the API router.
+//! [`api`] serves each API request with its operation's handler, and each
+//! other submodule holds the handlers of one group of related operations.
 
-mod error;
+mod api;
 mod system;
 
 use embassy_executor::Spawner;
@@ -45,9 +46,8 @@ struct Buffers {
     http: [u8; HTTP_BUFFER_LEN],
 }
 
-/// The services the handlers reach. Handlers extract the one they need with
-/// `State<&'static Service>`, or `State<Handle>` for a service reached through
-/// a handle.
+/// The services the handlers reach. Each handler takes the one it needs,
+/// `&'static Service` or a handle, through [`FromRef`].
 #[derive(Clone, Copy)]
 pub(crate) struct AppState {
     pub(crate) system: &'static System,
@@ -69,17 +69,10 @@ impl FromRef<AppState> for Reboot {
 fn router() -> Router<impl PathRouter<AppState>, AppState> {
     Router::new()
         .route("/", get(|| async { "Eveningstar\n" }))
-        // A nested router only sees paths that continue past its prefix, so
+        // A nested service only sees paths that continue past its prefix, so
         // the prefix itself is routed separately.
-        .route_service(v1::PATH, error::NotFound)
-        .nest(v1::PATH, api_routes().layer(error::JsonErrors))
-}
-
-/// Every API endpoint, relative to [`v1::PATH`]. Paths with no route get a
-/// JSON [`v1::Error`].
-fn api_routes() -> Router<impl PathRouter<AppState>, AppState> {
-    let routes = Router::from_service(error::NotFound);
-    system::routes(routes)
+        .route_service(v1::PATH, api::Api)
+        .nest_service(v1::PATH, api::Api)
 }
 
 #[embassy_executor::task(pool_size = WORKERS)]

@@ -1,31 +1,18 @@
 //! `/system`: the device's identity and uptime, and reboots.
 
+use core::convert::Infallible;
+
 use embassy_time::Instant;
 
 use eveningstar_api::v1;
-use picoserve::ResponseSent;
-use picoserve::Router;
-use picoserve::extract::State;
-use picoserve::io::Read;
-use picoserve::response::{Connection, IntoResponse, Json, NoContent, ResponseWriter, StatusCode};
-use picoserve::routing::{PathRouter, get};
 
-use super::AppState;
-use super::error::ApiJson;
+use super::api::{Closing, Reply};
 use crate::services::reboot::{self, Holder, Reason, Reboot};
 use crate::services::system::System;
 
-/// Adds the `/system` endpoints to `routes`.
-pub(super) fn routes(
-    routes: Router<impl PathRouter<AppState>, AppState>,
-) -> Router<impl PathRouter<AppState>, AppState> {
-    routes
-        .route(v1::paths::SYSTEM, get(get_system))
-        .route(v1::paths::REBOOT, get(get_reboot).post(post_reboot))
-}
-
-async fn get_system(State(system): State<&'static System>) -> Json<v1::System> {
-    Json(v1::System {
+/// [`v1::GetSystem`].
+pub(super) async fn get_system(system: &'static System, (): ()) -> Result<v1::System, Infallible> {
+    Ok(v1::System {
         name: system.name(),
         id: system.id(),
         uptime_s: System::uptime().as_secs(),
@@ -35,10 +22,11 @@ async fn get_system(State(system): State<&'static System>) -> Json<v1::System> {
 // Every holder fits in a status.
 const _: () = assert!(reboot::HOLDERS <= v1::REBOOT_HOLDERS_MAX);
 
-async fn get_reboot(State(reboot): State<Reboot>) -> Json<v1::RebootStatus> {
+/// [`v1::GetRebootStatus`].
+pub(super) async fn get_reboot(reboot: Reboot, (): ()) -> Result<v1::RebootStatus, Infallible> {
     let status = reboot.status();
     let now = Instant::now();
-    Json(v1::RebootStatus {
+    Ok(v1::RebootStatus {
         pending: status.pending.map(|pending| v1::PendingReboot {
             reason: reason(pending.reason),
             remaining_s: pending.deadline.saturating_duration_since(now).as_secs(),
@@ -62,49 +50,20 @@ fn reason(reason: Reason) -> v1::RebootReason {
     }
 }
 
-async fn post_reboot(
-    State(reboot): State<Reboot>,
-    ApiJson(request): ApiJson<v1::RebootRequest>,
-) -> RebootAccepted {
-    RebootAccepted {
-        reboot,
-        mode: request.mode,
-    }
-}
-
-/// Answers 202 Accepted, then reboots once the client has the response.
-struct RebootAccepted {
+/// [`v1::Reboot`]: reboots once the client has the response.
+pub(super) async fn post_reboot(
     reboot: Reboot,
-    mode: v1::RebootMode,
-}
-
-impl IntoResponse for RebootAccepted {
-    async fn write_to<R: Read, W: ResponseWriter<Error = R::Error>>(
-        self,
-        connection: Connection<'_, R>,
-        response_writer: W,
-    ) -> Result<ResponseSent, W::Error> {
-        // Writing the response returns once the client has acknowledged it.
-        // The length tells the client the response is complete, as the reboot
-        // drops the connection without closing it.
-        let accepted = (
-            StatusCode::ACCEPTED,
-            [("Content-Length", "0"), ("Connection", "close")],
-            NoContent,
-        );
-        match self.mode {
-            v1::RebootMode::Graceful => {
-                // With no other hold, the reboot task would reset the chip
-                // before the response is written.
-                let _hold = self.reboot.holder(Holder::Http).hold();
-                self.reboot.graceful(Reason::Api);
-                accepted.write_to(connection, response_writer).await
-            }
-            v1::RebootMode::Immediate => {
-                // Reboots whether or not the response reached the client.
-                let _ = accepted.write_to(connection, response_writer).await;
-                self.reboot.immediate(Reason::Api)
-            }
-        }
+    request: v1::RebootRequest,
+) -> Result<impl Reply<()>, Infallible> {
+    // With no other hold, a graceful reboot would reset the chip before the
+    // response is written.
+    let hold = reboot.holder(Holder::Http).hold();
+    if request.mode == v1::RebootMode::Graceful {
+        reboot.graceful(Reason::Api);
     }
+    Ok(Closing::new((), move || match request.mode {
+        v1::RebootMode::Graceful => drop(hold),
+        // Reboots whether or not the response reached the client.
+        v1::RebootMode::Immediate => reboot.immediate(Reason::Api),
+    }))
 }
