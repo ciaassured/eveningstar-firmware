@@ -1,31 +1,153 @@
 //! Version 1 of the API, served under [`PATH`].
 
+use core::convert::Infallible;
+
 use serde::{Deserialize, Serialize};
 
 use crate::DeviceId;
 
+mod endpoint;
 #[cfg(feature = "schema")]
 mod openapi;
 
+pub use endpoint::{
+    BodyError, Empty, Endpoint, Errors, Json, Method, RequestBody, ResponseBody, RouteError,
+};
 #[cfg(feature = "schema")]
 pub use openapi::openapi;
 
 /// Path prefix of every version 1 endpoint.
 pub const PATH: &str = "/api/v1";
 
-/// Paths of the endpoints, relative to [`PATH`].
-pub mod paths {
-    /// `GET`: [`System`](super::System).
-    pub const SYSTEM: &str = "/system";
-    /// `GET`: [`RebootStatus`](super::RebootStatus). `POST`:
-    /// [`RebootRequest`](super::RebootRequest).
-    pub const REBOOT: &str = "/system/reboot";
+/// Defines [`Operation`], with a variant holding each endpoint listed.
+macro_rules! operations {
+    ($($endpoint:ident),* $(,)?) => {
+        /// Every operation of the API, each holding its [`Endpoint`].
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub enum Operation {
+            $(
+                #[doc = concat!("[`", stringify!($endpoint), "`].")]
+                $endpoint($endpoint),
+            )*
+        }
+
+        impl Operation {
+            /// Every operation.
+            pub const ALL: &[Self] = &[$(Self::$endpoint($endpoint)),*];
+
+            /// The operation's name: the name of its endpoint's type.
+            #[must_use]
+            pub const fn name(self) -> &'static str {
+                match self {
+                    $(Self::$endpoint(_) => stringify!($endpoint),)*
+                }
+            }
+
+            /// The method of the operation's requests.
+            #[must_use]
+            pub const fn method(self) -> Method {
+                match self {
+                    $(Self::$endpoint(_) => <$endpoint as Endpoint>::METHOD,)*
+                }
+            }
+
+            /// The operation's path, relative to [`PATH`].
+            #[must_use]
+            pub const fn path(self) -> &'static str {
+                match self {
+                    $(Self::$endpoint(_) => <$endpoint as Endpoint>::PATH,)*
+                }
+            }
+
+            /// Adds the operation to `document`.
+            #[cfg(feature = "schema")]
+            fn document(self, document: &mut openapi::Document) {
+                match self {
+                    $(Self::$endpoint(_) => document.operation::<$endpoint>(self.name()),)*
+                }
+            }
+        }
+    };
+}
+
+operations!(GetSystem, GetRebootStatus, Reboot);
+
+impl Operation {
+    /// The operation a request with `method` and `path`, relative to
+    /// [`PATH`], is for.
+    ///
+    /// # Errors
+    ///
+    /// [`RouteError::NotFound`] if no operation has the path, and
+    /// [`RouteError::MethodNotAllowed`] if none with the path has the method.
+    pub fn find(method: &str, path: &str) -> Result<Self, RouteError> {
+        let mut error = RouteError::NotFound;
+        for &operation in Self::ALL {
+            if operation.path() == path {
+                if operation.method().as_str() == method {
+                    return Ok(operation);
+                }
+                error = RouteError::MethodNotAllowed;
+            }
+        }
+        Err(error)
+    }
+}
+
+/// The endpoint answering with the device's [`System`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GetSystem;
+
+impl Endpoint for GetSystem {
+    const METHOD: Method = Method::Get;
+    const PATH: &'static str = "/system";
+    const STATUS: u16 = 200;
+    const SUMMARY: &'static str = "Get the device's identity and uptime";
+
+    type Request = Empty;
+    type Response = Json<System>;
+    type Error = Infallible;
+}
+
+/// The endpoint answering with the device's [`RebootStatus`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GetRebootStatus;
+
+impl Endpoint for GetRebootStatus {
+    const METHOD: Method = Method::Get;
+    const PATH: &'static str = "/system/reboot";
+    const STATUS: u16 = 200;
+    const SUMMARY: &'static str = "Get the pending reboot and its holds";
+
+    type Request = Empty;
+    type Response = Json<RebootStatus>;
+    type Error = Infallible;
+}
+
+/// The endpoint rebooting the device as a [`RebootRequest`] asks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Reboot;
+
+impl Endpoint for Reboot {
+    const METHOD: Method = Method::Post;
+    const PATH: &'static str = GetRebootStatus::PATH;
+    const STATUS: u16 = 202;
+    const SUMMARY: &'static str = "Reboot the device";
+    const DESCRIPTION: Option<&'static str> = Some(
+        "A graceful reboot waits for the holds the reboot status lists to be \
+        released, up to a deadline. The device answers before it reboots, and \
+        the reboot drops the connection.",
+    );
+
+    type Request = Json<RebootRequest>;
+    type Response = Empty;
+    type Error = Infallible;
 }
 
 /// Longest device name: the limit of a DHCP hostname or a Wi-Fi SSID.
 pub const DEVICE_NAME_MAX_LEN: usize = 32;
 
-/// `GET /system`: the device's identity and uptime.
+/// The device's identity and uptime.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct System {
@@ -41,9 +163,7 @@ pub struct System {
     pub uptime_s: u64,
 }
 
-/// `POST /system/reboot`: reboots the device.
-///
-/// The device answers 202 Accepted, with no body, before it reboots.
+/// A request to reboot the device.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct RebootRequest {
@@ -65,8 +185,7 @@ pub enum RebootMode {
 /// Most holders a [`RebootStatus`] can list.
 pub const REBOOT_HOLDERS_MAX: usize = 16;
 
-/// `GET /system/reboot`: the pending graceful reboot, if any, and what holds
-/// off graceful reboots.
+/// The pending graceful reboot, if any, and what holds off graceful reboots.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct RebootStatus {
@@ -174,6 +293,49 @@ impl ErrorCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_every_operation_by_its_method_and_path() {
+        for &operation in Operation::ALL {
+            let found = Operation::find(operation.method().as_str(), operation.path());
+            assert_eq!(found, Ok(operation), "{}", operation.name());
+        }
+    }
+
+    #[test]
+    fn finds_operations_by_exact_method_and_path() {
+        assert_eq!(
+            Operation::find("POST", "/system/reboot"),
+            Ok(Operation::Reboot(Reboot))
+        );
+        assert_eq!(
+            Operation::find("POST", "/system"),
+            Err(RouteError::MethodNotAllowed)
+        );
+        assert_eq!(
+            Operation::find("get", "/system"),
+            Err(RouteError::MethodNotAllowed)
+        );
+        for path in ["", "/", "/system/", "/systems", "/system/reboot/now"] {
+            assert_eq!(
+                Operation::find("GET", path),
+                Err(RouteError::NotFound),
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn error_codes_of_error_sets_have_statuses() {
+        for &code in BodyError::CODES.iter().chain(RouteError::CODES) {
+            assert!(code.status().is_some(), "{code:?}");
+        }
+        assert_eq!(
+            BodyError::PayloadTooLarge.code(),
+            ErrorCode::PayloadTooLarge
+        );
+        assert_eq!(RouteError::NotFound.code(), ErrorCode::NotFound);
+    }
 
     #[test]
     fn parses_reboot_requests() {

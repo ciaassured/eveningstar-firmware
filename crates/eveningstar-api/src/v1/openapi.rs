@@ -7,83 +7,39 @@
 
 use alloc::borrow::ToOwned;
 use alloc::string::{String, ToString};
+use core::fmt::Write;
 
 use schemars::generate::SchemaSettings;
 use schemars::{JsonSchema, SchemaGenerator};
 use serde_json::{Map, Value, json};
 
-use super::{Error, ErrorCode, PATH, RebootRequest, RebootStatus, System, paths};
+use super::{
+    Empty, Endpoint, Error, ErrorCode, Errors, Json, Operation, PATH, RequestBody, RouteError,
+};
 
-/// The document's description of the API as a whole.
+/// The document's description of the API as a whole, before the errors any
+/// request can be answered with.
 const DESCRIPTION: &str = "The HTTP API of an Eveningstar, an interface board for \
-    Morningstar solar charge controllers.\n\nA request to a path with no endpoint \
-    is answered with `404` and the error `not_found`, and a request with a method \
-    the endpoint does not support with `405` and `method_not_allowed`.";
+    Morningstar solar charge controllers.";
 
-/// The OpenAPI 3.1 document of every version 1 endpoint.
+/// The OpenAPI 3.1 document of every version 1 operation.
 ///
 /// # Panics
 ///
-/// If a type's request and response schemas differ.
+/// If a type's request and response schemas differ, an operation has two
+/// responses with the same status code, or a JSON response's type has no
+/// description.
 #[must_use]
 pub fn openapi() -> Value {
-    let mut api = Document::new();
-
-    let system = api.response::<System>();
-    api.operation(
-        paths::SYSTEM,
-        "get",
-        json!({
-            "operationId": "get_system",
-            "summary": "Get the device's identity and uptime",
-            "responses": {
-                "200": json_response("The device's identity and uptime.", &system),
-            },
-        }),
-        &[],
-    );
-
-    let status = api.response::<RebootStatus>();
-    api.operation(
-        paths::REBOOT,
-        "get",
-        json!({
-            "operationId": "get_reboot_status",
-            "summary": "Get the pending reboot and its holds",
-            "responses": {
-                "200": json_response(
-                    "The pending graceful reboot, if any, and what holds off graceful reboots.",
-                    &status,
-                ),
-            },
-        }),
-        &[],
-    );
-
-    let request = api.request::<RebootRequest>();
-    api.operation(
-        paths::REBOOT,
-        "post",
-        json!({
-            "operationId": "reboot",
-            "summary": "Reboot the device",
-            "description": "A graceful reboot waits for the holds listed by `GET /system/reboot` \
-                to be released, up to a deadline.",
-            "requestBody": json_request(&request),
-            "responses": {
-                "202": {
-                    "description": "The device reboots after answering, dropping the connection.",
-                },
-            },
-        }),
-        &[ErrorCode::BadRequest, ErrorCode::PayloadTooLarge],
-    );
-
-    api.finish()
+    let mut document = Document::new();
+    for &operation in Operation::ALL {
+        operation.document(&mut document);
+    }
+    document.finish()
 }
 
 /// An OpenAPI document being built.
-struct Document {
+pub(super) struct Document {
     /// Schemas of request bodies, as the device reads them.
     requests: SchemaGenerator,
     /// Schemas of response bodies, as the device writes them.
@@ -114,17 +70,58 @@ impl Document {
         self.responses.subschema_for::<T>().to_value()
     }
 
-    /// Adds `operation` as `method` on `path`, answering with `errors` as well
-    /// as its own responses.
-    fn operation(&mut self, path: &str, method: &str, mut operation: Value, errors: &[ErrorCode]) {
+    /// The description of the response body `schema`, or of the schema it
+    /// refers to.
+    fn response_description(&self, schema: &Value) -> String {
+        let definition = schema["$ref"]
+            .as_str()
+            .and_then(|reference| reference.strip_prefix("#/components/schemas/"))
+            .and_then(|name| self.responses.definitions().get(name))
+            .unwrap_or(schema);
+        let Some(description) = definition["description"].as_str() else {
+            panic!("the response schema {schema} has no description");
+        };
+        description.to_owned()
+    }
+
+    /// Adds the operation with ID `id`, at `E`'s method and path.
+    pub(super) fn operation<E>(&mut self, id: &str)
+    where
+        E: Endpoint,
+        E::Request: DocumentRequest,
+        E::Response: DocumentResponse,
+    {
+        let mut operation = json!({
+            "operationId": id,
+            "summary": E::SUMMARY,
+            "responses": { E::STATUS.to_string(): E::Response::document(self) },
+        });
+        if let Some(description) = E::DESCRIPTION {
+            operation["description"] = description.into();
+        }
+        if let Some(body) = E::Request::document(self) {
+            operation["requestBody"] = body;
+        }
+
+        let errors = <E::Request as RequestBody>::Error::CODES
+            .iter()
+            .chain(E::Error::CODES);
         for &code in errors {
-            operation["responses"][status(code).to_string()] =
+            let status = status(code).to_string();
+            assert!(
+                operation["responses"].get(&status).is_none(),
+                "`{id}` has two responses with status code {status}"
+            );
+            operation["responses"][status] =
                 json!({ "$ref": format_args!("#/components/responses/{}", name(code)) });
         }
-        let item = self.paths.entry(path).or_insert_with(|| json!({}));
+
+        let method = E::METHOD.as_str().to_ascii_lowercase();
+        let item = self.paths.entry(E::PATH).or_insert_with(|| json!({}));
         assert!(
-            item.get(method).is_none(),
-            "`{method} {path}` is already added"
+            item.get(&method).is_none(),
+            "`{method} {}` has two operations",
+            E::PATH
         );
         item[method] = operation;
     }
@@ -166,12 +163,20 @@ impl Document {
             })
             .collect();
 
+        let mut description = String::from(DESCRIPTION);
+        description.push_str("\n\nAny request can also be answered with:\n");
+        for &code in RouteError::CODES {
+            let name = name(code);
+            let meaning = responses[&name]["description"].as_str().unwrap_or_default();
+            let _ = write!(description, "\n- `{}` `{name}`: {meaning}", status(code));
+        }
+
         json!({
             "openapi": "3.1.1",
             "info": {
                 "title": "Eveningstar API",
                 "version": env!("CARGO_PKG_VERSION"),
-                "description": DESCRIPTION,
+                "description": description,
                 "license": {
                     "name": env!("CARGO_PKG_LICENSE"),
                     "identifier": env!("CARGO_PKG_LICENSE"),
@@ -184,6 +189,43 @@ impl Document {
                 "responses": responses,
             },
         })
+    }
+}
+
+/// A request body the document can describe.
+pub(super) trait DocumentRequest {
+    /// The request body of an operation, or `None` if it has none.
+    fn document(document: &mut Document) -> Option<Value>;
+}
+
+impl DocumentRequest for Empty {
+    fn document(_document: &mut Document) -> Option<Value> {
+        None
+    }
+}
+
+impl<T: JsonSchema> DocumentRequest for Json<T> {
+    fn document(document: &mut Document) -> Option<Value> {
+        Some(json_request(&document.request::<T>()))
+    }
+}
+
+/// A response body the document can describe.
+pub(super) trait DocumentResponse {
+    /// The successful response of an operation.
+    fn document(document: &mut Document) -> Value;
+}
+
+impl DocumentResponse for Empty {
+    fn document(_document: &mut Document) -> Value {
+        json!({ "description": "The response has no body." })
+    }
+}
+
+impl<T: JsonSchema> DocumentResponse for Json<T> {
+    fn document(document: &mut Document) -> Value {
+        let schema = document.response::<T>();
+        json_response(&document.response_description(&schema), &schema)
     }
 }
 
@@ -257,6 +299,42 @@ mod tests {
                 "{reference} is missing"
             );
         }
+    }
+
+    #[test]
+    fn every_operation_is_at_its_method_and_path() {
+        let document = openapi();
+        for &operation in Operation::ALL {
+            let method = operation.method().as_str().to_ascii_lowercase();
+            let id = &document["paths"][operation.path()][method]["operationId"];
+            assert_eq!(id, operation.name());
+        }
+    }
+
+    #[test]
+    fn responses_follow_the_endpoints() {
+        let document = openapi();
+        let statuses = |path: &str, method: &str| -> Vec<String> {
+            let responses = document["paths"][path][method]["responses"].as_object();
+            responses.unwrap().keys().cloned().collect()
+        };
+        assert_eq!(statuses("/system", "get"), ["200"]);
+        // Reading the JSON request body adds its errors.
+        assert_eq!(statuses("/system/reboot", "post"), ["202", "400", "413"]);
+        let reboot = &document["paths"]["/system/reboot"]["post"];
+        assert!(reboot["requestBody"].is_object());
+        assert!(reboot["responses"]["202"].get("content").is_none());
+    }
+
+    #[test]
+    fn route_errors_are_described_once() {
+        let document = openapi();
+        let description = document["info"]["description"].as_str().unwrap();
+        assert!(description.contains("`404` `not_found`"), "{description}");
+        assert!(
+            description.contains("`405` `method_not_allowed`"),
+            "{description}"
+        );
     }
 
     #[test]
