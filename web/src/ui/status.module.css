@@ -1,0 +1,35 @@
+.icon {
+  width: 11px;
+  height: 11px;
+  flex: none;
+}
+
+.off {
+  color: var(--st-off);
+}
+
+.standby {
+  color: var(--st-standby);
+}
+
+.normal {
+  color: var(--st-normal);
+}
+
+.caution {
+  color: var(--st-caution);
+}
+
+.serious {
+  color: var(--st-serious);
+}
+
+.critical {
+  color: var(--st-critical);
+}
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}

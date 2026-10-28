@@ -1,0 +1,23 @@
+.countdown {
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.details {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.details summary {
+  cursor: pointer;
+}
+
+.pre {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-3);
+  background: var(--surface-2);
+  border-radius: var(--radius-control);
+  font-family: var(--font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
