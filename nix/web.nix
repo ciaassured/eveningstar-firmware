@@ -76,6 +76,9 @@ in
       };
     in
     {
+      # The Node that the npm trees' `engines` name, for running npm outside Nix builds.
+      packages.nodejs = nodejs;
+
       packages.web-node-modules = webModules;
 
       packages.web-types = pkgs.stdenv.mkDerivation {

@@ -1,0 +1,25 @@
+version: 2
+
+# Every ecosystem waits a week after a release before it is proposed, so a
+# release that turns out to be malicious has time to be pulled first.
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+
+  - package-ecosystem: npm
+    directory: /tools/openapi-typescript
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7

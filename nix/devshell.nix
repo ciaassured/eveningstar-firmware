@@ -11,6 +11,7 @@
         lefthook
         probe-rs-tools
         config.packages.checks
+        config.packages.web-dev-tools
         config.packages.esp-idf
         config.packages.esp-wipe
         config.packages.bootloader-menuconfig
