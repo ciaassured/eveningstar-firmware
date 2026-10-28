@@ -145,17 +145,17 @@ function pollerSetup(results: Result<number>[]) {
   return { clock, active, poller, priorities };
 }
 
-test("the poller fetches at once, then every interval, and records when", async () => {
+test("the poller waits an interval before its first poll, then polls every interval, and records when", async () => {
   const { clock, poller, priorities } = pollerSetup([ok(1), ok(2), ok(3)]);
   poller.start();
-  await settle();
-  assert.equal(poller.value.value, 1);
-  assert.equal(poller.updatedAt.value, 0);
   await clock.advance(4_999);
-  assert.equal(priorities.length, 1);
+  assert.equal(priorities.length, 0);
   await clock.advance(1);
-  assert.equal(poller.value.value, 2);
+  assert.equal(poller.value.value, 1);
   assert.equal(poller.updatedAt.value, 5_000);
+  await clock.advance(5_000);
+  assert.equal(poller.value.value, 2);
+  assert.equal(poller.updatedAt.value, 10_000);
   assert.deepEqual(priorities, ["poll", "poll"]);
   poller.stop();
   await clock.advance(60_000);
@@ -166,7 +166,8 @@ test("the poller backs off to 30 s while fetches fail, and a success restores th
   const net = failed<number>({ kind: "network" });
   const { clock, poller, priorities } = pollerSetup([ok(1), net, net, net, net, ok(2), ok(3)]);
   poller.start();
-  await settle();
+  await clock.advance(5_000);
+  assert.equal(priorities.length, 1);
   // Failures wait 10, 20, 30, 30 s.
   await clock.advance(5_000);
   assert.equal(priorities.length, 2);
@@ -190,7 +191,8 @@ test("the poller backs off to 30 s while fetches fail, and a success restores th
 test("the poller stops while the page isn't in use and refreshes at once when it is again", async () => {
   const { clock, active, poller, priorities } = pollerSetup([ok(1), ok(2), ok(3)]);
   poller.start();
-  await settle();
+  await clock.advance(5_000);
+  assert.equal(priorities.length, 1);
   active.value = false;
   await clock.advance(60_000);
   assert.equal(priorities.length, 1);
@@ -198,6 +200,18 @@ test("the poller stops while the page isn't in use and refreshes at once when it
   await settle();
   assert.equal(priorities.length, 2);
   assert.equal(poller.value.value, 2);
+  poller.stop();
+});
+
+test("a poller started while the page is hidden polls at once when it is shown", async () => {
+  const { clock, active, poller, priorities } = pollerSetup([ok(1), ok(2)]);
+  active.value = false;
+  poller.start();
+  await clock.advance(30_000);
+  assert.equal(priorities.length, 0);
+  active.value = true;
+  await settle();
+  assert.equal(priorities.length, 1);
   poller.stop();
 });
 

@@ -30,14 +30,16 @@ jobs:
         with:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
 
-      # The token is this step's input and nothing else's, so the builds and
-      # build scripts of the checks never see it. Pull requests only pull.
+      # The token is this step's input and nothing else's: the action keeps it
+      # in the runner's Cachix configuration, not in the environment. Pull
+      # requests run code nobody has reviewed yet, so they only pull and are
+      # never given the token.
       - name: Configure Cachix
         if: ${{ vars.CACHIX_CACHE_NAME != '' }}
         uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: ${{ vars.CACHIX_CACHE_NAME }}
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          authToken: ${{ github.event_name != 'pull_request' && secrets.CACHIX_AUTH_TOKEN || '' }}
           skipPush: ${{ github.event_name == 'pull_request' || secrets.CACHIX_AUTH_TOKEN == '' }}
 
       - name: Run checks

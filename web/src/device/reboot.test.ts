@@ -137,3 +137,27 @@ test("a second start while one runs is ignored, and reset waits for the end", as
   flow.reset();
   assert.equal(flow.progress.value.kind, "idle");
 });
+
+test("a slow answer that runs past the deadline ends the flow without asking again", async () => {
+  const clock = new FakeClock();
+  const calls: string[] = [];
+  const flow = createRebootFlow({
+    api: {
+      reboot: () => Promise.resolve(ok(undefined)),
+      status: () => {
+        calls.push("status");
+        clock.now += RESTART_TIMEOUT_MS + 1;
+        return Promise.resolve(ok(idle));
+      },
+      system: () => {
+        calls.push("system");
+        return Promise.resolve(ok(system(5_000)));
+      },
+    },
+    sleep: () => Promise.resolve(),
+    now: () => clock.now,
+  });
+  await flow.start("graceful", 1_000);
+  assert.deepEqual(calls, ["status"]);
+  assert.deepEqual(flow.progress.value, { kind: "timed-out" });
+});

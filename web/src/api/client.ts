@@ -12,6 +12,8 @@ export interface CallOptions {
   priority?: Priority;
   /** The page this is for: leaving it aborts the request. */
   group?: string;
+  /** Overrides whether the transport tries again after a transient failure. */
+  retry?: boolean;
 }
 
 /** The options for a call with the priority and, if there is one, the page it is for. */
@@ -43,6 +45,7 @@ export function createApiClient(transport: Transport): ApiClient {
         resource: operation,
         ...(options?.body === undefined ? {} : { body: options.body }),
         ...(options?.group === undefined ? {} : { group: options.group }),
+        ...(options?.retry === undefined ? {} : { retry: options.retry }),
         ...(timeoutMs === undefined ? {} : { timeoutMs }),
       });
       if (!outcome.ok) return outcome;
