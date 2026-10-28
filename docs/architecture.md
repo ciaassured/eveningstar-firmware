@@ -128,7 +128,7 @@ header, so it holds with or without authentication.
 1. Add its request and response types to `v1.rs`, deriving `JsonSchema` under
    the `schema` feature. Their doc comments become the schema descriptions.
 2. Add a unit struct for the endpoint and implement `Endpoint` for it, including
-   the `CAPABILITY` a session needs to call it.
+   the `SCOPE` a session needs to call it.
 3. Add the struct to the `operations!` table.
 4. Write the handler in the module for its group, and add its arm to the
    `match` in `http/api.rs`. The firmware doesn't build until you do.
@@ -187,9 +187,9 @@ web/ + web-node-modules ──────────▶ web-ui (vite build →
 - `web-types` turns the document into TypeScript declarations with
   `openapi-typescript`, which has its own lockfile and derivation. Only
   declarations come out of it, so a compromised generator can at worst produce
-  wrong types. A short script of our own (`nix/web/capabilities.mjs`, plain
-  Node) writes the capability of each operation from the document's
-  `x-eveningstar-capability`.
+  wrong types. A short script of our own (`nix/web/scopes.mjs`, plain
+  Node) writes the scope of each operation from the `security` requirement in
+  the document, and fails on one the document doesn't define.
 - `web-node-modules` installs `web/` from its lockfile with install scripts off.
 - `web-ui` runs Vite with one chunk, no module preload, no source maps and every
   asset inlined.
@@ -283,14 +283,20 @@ client has the seams they will use, and works without them.
   transport pauses its queue, the router goes to `#/login`, and the queue
   resumes after a login. Only `NoAuth` exists. Credentials will live in memory,
   never in web storage.
-- Each operation needs a capability: `read`, `operate` or `configure`. The API
-  crate declares it on the `Endpoint`, and the OpenAPI document carries it as
-  `x-eveningstar-capability`. `web-types` writes the table the client uses from
-  the document, so an endpoint without a capability doesn't compile, and the
-  page and the device can't disagree about what an operation needs. The session
-  holds the granted capabilities, and `Requires` disables or hides what the
-  session can't use. This shapes the page; the device doesn't enforce
-  capabilities yet.
+- Each operation needs a scope: `read`, `operate` or `configure`. The API
+  crate declares it on the `Endpoint`, and the OpenAPI document carries it in
+  the operation's standard `security` requirement, `[{bearerAuth: [operate]}]`,
+  beside a `bearerAuth` scheme and a `Scope` schema. Tools that read OpenAPI
+  understand it, and it is what an OAuth-style token's `scope` claim holds, so
+  a token's scopes and the operations line up whichever way the device
+  later grants them. Roles can sit on top as named sets of scopes, such as a
+  viewer with `read` and an operator with `read` and `operate`. `web-types`
+  writes the table the client uses from the document, so an endpoint without a
+  scope doesn't compile, and the page and the device can't disagree about what
+  an operation needs. The session holds the granted scopes, and `Requires`
+  disables or hides what the session can't use. This shapes the page; the
+  device has no authentication yet, so it enforces no scope, and the document
+  says so.
 - Configuration editing follows JunOS: an exclusive lock held as a lease, a
   candidate configuration, a diff, a check, a commit that is one atomic request
   and can roll itself back unless confirmed, and a reconciliation for a commit

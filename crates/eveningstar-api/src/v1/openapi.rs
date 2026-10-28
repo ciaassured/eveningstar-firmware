@@ -14,8 +14,8 @@ use schemars::{JsonSchema, SchemaGenerator};
 use serde_json::{Map, Value, json};
 
 use super::{
-    Capability, Empty, Endpoint, Error, ErrorCode, Errors, Json, Operation, PATH, RequestBody,
-    RouteError,
+    Empty, Endpoint, Error, ErrorCode, Errors, Json, Operation, PATH, RequestBody, RouteError,
+    Scope,
 };
 
 /// The document's description of the API as a whole, before the errors any
@@ -23,9 +23,18 @@ use super::{
 const DESCRIPTION: &str = "The HTTP API of an Eveningstar, an interface board for \
     Morningstar solar charge controllers.\n\nA request with a body must have the \
     `Content-Type` `application/json`, and is answered with `415` \
-    `unsupported_media_type` otherwise.\n\nEach operation names the capability a \
-    session needs to call it in `x-eveningstar-capability`. The device doesn't \
-    enforce capabilities yet.";
+    `unsupported_media_type` otherwise.\n\nEach operation's `security` \
+    requirement names the scope a bearer token needs to call it. The device \
+    has no authentication yet, so it enforces none of them.";
+
+/// The name of the security scheme operations require scopes of.
+const BEARER_SCHEME: &str = "bearerAuth";
+
+/// What the `bearerAuth` security scheme says about itself.
+const BEARER_DESCRIPTION: &str = "A token in the `Authorization` header: \
+    `Authorization: Bearer <token>`. An operation's requirement lists the \
+    scopes the token needs; the schema `Scope` defines them. The device \
+    doesn't check tokens yet.";
 
 /// The OpenAPI 3.1 document of every version 1 operation.
 ///
@@ -99,7 +108,7 @@ impl Document {
         let mut operation = json!({
             "operationId": id,
             "summary": E::SUMMARY,
-            "x-eveningstar-capability": E::CAPABILITY,
+            "security": [{ BEARER_SCHEME: [E::SCOPE] }],
             "responses": { E::STATUS.to_string(): E::Response::document(self) },
         });
         if let Some(description) = E::DESCRIPTION {
@@ -134,8 +143,8 @@ impl Document {
 
     fn finish(mut self) -> Value {
         let error = self.response::<Error>();
-        // Operations name capabilities by value, so no schema refers to them.
-        self.response::<Capability>();
+        // Operations name scopes by value, so no schema refers to them.
+        self.response::<Scope>();
 
         let mut schemas = self.responses.take_definitions(true);
         for (name, schema) in self.requests.take_definitions(true) {
@@ -193,6 +202,13 @@ impl Document {
             "servers": [{ "url": PATH }],
             "paths": self.paths,
             "components": {
+                "securitySchemes": {
+                    BEARER_SCHEME: {
+                        "type": "http",
+                        "scheme": "bearer",
+                        "description": BEARER_DESCRIPTION,
+                    },
+                },
                 "schemas": schemas,
                 "responses": responses,
             },
@@ -384,25 +400,28 @@ mod tests {
     }
 
     #[test]
-    fn operations_name_their_capabilities() {
+    fn operations_name_their_scopes() {
         let document = openapi();
         for &operation in Operation::ALL {
             let item = &document["paths"][operation.path()];
             let method = operation.method().as_str().to_ascii_lowercase();
-            let named = &item[method]["x-eveningstar-capability"];
+            let required = &item[method]["security"];
             assert_eq!(
-                named,
-                &serde_json::to_value(operation.capability()).unwrap(),
+                required,
+                &json!([{ "bearerAuth": [operation.scope()] }]),
                 "{}",
                 operation.name()
             );
         }
-        let capabilities = &document["components"]["schemas"]["Capability"]["oneOf"];
-        let names: Vec<_> = capabilities
+        let scheme = &document["components"]["securitySchemes"]["bearerAuth"];
+        assert_eq!(scheme["type"], "http");
+        assert_eq!(scheme["scheme"], "bearer");
+        let scopes = &document["components"]["schemas"]["Scope"]["oneOf"];
+        let names: Vec<_> = scopes
             .as_array()
             .unwrap()
             .iter()
-            .map(|capability| capability["const"].as_str().unwrap())
+            .map(|scope| scope["const"].as_str().unwrap())
             .collect();
         assert_eq!(names, ["read", "operate", "configure"]);
     }

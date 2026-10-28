@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { signal } from "@preact/signals";
-import type { Capability } from "../api/capability.ts";
+import type { Scope } from "../api/scope.ts";
 import { NoAuth } from "./auth.ts";
 import type { AuthSession, AuthState } from "./auth.ts";
 import { createSession } from "./session.ts";
@@ -20,11 +20,11 @@ test("signing in is unsupported without authentication", async () => {
   assert.deepEqual(auth.decorate({ method: "GET" }), { method: "GET" });
 });
 
-function signedIn(capabilities: readonly Capability[]) {
+function signedIn(scopes: readonly Scope[]) {
   const state = signal<AuthState>({ kind: "anonymous" });
   const auth: AuthSession = {
     state,
-    anonymousCapabilities: ["read"],
+    anonymousScopes: ["read"],
     decorate: (init) => init,
     onUnauthorized: () => Promise.resolve("login-required"),
     login: () => Promise.resolve({ ok: true }),
@@ -34,12 +34,12 @@ function signedIn(capabilities: readonly Capability[]) {
     state,
     session: createSession(auth),
     signIn: (user: string) => {
-      state.value = { kind: "authenticated", user, capabilities };
+      state.value = { kind: "authenticated", user, scopes };
     },
   };
 }
 
-test("an anonymous session has the provider's anonymous capabilities, a signed-in one its own", () => {
+test("an anonymous session has the provider's anonymous scopes, a signed-in one its own", () => {
   const { session, signIn } = signedIn(["read", "operate"]);
   assert.equal(session.can("read"), true);
   assert.equal(session.can("operate"), false);

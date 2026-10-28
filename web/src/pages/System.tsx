@@ -92,7 +92,7 @@ function RebootPanel() {
   return (
     <Panel title="Reboot" wide>
       <p>Restarting the device interrupts what it is doing and drops its connections for a short while.</p>
-      <Requires capability="operate" mode="disable">
+      <Requires scope="operate" mode="disable">
         <Button
           disabled={busy}
           reason={busy ? "A reboot is in progress" : undefined}
