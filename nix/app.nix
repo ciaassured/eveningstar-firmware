@@ -124,6 +124,10 @@ in
         # Stamped into the app descriptor as the build time.
         SOURCE_DATE_EPOCH = toString inputs.self.lastModified;
 
+        # The page the firmware serves. The dependency build leaves it out, so
+        # a new page doesn't rebuild the dependencies.
+        EVENINGSTAR_WEB_UI = "${config.packages.web-ui-bundle}";
+
         # Cargo decides whether a workspace crate is stale by comparing source
         # and output timestamps. Everything copied out of the store has the same
         # timestamp, so the stubs would look up to date; touching the real

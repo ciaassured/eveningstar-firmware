@@ -4,16 +4,18 @@
 //! Handlers only translate between HTTP and the [services](crate::services).
 //! [`api`] serves each API request with its operation's handler, and each
 //! other submodule holds the handlers of one group of related operations.
+//! [`ui`] serves the web UI at `/`.
 
 mod api;
 mod system;
+mod ui;
 
 use embassy_executor::Spawner;
 use embassy_net::Stack;
 use embassy_time::Duration;
 use eveningstar_api::v1;
 use picoserve::extract::FromRef;
-use picoserve::routing::{PathRouter, get};
+use picoserve::routing::PathRouter;
 use picoserve::{Router, Timeouts};
 use static_cell::ConstStaticCell;
 
@@ -68,7 +70,7 @@ impl FromRef<AppState> for Reboot {
 
 fn router() -> Router<impl PathRouter<AppState>, AppState> {
     Router::new()
-        .route("/", get(|| async { "Eveningstar\n" }))
+        .route_service("/", ui::Ui)
         // A nested service only sees paths that continue past its prefix, so
         // the prefix itself is routed separately.
         .route_service(v1::PATH, api::Api)
