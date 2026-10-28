@@ -32,8 +32,6 @@ Recorded so the client's seams line up with them:
   connections. The client already honours `Retry-After`.
 - An aggregate read-only status endpoint for the dashboard, so a view costs one
   request instead of several.
-- JSON bodies require `Content-Type: application/json`, which blocks cross-site
-  form posts.
 - Each `Endpoint` declares its required capability, exported to OpenAPI as an
   extension (`x-eveningstar-capability`), so the client's table of capabilities
   is generated rather than written.
