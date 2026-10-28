@@ -79,7 +79,7 @@ delete what this spec only needed for the build-out.
 | Lockfile | Packages | Kind |
 |----------|----------|------|
 | `web/package-lock.json` | `preact`, `@preact/signals` | runtime (shipped) |
-| `web/package-lock.json` | `vite`, `typescript` | dev |
+| `web/package-lock.json` | `vite`, `typescript`, `@types/node` (major of the pinned Node) | dev |
 | `tools/openapi-typescript/package-lock.json` | `openapi-typescript` | dev, its own tree |
 
 Measured on 2026-10-28: the `web/` tree installs about 20 packages on
