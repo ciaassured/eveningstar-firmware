@@ -13,10 +13,10 @@
   fill: currentColor;
 }
 
-.sun {
-  stop-color: var(--sun-fill);
+.day {
+  fill: var(--mark-day);
 }
 
-.moon {
-  stop-color: var(--moon);
+.night {
+  fill: var(--mark-night);
 }

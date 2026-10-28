@@ -30,6 +30,8 @@
 }
 
 .brand {
+  --mark-day: var(--header-mark-day);
+  --mark-night: var(--header-mark-night);
   display: flex;
   align-items: center;
   gap: var(--space-3);

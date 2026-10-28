@@ -88,6 +88,13 @@ const GRAPHICS: [string, string][] = [
   ["--moon", "--surface"],
   ["--accent", "--surface"],
   ["--accent", "--bg"],
+  // The mark's two colours, on page surfaces and in the header.
+  ["--mark-day", "--bg"],
+  ["--mark-day", "--surface"],
+  ["--mark-night", "--bg"],
+  ["--mark-night", "--surface"],
+  ["--header-mark-day", "--header-bg"],
+  ["--header-mark-night", "--header-bg"],
   ["--st-normal", "--header-bg"],
   ["--st-caution", "--header-bg"],
   ["--st-critical", "--header-bg"],
