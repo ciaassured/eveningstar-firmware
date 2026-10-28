@@ -122,6 +122,8 @@ const banned = [
   [/:\s*any\b/, ": any"],
   [/\bas\s+any\b/, "as any"],
   [/@ts-ignore/, "@ts-ignore"],
+  // A dependency of @preact/signals, outside the list of packages the UI may use.
+  [/@preact\/signals-core/, "@preact/signals-core"],
 ];
 
 const src = join(root, "web", "src");

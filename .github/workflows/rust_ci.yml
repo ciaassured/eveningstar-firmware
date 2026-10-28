@@ -9,6 +9,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -16,24 +19,58 @@ jobs:
   checks:
     name: Nix checks
     runs-on: ubuntu-24.04
-    env:
-      CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install Nix
-        uses: cachix/install-nix-action@v31
+        uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
         with:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
 
+      # The token is this step's input and nothing else's, so the builds and
+      # build scripts of the checks never see it. Pull requests only pull.
       - name: Configure Cachix
         if: ${{ vars.CACHIX_CACHE_NAME != '' }}
-        uses: cachix/cachix-action@v17
+        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: ${{ vars.CACHIX_CACHE_NAME }}
-          authToken: ${{ env.CACHIX_AUTH_TOKEN }}
-          skipPush: ${{ env.CACHIX_AUTH_TOKEN == '' }}
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          skipPush: ${{ github.event_name == 'pull_request' || secrets.CACHIX_AUTH_TOKEN == '' }}
 
       - name: Run checks
         run: nix run .#checks
+
+      # The checks built the bundle once; building it again must give the same
+      # bytes.
+      - name: Check that the web UI bundle is reproducible
+        run: |
+          nix build --no-link .#web-ui-bundle
+          nix build --no-link --rebuild .#web-ui-bundle
+
+  # Checks the packages of both lockfiles against the registry's advisories and
+  # signatures. It installs them, with install scripts off, in a job that has no
+  # secrets.
+  npm-audit:
+    name: npm audit
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
+
+      - name: Audit the lockfiles
+        run: |
+          audit() {
+            nix shell .#nodejs --command npm --prefix "$1" ci --ignore-scripts
+            nix shell .#nodejs --command npm --prefix "$1" audit --audit-level=low
+            nix shell .#nodejs --command npm --prefix "$1" audit signatures
+          }
+          audit web
+          audit tools/openapi-typescript
