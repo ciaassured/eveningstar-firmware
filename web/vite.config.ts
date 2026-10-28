@@ -2,9 +2,8 @@ import { defineConfig } from "vite";
 
 export default defineConfig({
   base: "/",
-  esbuild: {
-    jsx: "automatic",
-    jsxImportSource: "preact",
+  oxc: {
+    jsx: { runtime: "automatic", importSource: "preact" },
   },
   server: { host: "127.0.0.1" },
   build: {
