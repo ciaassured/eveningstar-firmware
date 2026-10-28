@@ -326,7 +326,11 @@ follow the browser. The tokens are in `web/src/styles/tokens.css`, and a test
 checks every text and graphic pairing in both themes against WCAG AA. Status is
 always a shape and a word: off, standby, normal, caution, serious and critical
 each have their own shape. There are no font files and no image files; the mark
-and wordmark are inline SVG redrawn from the artwork in `web/brand`.
+and wordmark are inline SVG redrawn from the artwork in `web/brand`. The mark's
+star is split by the day-night curve: its day half takes `--mark-day`, and its
+night half, the orbit ring and its dots take `--mark-night`, so the mark is amber
+and navy on light surfaces and amber and pale blue on dark ones. The header is
+dark in both themes and sets the dark colours for the mark inside it.
 
 ### Dependencies
 

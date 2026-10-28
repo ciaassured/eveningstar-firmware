@@ -4,8 +4,15 @@
 /** The mark's drawing space. */
 export const MARK_VIEW_BOX = "0 0 100 100";
 
-/** The four-point star, in the mark's drawing space after `MARK_STAR_TRANSFORM`. */
-export const MARK_STAR = "M106.89 52.73 98.74 91.1C95.87 104.64 85.17 115.14 71.59 117.77l-37.33 7.23 38.37 8.15c4.09 .87 8 2.48 11.51 4.74C105.75 119.66 125.35 116.2 138.46 116.63 125.99 113.06 116.58 102.79 114.12 90.06ZM89.3 141.96c5.15 4.93 8.65 11.34 10 18.34l7.23 37.33 8.15-38.37c2.87-13.54 13.57-24.04 27.16-26.68l37.33-7.23-25.72-5.46 0 .01c-40.26-9.1-64.06 22.11-64.15 22.06z";
+/** The half of the four-point star with its top and left points, in the mark's
+ * drawing space after `MARK_STAR_TRANSFORM`. */
+export const MARK_STAR_DAY = "M106.89 52.73 98.74 91.1C95.87 104.64 85.17 115.14 71.59 117.77l-37.33 7.23 38.37 8.15c4.09 .87 8 2.48 11.51 4.74C105.75 119.66 125.35 116.2 138.46 116.63 125.99 113.06 116.58 102.79 114.12 90.06Z";
+
+/** The half of the four-point star with its bottom and right points, in the
+ * mark's drawing space after `MARK_STAR_TRANSFORM`. */
+export const MARK_STAR_NIGHT = "M89.3 141.96c5.15 4.93 8.65 11.34 10 18.34l7.23 37.33 8.15-38.37c2.87-13.54 13.57-24.04 27.16-26.68l37.33-7.23-25.72-5.46 0 .01c-40.26-9.1-64.06 22.11-64.15 22.06z";
+
+/** Places both halves of the star in the mark's drawing space. */
 export const MARK_STAR_TRANSFORM = "matrix(.69009 0 0 .69009 -23.6386 -36.3861)";
 
 /** The day-night curve and the broken orbit ring. */
@@ -16,15 +23,6 @@ export const MARK_DOTS: readonly (readonly [number, number, number])[] = [
   [17.59, 33.08, 3.08],
   [82.49, 33.08, 3.08],
 ];
-
-/** The gradient the mark is filled with. */
-export const MARK_GRADIENT = {
-  cx: 82.98,
-  cy: 32.25,
-  r: 50,
-  transform: "matrix(-1.6529 .00052 -.00042 -1.3412 219.71 76.408)",
-  stops: [0.216, 0.498],
-} as const;
 
 /** The wordmark's drawing space. */
 export const WORDMARK_VIEW_BOX = "0 0 132.82 22.33";
