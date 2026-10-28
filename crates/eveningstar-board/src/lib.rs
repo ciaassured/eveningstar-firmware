@@ -19,7 +19,7 @@ pub use v2::{ETHERNET_MAC_READ, EthernetChip, EthernetSpi, FlashCs, FlashSpi};
 use core::fmt;
 
 use esp_hal::gpio::{AnyPin, Input, InputConfig, Level, Output, OutputConfig, Pull};
-use esp_hal::peripherals::{ADC1, FROM_CPU_INTR0, RNG, RTC_TIMER, TIMG0};
+use esp_hal::peripherals::{ADC1, FLASH, FROM_CPU_INTR0, RNG, RTC_TIMER, TIMG0};
 
 #[derive(Debug)]
 pub struct Board {
@@ -29,7 +29,10 @@ pub struct Board {
     pub status_led: StatusLed,
     pub cfg_button: CfgButton,
     pub ethernet: Ethernet,
-    pub flash: Flash,
+    /// The flash inside the ESP32-C6 module, which the chip boots and runs
+    /// code from.
+    pub internal_flash: FLASH<'static>,
+    pub external_flash: Flash,
     pub timg0: TIMG0<'static>,
     pub rtc_timer: RTC_TIMER<'static>,
     pub from_cpu_intr0: FROM_CPU_INTR0<'static>,
