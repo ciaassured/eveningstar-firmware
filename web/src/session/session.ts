@@ -1,6 +1,6 @@
 import type { ReadonlySignal } from "@preact/signals";
 import { computed } from "@preact/signals";
-import type { Capability } from "../lib/capability.ts";
+import type { Capability } from "../api/capability.ts";
 import type { AuthSession, AuthState } from "./auth.ts";
 
 /** Who is using the page, and what they may do. */

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { signal } from "@preact/signals";
-import type { Capability } from "../lib/capability.ts";
+import type { Capability } from "../api/capability.ts";
 import { NoAuth } from "./auth.ts";
 import type { AuthSession, AuthState } from "./auth.ts";
 import { createSession } from "./session.ts";

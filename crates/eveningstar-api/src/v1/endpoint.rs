@@ -4,7 +4,7 @@
 use core::convert::Infallible;
 use core::marker::PhantomData;
 
-use super::ErrorCode;
+use super::{Capability, ErrorCode};
 
 /// An HTTP method.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -35,6 +35,8 @@ pub trait Endpoint {
     const PATH: &'static str;
     /// The status code of a successful response.
     const STATUS: u16;
+    /// What a session needs to be allowed to call the operation.
+    const CAPABILITY: Capability;
     /// What the operation does, in one line.
     const SUMMARY: &'static str;
     /// What the operation does, in more detail than the summary.

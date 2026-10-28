@@ -1,8 +1,8 @@
 import type { ReadonlySignal } from "@preact/signals";
 import { signal } from "@preact/signals";
 import type { AuthProvider } from "../api/auth.ts";
-import type { Capability } from "../lib/capability.ts";
-import { CAPABILITIES } from "../lib/capability.ts";
+import type { Capability } from "../api/capability.ts";
+import { CAPABILITIES } from "../api/capability.ts";
 
 export type AuthState =
   | { kind: "anonymous" }

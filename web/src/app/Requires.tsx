@@ -1,6 +1,6 @@
 import type { ComponentChildren } from "preact";
 import { useServices } from "./context.ts";
-import type { Capability } from "../lib/capability.ts";
+import type { Capability } from "../api/capability.ts";
 import styles from "./requires.module.css";
 
 const NEEDS: Record<Capability, string> = {
