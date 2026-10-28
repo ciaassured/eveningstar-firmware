@@ -148,7 +148,7 @@ impl Board {
             mac,
         };
 
-        let flash = Flash {
+        let external_flash = Flash {
             spi: FlashSpi::new(
                 spi_bus,
                 FlashCs {
@@ -163,7 +163,8 @@ impl Board {
             status_led: StatusLed::new(peripherals.GPIO20.into(), Level::High),
             cfg_button: CfgButton::new(peripherals.GPIO21.into(), Level::Low, Pull::Up),
             ethernet,
-            flash,
+            internal_flash: peripherals.FLASH,
+            external_flash,
             timg0: peripherals.TIMG0,
             rtc_timer: peripherals.RTC_TIMER,
             from_cpu_intr0: peripherals.FROM_CPU_INTR0,
