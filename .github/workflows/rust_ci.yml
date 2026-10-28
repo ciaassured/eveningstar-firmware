@@ -16,9 +16,23 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # The groups of `nix run .#checks`, one job each, so they run side by side.
   checks:
-    name: Nix checks
+    name: ${{ matrix.name }}
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Rust lint
+            groups: rust-lint
+          - name: Web lint and tests
+            groups: web-lint web-test
+          - name: Build
+            groups: build
+            reproducible: true
+          - name: Rust tests
+            groups: rust-test
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -43,14 +57,32 @@ jobs:
           skipPush: ${{ github.event_name == 'pull_request' || secrets.CACHIX_AUTH_TOKEN == '' }}
 
       - name: Run checks
-        run: nix run .#checks
+        env:
+          GROUPS_TO_RUN: ${{ matrix.groups }}
+        run: |
+          read -ra groups <<< "$GROUPS_TO_RUN"
+          nix run .#checks -- "${groups[@]}"
 
       # The checks built the bundle once; building it again must give the same
       # bytes.
       - name: Check that the web UI bundle is reproducible
+        if: ${{ matrix.reproducible }}
         run: |
           nix build --no-link .#web-ui-bundle
           nix build --no-link --rebuild .#web-ui-bundle
+
+  # One result for the jobs above, under the name the checks went by before they
+  # were split.
+  nix-checks:
+    name: Nix checks
+    needs: checks
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every check job to have passed
+        env:
+          RESULT: ${{ needs.checks.result }}
+        run: test "$RESULT" = success
 
   # Checks the packages of both lockfiles against the registry's advisories and
   # signatures. It installs them, with install scripts off, in a job that has no

@@ -11,7 +11,9 @@
       # and clippy, and the web UI's lint and type check), `build` (a release
       # build, which also links, with the web UI bundled) and `test` (the tests
       # of the crates that also build on the host, and the web UI's). With no
-      # arguments, every group runs.
+      # arguments, every group runs. `lint` and `test` are each two finer
+      # groups, `rust-lint` and `web-lint`, `rust-test` and `web-test`, which
+      # CI runs as separate jobs.
       packages.checks = pkgs.writeShellApplication {
         name = "eveningstar-checks";
         runtimeInputs = [ toolchain pkgs.stdenv.cc ];
@@ -49,9 +51,18 @@
           host_crates=(eveningstar-api)
           host_target="$(rustc --print host-tuple)"
 
+          expanded=()
           for group in "''${groups[@]}"; do
             case "$group" in
-              lint)
+              lint) expanded+=(rust-lint web-lint) ;;
+              test) expanded+=(rust-test web-test) ;;
+              *) expanded+=("$group") ;;
+            esac
+          done
+
+          for group in "''${expanded[@]}"; do
+            case "$group" in
+              rust-lint)
                 run_check "rustfmt" cargo fmt --all -- --check
                 run_check "clippy" cargo clippy --all-features --workspace \
                   "''${host_crates[@]/#/--exclude=}" -- -D warnings
@@ -61,11 +72,14 @@
                 run_check "clippy (host crates, host target)" cargo clippy --all-features \
                   --all-targets "''${host_crates[@]/#/--package=}" --target "$host_target" \
                   -- -D warnings -A clippy::large_stack_frames
+                ;;
+              web-lint)
                 run_check "web lint and type check" nix build --no-link .#web-lint .#web-typecheck
                 ;;
               build)
                 # The web UI is built by Nix alone, so no npm code runs on the
-                # host, and only here, so `lint` doesn't build the whole chain.
+                # host, and only here, so the lint groups don't build the whole
+                # chain.
                 if web_ui="$(nix build --no-link --print-out-paths .#web-ui-bundle)"; then
                   EVENINGSTAR_WEB_UI="$web_ui" run_check "release build" cargo build --release
                 else
@@ -73,13 +87,15 @@
                   status=1
                 fi
                 ;;
-              test)
+              rust-test)
                 run_check "host tests" cargo test --all-features \
                   "''${host_crates[@]/#/--package=}" --target "$host_target"
+                ;;
+              web-test)
                 run_check "web tests" nix build --no-link .#web-test
                 ;;
               *)
-                echo "unknown check group: $group (expected lint, build or test)" >&2
+                echo "unknown check group: $group (expected lint, build, test, rust-lint, web-lint, rust-test or web-test)" >&2
                 exit 2
                 ;;
             esac
