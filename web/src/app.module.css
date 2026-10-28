@@ -1,0 +1,8 @@
+.app {
+  color: light-dark(#161616, #f4f4f4);
+  font-variant-numeric: tabular-nums;
+
+  & p {
+    margin: 0;
+  }
+}
