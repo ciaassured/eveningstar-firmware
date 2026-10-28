@@ -68,6 +68,14 @@ macro_rules! operations {
                 }
             }
 
+            /// What a session needs to be allowed to call the operation.
+            #[must_use]
+            pub const fn capability(self) -> Capability {
+                match self {
+                    $(Self::$endpoint(_) => <$endpoint as Endpoint>::CAPABILITY,)*
+                }
+            }
+
             /// Adds the operation to `document`.
             #[cfg(feature = "schema")]
             fn document(self, document: &mut openapi::Document) {
@@ -111,6 +119,7 @@ impl Endpoint for GetSystem {
     const METHOD: Method = Method::Get;
     const PATH: &'static str = "/system";
     const STATUS: u16 = 200;
+    const CAPABILITY: Capability = Capability::Read;
     const SUMMARY: &'static str = "Get the device's identity and uptime";
 
     type Request = Empty;
@@ -126,6 +135,7 @@ impl Endpoint for GetRebootStatus {
     const METHOD: Method = Method::Get;
     const PATH: &'static str = "/system/reboot";
     const STATUS: u16 = 200;
+    const CAPABILITY: Capability = Capability::Read;
     const SUMMARY: &'static str = "Get the pending reboot and its holds";
 
     type Request = Empty;
@@ -141,6 +151,7 @@ impl Endpoint for Reboot {
     const METHOD: Method = Method::Post;
     const PATH: &'static str = GetRebootStatus::PATH;
     const STATUS: u16 = 202;
+    const CAPABILITY: Capability = Capability::Operate;
     const SUMMARY: &'static str = "Reboot the device";
     const DESCRIPTION: Option<&'static str> = Some(
         "A graceful reboot waits for the holds the reboot status lists to be \
@@ -151,6 +162,27 @@ impl Endpoint for Reboot {
     type Request = Json<RebootRequest>;
     type Response = Empty;
     type Error = Infallible;
+}
+
+/// What a session needs to be allowed to call an operation. Later versions may
+/// add capabilities.
+///
+/// The device doesn't enforce capabilities yet: they say what each operation
+/// is, so that a client can offer only what a session may do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum Capability {
+    /// Reading the device's state.
+    Read,
+    /// Operational actions, such as a reboot, that leave its configuration as it is.
+    Operate,
+    /// Changing the device's persistent configuration.
+    Configure,
+    /// A capability this version of the crate does not know.
+    #[serde(other)]
+    #[cfg_attr(feature = "schema", schemars(skip))]
+    Unknown,
 }
 
 /// Longest device name: the limit of a DHCP hostname or a Wi-Fi SSID.
@@ -335,6 +367,28 @@ mod tests {
                 "{path}"
             );
         }
+    }
+
+    #[test]
+    fn operations_name_the_capability_they_need() {
+        let capabilities: Vec<_> = Operation::ALL
+            .iter()
+            .map(|operation| (operation.name(), operation.capability()))
+            .collect();
+        assert_eq!(
+            capabilities,
+            [
+                ("GetSystem", Capability::Read),
+                ("GetRebootStatus", Capability::Read),
+                ("Reboot", Capability::Operate),
+            ]
+        );
+        assert_eq!(
+            serde_json::to_string(&Capability::Operate).unwrap(),
+            r#""operate""#
+        );
+        let later: Capability = serde_json::from_str(r#""from_the_future""#).unwrap();
+        assert_eq!(later, Capability::Unknown);
     }
 
     #[test]

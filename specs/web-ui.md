@@ -32,9 +32,6 @@ Recorded so the client's seams line up with them:
   connections. The client already honours `Retry-After`.
 - An aggregate read-only status endpoint for the dashboard, so a view costs one
   request instead of several.
-- Each `Endpoint` declares its required capability, exported to OpenAPI as an
-  extension (`x-eveningstar-capability`), so the client's table of capabilities
-  is generated rather than written.
 - Session endpoints returning the user and capabilities.
 - Configuration lock, check, commit, confirm and rollback endpoints with
   revisions, which the `ConfigService` interface in `web/src/config/service.ts`

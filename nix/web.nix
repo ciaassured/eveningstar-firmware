@@ -56,7 +56,7 @@ in
       linkTree = ''
         ln -s ${config.packages.web-node-modules}/node_modules node_modules
         mkdir -p src/api/generated
-        cp ${config.packages.web-types}/v1.d.ts src/api/generated/v1.d.ts
+        cp ${config.packages.web-types}/v1.d.ts ${config.packages.web-types}/capabilities.ts src/api/generated/
       '';
 
       mkWebCheck = name: script: pkgs.stdenv.mkDerivation {
@@ -92,11 +92,12 @@ in
           runHook preBuild
           ${generatorModules}/node_modules/.bin/openapi-typescript \
             ${config.packages.openapi}/v1.json -o v1.d.ts
+          node ${../nix/web/capabilities.mjs} ${config.packages.openapi}/v1.json capabilities.ts
           runHook postBuild
         '';
         installPhase = ''
           runHook preInstall
-          install -Dm644 v1.d.ts $out/v1.d.ts
+          install -Dm644 v1.d.ts capabilities.ts -t $out
           runHook postInstall
         '';
       };

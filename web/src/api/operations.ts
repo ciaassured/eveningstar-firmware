@@ -1,4 +1,5 @@
-import type { Capability } from "../lib/capability.ts";
+import type { Capability } from "./capability.ts";
+import { OPERATION_CAPABILITY } from "./generated/capabilities.ts";
 import type { operations, paths } from "./generated/v1.d.ts";
 
 export const API_PREFIX = "/api/v1";
@@ -35,7 +36,7 @@ type RouteOf<K extends OperationId> = {
 }[keyof paths];
 
 export interface OperationMeta {
-  /** What the session needs to ask for this. */
+  /** What the session needs to ask for this, as the API declares it. */
   capability: Capability;
   /** Whether the request can be repeated without a further effect. */
   idempotent: boolean;
@@ -61,20 +62,20 @@ export const OPERATIONS = {
     path: "/system",
     response: "json",
     idempotent: true,
-    capability: "read",
+    capability: OPERATION_CAPABILITY.GetSystem,
   },
   GetRebootStatus: {
     method: "GET",
     path: "/system/reboot",
     response: "json",
     idempotent: true,
-    capability: "read",
+    capability: OPERATION_CAPABILITY.GetRebootStatus,
   },
   Reboot: {
     method: "POST",
     path: "/system/reboot",
     response: "empty",
     idempotent: false,
-    capability: "operate",
+    capability: OPERATION_CAPABILITY.Reboot,
   },
 } as const satisfies { [K in OperationId]: Descriptor<K> };
