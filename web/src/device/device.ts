@@ -77,6 +77,13 @@ export function createDevice(deps: DeviceDeps): Device {
     now: deps.now,
   });
 
+  // The device is back: show its new uptime now rather than at the next poll.
+  reboot.progress.subscribe((progress) => {
+    if (progress.kind !== "restarted") return;
+    void system.load("action");
+    void rebootStatus.load("action");
+  });
+
   return {
     system,
     rebootStatus,
