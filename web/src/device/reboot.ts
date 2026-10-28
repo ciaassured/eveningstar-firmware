@@ -57,6 +57,7 @@ export function createRebootFlow(deps: RebootDeps): RebootFlow {
 
     while (deps.now() < deadline) {
       const reboot = await deps.api.status();
+      if (deps.now() >= deadline) break;
       if (reboot.ok) {
         status = reboot.value;
         if (!restarting) progress.value = { kind: "waiting", status, fetchedAt: deps.now() };
@@ -66,6 +67,7 @@ export function createRebootFlow(deps: RebootDeps): RebootFlow {
       }
 
       const system = await deps.api.system();
+      if (deps.now() >= deadline && !(system.ok && system.value.uptime_s < uptimeBefore)) break;
       if (system.ok) {
         if (system.value.uptime_s < uptimeBefore) {
           progress.value = { kind: "restarted" };

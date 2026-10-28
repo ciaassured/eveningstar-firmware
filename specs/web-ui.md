@@ -49,8 +49,11 @@ Recorded so the client's seams line up with them:
 
 - On a device: `curl -sI http://<device>/` shows the headers in `http/ui.rs`, a
   repeat load answers `304`, and the browser console logs no Content-Security-
-  Policy or Trusted Types violations. The same page, served by a script with
-  those headers, loaded in headless Chromium with no violations.
+  Policy or Trusted Types violations. What was tested is the same page served
+  by a script with those headers and a fake of the API, in headless Chromium:
+  no violations, a reboot followed from waiting through restarting (the first
+  request that hung timing out after 8 s) to restarted, light and dark themes,
+  and a 360 px width. The dev server (`web-dev`) also loaded it there.
 - Flash use on the board. The build grows `.rodata` by about the size of the
   bundle.
 - CI itself: the workflow passes `actionlint` and its commands ran in the

@@ -91,3 +91,21 @@ test("an answer with a body where none is expected is a decode failure", async (
   const result = await services.api.request("Reboot", { priority: "action", body: { mode: "graceful" } });
   assert.deepEqual(!result.ok && result.failure, { kind: "decode", status: 202 });
 });
+
+test("a call can ask the transport not to retry", async () => {
+  const { clock, fake, services } = setup();
+  fake.reply(FakeFetch.fail, FakeFetch.fail);
+  const result = await services.api.request("GetSystem", { priority: "view", retry: false });
+  await clock.advance(10_000);
+  assert.equal(fake.calls.length, 1);
+  assert.equal(!result.ok && result.failure.kind, "network");
+});
+
+test("without that, a view's call is retried", async () => {
+  const { clock, fake, services } = setup();
+  fake.reply(FakeFetch.fail, () => jsonResponse(200, { id: "4WSG-0KD7-9C6", name: "n", uptime_s: 1 }));
+  const result = services.api.request("GetSystem", { priority: "view" });
+  await clock.advance(1_000);
+  assert.equal((await result).ok, true);
+  assert.equal(fake.calls.length, 2);
+});

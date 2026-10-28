@@ -21,7 +21,11 @@ export interface LiveSource<T> {
   load(priority: Priority, group?: string): Promise<Result<T>>;
   /** Forgets the value and its error, such as when another person signs in. */
   reset(): void;
-  /** Starts fetching while the page is in use. */
+  /**
+   * Starts fetching while the page is in use. The first fetch comes an interval
+   * after the start, as a view has loaded the value by then; coming back from a
+   * pause fetches at once.
+   */
   start(): void;
   stop(): void;
 }
@@ -97,9 +101,17 @@ export function createPoller<T>(deps: PollerDeps<T>): LiveSource<T> {
     },
     start() {
       if (unsubscribe !== undefined) return;
+      let paused = false;
       unsubscribe = deps.active.subscribe((active) => {
         timers.clearTimeout(timer);
-        if (active) void tick();
+        if (!active) {
+          paused = true;
+        } else if (paused) {
+          paused = false;
+          void tick();
+        } else {
+          schedule();
+        }
       });
     },
     stop() {

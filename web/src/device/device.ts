@@ -66,8 +66,9 @@ export function createDevice(deps: DeviceDeps): Device {
   const reboot = createRebootFlow({
     api: {
       reboot: (mode) => api.request("Reboot", { priority: "action", body: { mode } }),
-      status: () => api.request("GetRebootStatus", { priority: "view" }),
-      system: () => api.request("GetSystem", { priority: "view" }),
+      // The flow polls by itself, and a device that is down has to show as down at once.
+      status: () => api.request("GetRebootStatus", { priority: "view", retry: false }),
+      system: () => api.request("GetSystem", { priority: "view", retry: false }),
     },
     sleep: (ms) =>
       new Promise((done) => {

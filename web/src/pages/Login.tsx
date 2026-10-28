@@ -5,7 +5,7 @@ import styles from "./pages.module.css";
 
 /** The place the person is sent when the device asks them to sign in. */
 export function Login() {
-  const { router } = useServices();
+  const { router, transport } = useServices();
   return (
     <>
       <h1 class={styles["heading"]}>Sign in</h1>
@@ -14,6 +14,8 @@ export function Login() {
         <div>
           <Button
             onClick={() => {
+              // Whoever asked for the login is answered with what the device says next.
+              transport.resume();
               router.returnFromLogin();
             }}
           >
