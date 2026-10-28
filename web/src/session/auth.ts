@@ -1,15 +1,15 @@
 import type { ReadonlySignal } from "@preact/signals";
 import { signal } from "@preact/signals";
 import type { AuthProvider } from "../api/auth.ts";
-import type { Capability } from "../api/capability.ts";
-import { CAPABILITIES } from "../api/capability.ts";
+import type { Scope } from "../api/scope.ts";
+import { SCOPES } from "../api/scope.ts";
 
 export type AuthState =
   | { kind: "anonymous" }
   | {
       kind: "authenticated";
       user: string;
-      capabilities: readonly Capability[];
+      scopes: readonly Scope[];
       /** Milliseconds since the epoch. */
       expiresAt?: number;
     }
@@ -26,7 +26,7 @@ export type LoginResult = { ok: true } | { ok: false; reason: "unsupported" | "r
 export interface AuthSession extends AuthProvider {
   readonly state: ReadonlySignal<AuthState>;
   /** What a session that hasn't signed in may do. */
-  readonly anonymousCapabilities: readonly Capability[];
+  readonly anonymousScopes: readonly Scope[];
   login(input: LoginInput): Promise<LoginResult>;
   logout(): Promise<void>;
 }
@@ -37,7 +37,7 @@ export interface AuthSession extends AuthProvider {
  */
 export class NoAuth implements AuthSession {
   readonly state = signal<AuthState>({ kind: "anonymous" });
-  readonly anonymousCapabilities = CAPABILITIES;
+  readonly anonymousScopes = SCOPES;
 
   decorate(init: RequestInit): RequestInit {
     return init;

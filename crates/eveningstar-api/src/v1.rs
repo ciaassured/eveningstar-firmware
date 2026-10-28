@@ -70,9 +70,9 @@ macro_rules! operations {
 
             /// What a session needs to be allowed to call the operation.
             #[must_use]
-            pub const fn capability(self) -> Capability {
+            pub const fn scope(self) -> Scope {
                 match self {
-                    $(Self::$endpoint(_) => <$endpoint as Endpoint>::CAPABILITY,)*
+                    $(Self::$endpoint(_) => <$endpoint as Endpoint>::SCOPE,)*
                 }
             }
 
@@ -119,7 +119,7 @@ impl Endpoint for GetSystem {
     const METHOD: Method = Method::Get;
     const PATH: &'static str = "/system";
     const STATUS: u16 = 200;
-    const CAPABILITY: Capability = Capability::Read;
+    const SCOPE: Scope = Scope::Read;
     const SUMMARY: &'static str = "Get the device's identity and uptime";
 
     type Request = Empty;
@@ -135,7 +135,7 @@ impl Endpoint for GetRebootStatus {
     const METHOD: Method = Method::Get;
     const PATH: &'static str = "/system/reboot";
     const STATUS: u16 = 200;
-    const CAPABILITY: Capability = Capability::Read;
+    const SCOPE: Scope = Scope::Read;
     const SUMMARY: &'static str = "Get the pending reboot and its holds";
 
     type Request = Empty;
@@ -151,7 +151,7 @@ impl Endpoint for Reboot {
     const METHOD: Method = Method::Post;
     const PATH: &'static str = GetRebootStatus::PATH;
     const STATUS: u16 = 202;
-    const CAPABILITY: Capability = Capability::Operate;
+    const SCOPE: Scope = Scope::Operate;
     const SUMMARY: &'static str = "Reboot the device";
     const DESCRIPTION: Option<&'static str> = Some(
         "A graceful reboot waits for the holds the reboot status lists to be \
@@ -165,21 +165,21 @@ impl Endpoint for Reboot {
 }
 
 /// What a session needs to be allowed to call an operation. Later versions may
-/// add capabilities.
+/// add scopes.
 ///
-/// The device doesn't enforce capabilities yet: they say what each operation
+/// The device doesn't enforce scopes yet: they say what each operation
 /// is, so that a client can offer only what a session may do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
-pub enum Capability {
+pub enum Scope {
     /// Reading the device's state.
     Read,
     /// Operational actions, such as a reboot, that leave its configuration as it is.
     Operate,
     /// Changing the device's persistent configuration.
     Configure,
-    /// A capability this version of the crate does not know.
+    /// A scope this version of the crate does not know.
     #[serde(other)]
     #[cfg_attr(feature = "schema", schemars(skip))]
     Unknown,
@@ -370,25 +370,25 @@ mod tests {
     }
 
     #[test]
-    fn operations_name_the_capability_they_need() {
-        let capabilities: Vec<_> = Operation::ALL
+    fn operations_name_the_scope_they_need() {
+        let scopes: Vec<_> = Operation::ALL
             .iter()
-            .map(|operation| (operation.name(), operation.capability()))
+            .map(|operation| (operation.name(), operation.scope()))
             .collect();
         assert_eq!(
-            capabilities,
+            scopes,
             [
-                ("GetSystem", Capability::Read),
-                ("GetRebootStatus", Capability::Read),
-                ("Reboot", Capability::Operate),
+                ("GetSystem", Scope::Read),
+                ("GetRebootStatus", Scope::Read),
+                ("Reboot", Scope::Operate),
             ]
         );
         assert_eq!(
-            serde_json::to_string(&Capability::Operate).unwrap(),
+            serde_json::to_string(&Scope::Operate).unwrap(),
             r#""operate""#
         );
-        let later: Capability = serde_json::from_str(r#""from_the_future""#).unwrap();
-        assert_eq!(later, Capability::Unknown);
+        let later: Scope = serde_json::from_str(r#""from_the_future""#).unwrap();
+        assert_eq!(later, Scope::Unknown);
     }
 
     #[test]

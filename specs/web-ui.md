@@ -32,7 +32,7 @@ Recorded so the client's seams line up with them:
   connections. The client already honours `Retry-After`.
 - An aggregate read-only status endpoint for the dashboard, so a view costs one
   request instead of several.
-- Session endpoints returning the user and capabilities.
+- Session endpoints returning the user and scopes.
 - Configuration lock, check, commit, confirm and rollback endpoints with
   revisions, which the `ConfigService` interface in `web/src/config/service.ts`
   is shaped for.
