@@ -112,6 +112,12 @@ fund=false
   runs `npm install` or `npm ci`. Lockfiles change only through
   `--package-lock-only --ignore-scripts`, which runs no package code
   (section 9).
+- Until M6 adds `web-npm`, create and update lockfiles by running
+  `npm install --package-lock-only --ignore-scripts` directly, with the
+  dev shell's npm, from the directory holding the `.npmrc` (so
+  `min-release-age` and `allow-git` apply). It only resolves versions and
+  writes `package-lock.json`; it downloads package metadata, not package
+  code, and runs nothing.
 - Lockfile lint (a Nix check): lockfile version 3; every non-root entry has
   `resolved` starting with `https://registry.npmjs.org/` and a `sha512-`
   `integrity`; no `git+`, `file:`, `link:` or tarball URLs; no
@@ -675,12 +681,14 @@ scale comes from Astro UXDS; nothing of Astro's is copied.
 **Brand assets.** Inline SVG only, no image files.
 
 - Mark: the four-point star with the day–night curve and broken orbit
-  ring, redrawn as a few paths from
-  `eveningstar-hardware/assets/logo/logo_no_text.svg`, with the gradient
+  ring, redrawn as a few paths from `web/brand/mark.svg`, with the gradient
   from `--moon` to `--sun-fill`.
 - Wordmark: Exo 2 (SIL OFL 1.1) as outlined paths, cleaned up from
-  `eveningstar-hardware/assets/logo/text_path.svg`. No Exo 2 font file is
-  shipped.
+  `web/brand/wordmark.svg`. No Exo 2 font file is shipped.
+- `web/brand/` holds the source artwork, copied unchanged from the
+  `eveningstar-hardware` repository (`assets/logo/`, AGPL-3.0 like this
+  one). It is not shipped as files; the inline SVG in the UI is derived from
+  it.
 - Favicon: the mark as an inline `data:image/svg+xml` link (C4), so the
   browser makes no extra request.
 - Mark and wordmark together stay under about 5 KB.
