@@ -70,6 +70,8 @@ impl FromRef<AppState> for Reboot {
 
 fn router() -> Router<impl PathRouter<AppState>, AppState> {
     Router::new()
+        // First, so the router tries it last, after every route below.
+        .nest_service("", api::NotFound)
         .route_service("/", ui::Ui)
         // A nested service only sees paths that continue past its prefix, so
         // the prefix itself is routed separately.

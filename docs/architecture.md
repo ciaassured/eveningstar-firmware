@@ -123,6 +123,18 @@ of this type from another site needs the device's consent in a preflight that it
 doesn't give, so a page you visit can't make the device act. The check is by
 header, so it holds with or without authentication.
 
+Every answer the API gives, errors included, carries the headers in
+`http/api.rs`: `X-Content-Type-Options: nosniff` so a browser can't read the data
+as HTML or script, `Cache-Control: no-store`, `Cross-Origin-Resource-Policy:
+same-origin`, and a Content-Security-Policy of `default-src 'none';
+frame-ancestors 'none'` with its older form `X-Frame-Options: DENY`, so
+nothing in an answer runs or loads if someone opens one and it can't be framed.
+These are the headers of OWASP's REST security cheat sheet that matter for JSON;
+the headers that only concern pages that load and run things are left to the page
+(see [The web UI](#serving)). A path that no route takes is answered with the
+API's `404` in JSON, with the same headers, not the router's own plain text,
+which repeats the path it was asked for.
+
 ### Adding an endpoint
 
 1. Add its request and response types to `v1.rs`, deriving `JsonSchema` under

@@ -17,6 +17,21 @@ use serde::de::DeserializeOwned;
 
 use super::{AppState, system};
 
+/// The headers of every answer the API gives, including its errors. The answers
+/// are data: the browser mustn't read them as anything else, keep them, let
+/// another site embed them, or render and frame them if someone opens one.
+pub(super) const HEADERS: &[(&str, &str)] = &[
+    ("X-Content-Type-Options", "nosniff"),
+    ("Cache-Control", "no-store"),
+    (
+        "Content-Security-Policy",
+        "default-src 'none'; frame-ancestors 'none'",
+    ),
+    ("Cross-Origin-Resource-Policy", "same-origin"),
+    // The older form of `frame-ancestors`, for browsers that only know this one.
+    ("X-Frame-Options", "DENY"),
+];
+
 /// Serves every request under [`v1::PATH`].
 pub(super) struct Api;
 
@@ -30,6 +45,24 @@ impl PathRouterService<AppState> for Api {
         writer: W,
     ) -> Result<ResponseSent, W::Error> {
         dispatch(state, path.encoded(), request, writer).await
+    }
+}
+
+/// Answers every request no other route takes with `404`, in the API's form,
+/// not as the router's own plain text, which repeats the path it was asked for.
+pub(super) struct NotFound;
+
+impl PathRouterService<AppState> for NotFound {
+    async fn call_path_router_service<R: Read, W: ResponseWriter<Error = R::Error>>(
+        &self,
+        _state: &AppState,
+        _path_parameters: (),
+        _path: Path<'_>,
+        request: Request<'_, R>,
+        writer: W,
+    ) -> Result<ResponseSent, W::Error> {
+        let connection = request.body_connection.finalize().await?;
+        write_error(v1::RouteError::NotFound.code(), connection, writer).await
     }
 }
 
@@ -112,7 +145,7 @@ where
 }
 
 /// Writes a response with `code`.
-async fn write_error<R: Read, W: ResponseWriter<Error = R::Error>>(
+pub(super) async fn write_error<R: Read, W: ResponseWriter<Error = R::Error>>(
     code: v1::ErrorCode,
     connection: Connection<'_, R>,
     writer: W,
@@ -123,7 +156,8 @@ async fn write_error<R: Read, W: ResponseWriter<Error = R::Error>>(
         .map_or(StatusCode::INTERNAL_SERVER_ERROR, StatusCode::new);
     let response = Json(v1::Error { error: code })
         .into_response()
-        .with_status_code(status);
+        .with_status_code(status)
+        .with_headers(HEADERS);
     writer.write_response(connection, response).await
 }
 
@@ -192,6 +226,7 @@ impl WriteBody for v1::Empty {
         // closes.
         let response = Response::empty(status)
             .with_headers(("Content-Length", "0"))
+            .with_headers(HEADERS)
             .with_headers(headers);
         writer.write_response(connection, response).await
     }
@@ -208,6 +243,7 @@ impl<T: Serialize> WriteBody for v1::Json<T> {
         let response = Json(value)
             .into_response()
             .with_status_code(status)
+            .with_headers(HEADERS)
             .with_headers(headers);
         writer.write_response(connection, response).await
     }
