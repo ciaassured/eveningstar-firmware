@@ -1,0 +1,22 @@
+.mark {
+  display: block;
+  width: 30px;
+  height: 30px;
+  flex: none;
+}
+
+.wordmark {
+  display: block;
+  height: 14px;
+  width: auto;
+  flex: none;
+  fill: currentColor;
+}
+
+.sun {
+  stop-color: var(--sun-fill);
+}
+
+.moon {
+  stop-color: var(--moon);
+}

@@ -1,0 +1,50 @@
+.banner {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4) var(--panel-padding);
+  background: var(--surface);
+  border-radius: var(--radius-panel);
+  overflow: hidden;
+}
+
+.banner::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: currentColor;
+}
+
+.title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.off::before {
+  color: var(--st-off);
+}
+
+.standby::before {
+  color: var(--st-standby);
+}
+
+.normal::before {
+  color: var(--st-normal);
+}
+
+.caution::before {
+  color: var(--st-caution);
+}
+
+.serious::before {
+  color: var(--st-serious);
+}
+
+.critical::before {
+  color: var(--st-critical);
+}
