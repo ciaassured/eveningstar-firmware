@@ -71,6 +71,11 @@ function describeCode(code: string): { title: string; explanation: string } {
         title: "The device doesn't allow that",
         explanation: "The device doesn't accept that kind of request there. This page and the device may be out of step.",
       };
+    case "unsupported_media_type":
+      return {
+        title: "The request wasn't sent as JSON",
+        explanation: "The device only reads request bodies sent as JSON. This page and the device may be out of step.",
+      };
     case "payload_too_large":
       return {
         title: "The request was too large",

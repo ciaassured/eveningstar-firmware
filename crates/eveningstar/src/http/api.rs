@@ -149,6 +149,15 @@ impl<T: DeserializeOwned> ReadBody for v1::Json<T> {
         parts: RequestParts<'r>,
         body: RequestBody<'r, R>,
     ) -> Result<T, v1::BodyError> {
+        // Checked before anything is read, so no body of another type is parsed.
+        let is_json = parts
+            .headers()
+            .get("Content-Type")
+            .and_then(|value| value.as_str().ok())
+            .is_some_and(v1::is_json_content_type);
+        if !is_json {
+            return Err(v1::BodyError::UnsupportedMediaType);
+        }
         match Json::from_request(&(), parts, body).await {
             Ok(Json(value)) => Ok(value),
             Err(JsonRejection::IoError(ReadAllBodyError::BufferIsTooSmall { .. })) => {

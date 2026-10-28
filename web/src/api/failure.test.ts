@@ -16,6 +16,7 @@ const failures: ApiFailure[] = [
   { kind: "api", status: 404, code: "not_found" },
   { kind: "api", status: 405, code: "method_not_allowed" },
   { kind: "api", status: 413, code: "payload_too_large" },
+  { kind: "api", status: 415, code: "unsupported_media_type" },
   { kind: "api", status: 400, code: "from_the_future" },
   { kind: "decode", status: 200 },
   { kind: "aborted" },

@@ -20,7 +20,9 @@ use super::{
 /// The document's description of the API as a whole, before the errors any
 /// request can be answered with.
 const DESCRIPTION: &str = "The HTTP API of an Eveningstar, an interface board for \
-    Morningstar solar charge controllers.";
+    Morningstar solar charge controllers.\n\nA request with a body must have the \
+    `Content-Type` `application/json`, and is answered with `415` \
+    `unsupported_media_type` otherwise.";
 
 /// The OpenAPI 3.1 document of every version 1 operation.
 ///
@@ -320,7 +322,10 @@ mod tests {
         };
         assert_eq!(statuses("/system", "get"), ["200"]);
         // Reading the JSON request body adds its errors.
-        assert_eq!(statuses("/system/reboot", "post"), ["202", "400", "413"]);
+        assert_eq!(
+            statuses("/system/reboot", "post"),
+            ["202", "400", "413", "415"]
+        );
         let reboot = &document["paths"]["/system/reboot"]["post"];
         assert!(reboot["requestBody"].is_object());
         assert!(reboot["responses"]["202"].get("content").is_none());
@@ -376,7 +381,7 @@ mod tests {
     fn error_responses_name_their_codes() {
         let document = openapi();
         let responses = document["components"]["responses"].as_object().unwrap();
-        assert_eq!(responses.len(), 4);
+        assert_eq!(responses.len(), 5);
         for (name, response) in responses {
             let code: ErrorCode = serde_json::from_value(json!(name)).unwrap();
             let status = status(code);
