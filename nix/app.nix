@@ -8,11 +8,8 @@ let
 
   version = (lib.importTOML ../Cargo.toml).workspace.package.version;
 
-  cargoConfig = lib.fileset.unions [
-    ../Cargo.toml
-    ../Cargo.lock
-    ../.cargo
-  ];
+  workspace = import ./_workspace.nix { inherit lib; };
+  inherit (workspace) cargoConfig stubs;
 
   # Only what cargo needs, so editing nix/ or docs does not rebuild the app.
   src = lib.fileset.toSource {
@@ -23,47 +20,8 @@ let
   # Just the manifests, so the dependency build only changes when they do.
   depsSrc = lib.fileset.toSource {
     root = ../.;
-    fileset = lib.fileset.unions [
-      cargoConfig
-      (lib.fileset.fileFilter (file: file.name == "Cargo.toml") ../crates)
-    ];
+    fileset = lib.fileset.unions [ cargoConfig workspace.manifests ];
   };
-
-  # Empty stand-ins for each workspace crate's targets, matching the ones the
-  # real crate has so cargo resolves the same targets and features.
-  members = lib.attrNames (lib.filterAttrs (_: type: type == "directory") (builtins.readDir ../crates));
-  stubs = lib.concatMapStrings
-    (member:
-      let
-        dir = ../crates + "/${member}";
-        has = path: builtins.pathExists (dir + "/${path}");
-      in
-      ''
-        mkdir -p crates/${member}/src
-      ''
-      + lib.optionalString (has "src/lib.rs") ''
-        echo '#![no_std]' > crates/${member}/src/lib.rs
-      ''
-      + lib.optionalString (has "src/main.rs") ''
-        cat > crates/${member}/src/main.rs <<'EOF'
-        #![no_std]
-        #![no_main]
-        #[panic_handler]
-        fn panic(_: &core::panic::PanicInfo) -> ! {
-            loop {}
-        }
-        EOF
-      ''
-      + lib.optionalString (has "build.rs") ''
-        echo 'fn main() {}' > crates/${member}/build.rs
-      ''
-      + lib.optionalString (has "examples") (lib.concatMapStrings
-        (example: ''
-          mkdir -p crates/${member}/examples
-          echo 'fn main() {}' > crates/${member}/examples/${example}
-        '')
-        (lib.attrNames (builtins.readDir (dir + "/examples")))))
-    members;
 in
 {
   perSystem = { config, pkgs, ... }:
