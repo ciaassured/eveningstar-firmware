@@ -1,20 +1,11 @@
 .banner {
-  position: relative;
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
   padding: var(--space-4) var(--panel-padding);
   background: var(--surface);
   border-radius: var(--radius-panel);
-  overflow: hidden;
-}
-
-.banner::before {
-  content: "";
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: 3px;
-  background: currentColor;
+  box-shadow: inset 3px 0 0 var(--bar);
 }
 
 .title {
@@ -25,26 +16,26 @@
   color: var(--fg);
 }
 
-.off::before {
-  color: var(--st-off);
+.off {
+  --bar: var(--st-off);
 }
 
-.standby::before {
-  color: var(--st-standby);
+.standby {
+  --bar: var(--st-standby);
 }
 
-.normal::before {
-  color: var(--st-normal);
+.normal {
+  --bar: var(--st-normal);
 }
 
-.caution::before {
-  color: var(--st-caution);
+.caution {
+  --bar: var(--st-caution);
 }
 
-.serious::before {
-  color: var(--st-serious);
+.serious {
+  --bar: var(--st-serious);
 }
 
-.critical::before {
-  color: var(--st-critical);
+.critical {
+  --bar: var(--st-critical);
 }
