@@ -8,8 +8,9 @@
     {
       # Every repository check, with a combined result, so the Git hooks and CI
       # share one entry point. Arguments select check groups: `lint` (rustfmt
-      # and clippy), `build` (a release build, which also links) and `test`
-      # (the tests of the crates that also build on the host). With no
+      # and clippy, and the web UI's lint and type check), `build` (a release
+      # build, which also links, with the web UI bundled) and `test` (the tests
+      # of the crates that also build on the host, and the web UI's). With no
       # arguments, every group runs.
       packages.checks = pkgs.writeShellApplication {
         name = "eveningstar-checks";
@@ -60,13 +61,22 @@
                 run_check "clippy (host crates, host target)" cargo clippy --all-features \
                   --all-targets "''${host_crates[@]/#/--package=}" --target "$host_target" \
                   -- -D warnings -A clippy::large_stack_frames
+                run_check "web lint and type check" nix build --no-link .#web-lint .#web-typecheck
                 ;;
               build)
-                run_check "release build" cargo build --release
+                # The web UI is built by Nix alone, so no npm code runs on the
+                # host, and only here, so `lint` doesn't build the whole chain.
+                if web_ui="$(nix build --no-link --print-out-paths .#web-ui-bundle)"; then
+                  EVENINGSTAR_WEB_UI="$web_ui" run_check "release build" cargo build --release
+                else
+                  echo "::error::web UI bundle failed"
+                  status=1
+                fi
                 ;;
               test)
                 run_check "host tests" cargo test --all-features \
                   "''${host_crates[@]/#/--package=}" --target "$host_target"
+                run_check "web tests" nix build --no-link .#web-test
                 ;;
               *)
                 echo "unknown check group: $group (expected lint, build or test)" >&2
