@@ -74,9 +74,24 @@ test("the reboot flow asks the device without the transport's retries, so a devi
   const flow = device.reboot.start("graceful", 5_000);
   await clock.advance(POLL_INTERVAL_MS);
   await flow;
-  const polls = options.filter((call) => call.operation !== "Reboot");
+  // The flow's own polls, not the refresh that follows its end.
+  const polls = options.filter(
+    (call) => call.operation !== "Reboot" && (call.options as { priority: string }).priority === "view",
+  );
   assert.ok(polls.length >= 2);
   for (const poll of polls) assert.deepEqual(poll.options, { priority: "view", retry: false });
   const reboot = options.find((call) => call.operation === "Reboot");
   assert.deepEqual(reboot?.options, { priority: "action", body: { mode: "graceful" } });
+});
+
+test("when the reboot flow ends the page shows the new uptime at once, and counts the restart", async () => {
+  const { clock, device } = setup([5_000, 12, 14, 14]);
+  device.start();
+  await clock.advance(POLL_INTERVAL_MS);
+  assert.equal(device.system.value.value?.uptime_s, 5_000);
+  await device.reboot.start("graceful", 5_000);
+  await clock.advance(1);
+  assert.equal(device.system.value.value?.uptime_s, 14);
+  assert.equal(device.restarts.value, 1);
+  device.stop();
 });
