@@ -331,6 +331,9 @@ star is split by the day-night curve: its day half takes `--mark-day`, and its
 night half, the orbit ring and its dots take `--mark-night`, so the mark is amber
 and navy on light surfaces and amber and pale blue on dark ones. The header is
 dark in both themes and sets the dark colours for the mark inside it.
+The favicon is the star alone, without the ring, filling the icon: its day half
+amber and its night half a bright blue, so both halves show on light and dark
+browser tabs. It is an inline `data:` URL, so the browser makes no extra request.
 
 ### Dependencies
 
