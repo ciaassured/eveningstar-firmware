@@ -76,7 +76,6 @@
 }
 
 .link {
-  position: relative;
   display: block;
   margin-inline: var(--space-2);
   padding: var(--space-2) var(--space-3);
@@ -91,16 +90,8 @@
 
 .link[aria-current="page"] {
   background: var(--nav-active);
+  box-shadow: inset 3px 0 0 var(--accent);
   font-weight: 600;
-}
-
-.link[aria-current="page"]::before {
-  content: "";
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: 3px;
-  border-radius: var(--radius-control) 0 0 var(--radius-control);
-  background: var(--accent);
 }
 
 .main {
@@ -140,11 +131,8 @@
     border-radius: 0;
   }
 
-  .link[aria-current="page"]::before {
-    inset: auto 0 0;
-    width: auto;
-    height: 3px;
-    border-radius: 0;
+  .link[aria-current="page"] {
+    box-shadow: inset 0 -3px 0 var(--accent);
   }
 
   .main {
