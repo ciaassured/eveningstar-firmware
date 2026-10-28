@@ -1,5 +1,13 @@
 //! Version 1 of the API, served under [`PATH`].
 
+#![cfg_attr(
+    feature = "schema",
+    allow(
+        clippy::large_stack_frames,
+        reason = "the schemas are built on the host, which has more stack than the chip the limit is for"
+    )
+)]
+
 use core::convert::Infallible;
 
 use serde::{Deserialize, Serialize};
@@ -12,6 +20,7 @@ mod openapi;
 
 pub use endpoint::{
     BodyError, Empty, Endpoint, Errors, Json, Method, RequestBody, ResponseBody, RouteError,
+    is_json_content_type,
 };
 #[cfg(feature = "schema")]
 pub use openapi::openapi;
@@ -263,6 +272,8 @@ pub struct Error {
 pub enum ErrorCode {
     /// The request's body is not what the endpoint expects.
     BadRequest,
+    /// The request has a body, and its `Content-Type` is not `application/json`.
+    UnsupportedMediaType,
     /// No endpoint at the requested path.
     NotFound,
     /// The endpoint does not support the request's method.
@@ -285,6 +296,7 @@ impl ErrorCode {
             Self::NotFound => Some(404),
             Self::MethodNotAllowed => Some(405),
             Self::PayloadTooLarge => Some(413),
+            Self::UnsupportedMediaType => Some(415),
             Self::Unknown => None,
         }
     }
@@ -335,6 +347,43 @@ mod tests {
             ErrorCode::PayloadTooLarge
         );
         assert_eq!(RouteError::NotFound.code(), ErrorCode::NotFound);
+        assert_eq!(
+            BodyError::UnsupportedMediaType.code(),
+            ErrorCode::UnsupportedMediaType
+        );
+    }
+
+    #[test]
+    fn accepts_the_json_media_type_in_any_case_with_parameters() {
+        for value in [
+            "application/json",
+            "Application/JSON",
+            "application/json; charset=utf-8",
+            "application/json;charset=UTF-8",
+            "  application/json  ",
+        ] {
+            assert!(is_json_content_type(value), "{value}");
+        }
+    }
+
+    #[test]
+    fn rejects_the_media_types_a_form_can_send() {
+        for value in [
+            "",
+            "text/plain",
+            "text/plain; charset=utf-8",
+            "application/x-www-form-urlencoded",
+            "multipart/form-data; boundary=x",
+            "application/jsonp",
+            "application/json5",
+            "application/vnd.api+json",
+            "text/json",
+            "application/json/",
+            "x-application/json",
+            "json",
+        ] {
+            assert!(!is_json_content_type(value), "{value}");
+        }
     }
 
     #[test]
@@ -456,6 +505,7 @@ mod tests {
                 ErrorCode::NotFound,
                 ErrorCode::MethodNotAllowed,
                 ErrorCode::PayloadTooLarge,
+                ErrorCode::UnsupportedMediaType,
             ] {
                 let error = serde_json::to_value(Error { error }).unwrap();
                 assert!(schema_accepts::<Error>(&error));

@@ -85,7 +85,7 @@ the OpenAPI document both read it from there, so they can't disagree.
   (`Empty` or `Json<T>`), and the errors the operation itself can answer with.
 - Error sets are types too: `Infallible` for none, or an enum made by the
   `errors!` macro, each of whose variants is an `ErrorCode`. A `Json` request
-  body adds `BodyError` (400 and 413) on its own.
+  body adds `BodyError` (400, 413 and 415) on its own.
 - The `operations!` table in `v1.rs` lists every endpoint and builds
   `v1::Operation`, an enum with one variant per endpoint.
   `Operation::find(method, path)` gives the operation a request is for, or a
@@ -115,6 +115,13 @@ reboot, returns `Closing`.
 
 Only `http.rs` and `http/api.rs` use picoserve. Replacing the HTTP server means
 rewriting those two files. The handlers and the API crate stay as they are.
+
+A request with a body must have the `Content-Type` `application/json`
+(`v1::is_json_content_type`), and any other is answered with 415 before its body
+is read. A form on another site can send only a few other types, and a request
+of this type from another site needs the device's consent in a preflight that it
+doesn't give, so a page you visit can't make the device act. The check is by
+header, so it holds with or without authentication.
 
 ### Adding an endpoint
 

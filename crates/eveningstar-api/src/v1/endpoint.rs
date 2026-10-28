@@ -76,9 +76,25 @@ impl ResponseBody for Empty {
     type Value = ();
 }
 
-/// A JSON body holding a `T`.
+/// A JSON body holding a `T`. A request with one has the `Content-Type`
+/// `application/json` (see [`is_json_content_type`]).
 #[derive(Debug)]
 pub struct Json<T>(PhantomData<T>);
+
+/// Whether the value of a `Content-Type` header names JSON: the media type
+/// `application/json`, in any case, with or without parameters such as
+/// `charset=utf-8`.
+///
+/// A device that reads a request body as JSON only after this check can't be
+/// sent one by a form on another site, as forms send other types, and a request
+/// of this type from another site needs the device's consent first.
+#[must_use]
+pub fn is_json_content_type(value: &str) -> bool {
+    let media_type = value
+        .split_once(';')
+        .map_or(value, |(media_type, _)| media_type);
+    media_type.trim().eq_ignore_ascii_case("application/json")
+}
 
 impl<T> RequestBody for Json<T> {
     type Value = T;
@@ -132,7 +148,7 @@ macro_rules! errors {
 
 errors! {
     /// The errors of reading a [`Json`] request body.
-    BodyError { BadRequest, PayloadTooLarge }
+    BodyError { BadRequest, UnsupportedMediaType, PayloadTooLarge }
 }
 
 errors! {
