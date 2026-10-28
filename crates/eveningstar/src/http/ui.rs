@@ -51,7 +51,8 @@ impl MethodHandlerService<AppState> for Ui {
                 let connection = request.body_connection.finalize().await?;
                 // With a body, however empty, the response states its length.
                 let response = Response::new(StatusCode::METHOD_NOT_ALLOWED, "")
-                    .with_header("Allow", "GET, HEAD");
+                    .with_header("Allow", "GET, HEAD")
+                    .with_header("X-Content-Type-Options", "nosniff");
                 return writer.write_response(connection, response).await;
             }
         };
