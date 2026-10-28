@@ -1,5 +1,6 @@
 // Checks the web UI's supply chain and source against the rules in
-// specs/web-ui.md, using only Node, so linting adds no packages.
+// docs/architecture.md ("The web UI"), using only Node, so linting adds no
+// packages.
 //
 // usage: node lint.mjs <repository root>
 
@@ -119,6 +120,8 @@ const banned = [
   [/\bnew\s+Function\b/, "new Function"],
   [/\bset(?:Timeout|Interval)\s*\(\s*["'`]/, "a string argument to setTimeout or setInterval"],
   [/javascript:/, "javascript:"],
+  // The policy blocks style attributes the page's markup carries.
+  [/\bstyle\s*=/, "an inline style attribute"],
   [/:\s*any\b/, ": any"],
   [/\bas\s+any\b/, "as any"],
   [/@ts-ignore/, "@ts-ignore"],
