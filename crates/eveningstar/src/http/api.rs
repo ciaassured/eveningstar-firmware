@@ -5,7 +5,7 @@
 
 use core::convert::Infallible;
 
-use eveningstar_api::v1::{self, Endpoint, Errors, Operation};
+use eveningstar_api::v1::{self, Call, Endpoint, Errors, Operation};
 use picoserve::ResponseSent;
 use picoserve::extract::{FromRef, FromRequest, JsonRejection};
 use picoserve::io::Read;
@@ -89,14 +89,22 @@ async fn dispatch<R: Read, W: ResponseWriter<Error = R::Error>>(
     writer: W,
 ) -> Result<ResponseSent, W::Error> {
     match Operation::find(request.parts.method(), path) {
-        Ok(Operation::GetSystem(endpoint)) => {
-            serve(endpoint, state, request, writer, system::get_system).await
+        Ok(Call::GetSystem(endpoint, params)) => {
+            serve(endpoint, params, state, request, writer, system::get_system).await
         }
-        Ok(Operation::GetRebootStatus(endpoint)) => {
-            serve(endpoint, state, request, writer, system::get_reboot).await
+        Ok(Call::GetRebootStatus(endpoint, params)) => {
+            serve(endpoint, params, state, request, writer, system::get_reboot).await
         }
-        Ok(Operation::Reboot(endpoint)) => {
-            serve(endpoint, state, request, writer, system::post_reboot).await
+        Ok(Call::Reboot(endpoint, params)) => {
+            serve(
+                endpoint,
+                params,
+                state,
+                request,
+                writer,
+                system::post_reboot,
+            )
+            .await
         }
         Err(error) => {
             let connection = request.body_connection.finalize().await?;
@@ -105,11 +113,12 @@ async fn dispatch<R: Read, W: ResponseWriter<Error = R::Error>>(
     }
 }
 
-/// Serves a request for `E`: reads its body, passes it to `handler` with the
-/// part of `state` the handler takes, and writes the handler's reply with
-/// `E`'s status code, or its error.
+/// Serves a request for `E` whose path holds `params`: reads its body, passes
+/// both to `handler` with the part of `state` the handler takes, and writes the
+/// handler's reply with `E`'s status code, or its error.
 async fn serve<E, S, H, Rep, R, W>(
     _endpoint: E,
+    params: E::Params,
     state: &AppState,
     mut request: Request<'_, R>,
     writer: W,
@@ -118,14 +127,14 @@ async fn serve<E, S, H, Rep, R, W>(
 where
     E: Endpoint<Request: ReadBody, Response: WriteBody>,
     S: FromRef<AppState>,
-    H: AsyncFnOnce(S, <E::Request as v1::RequestBody>::Value) -> Result<Rep, E::Error>,
+    H: AsyncFnOnce(S, E::Params, <E::Request as v1::RequestBody>::Value) -> Result<Rep, E::Error>,
     Rep: Reply<<E::Response as v1::ResponseBody>::Value>,
     R: Read,
     W: ResponseWriter<Error = R::Error>,
 {
     let body = E::Request::read(request.parts, request.body_connection.body()).await;
     let result = match body {
-        Ok(body) => handler(S::from_ref(state), body)
+        Ok(body) => handler(S::from_ref(state), params, body)
             .await
             .map_err(Errors::code),
         Err(error) => Err(error.code()),

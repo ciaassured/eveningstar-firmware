@@ -4,6 +4,8 @@
 use core::convert::Infallible;
 use core::marker::PhantomData;
 
+use serde::de::{DeserializeOwned, IntoDeserializer, value};
+
 use super::{ErrorCode, Scope};
 
 /// An HTTP method.
@@ -31,7 +33,9 @@ impl Method {
 pub trait Endpoint {
     /// The method of the operation's requests.
     const METHOD: Method;
-    /// The operation's path, relative to [`PATH`](super::PATH).
+    /// The operation's path, relative to [`PATH`](super::PATH). A segment
+    /// written `{name}` is a path parameter: it matches any one segment that
+    /// [`Params`](Self::Params) parses.
     const PATH: &'static str;
     /// The status code of a successful response.
     const STATUS: u16;
@@ -42,6 +46,8 @@ pub trait Endpoint {
     /// What the operation does, in more detail than the summary.
     const DESCRIPTION: Option<&'static str> = None;
 
+    /// The parameters of the operation's path.
+    type Params: PathParams;
     /// The body of a request.
     type Request: RequestBody;
     /// The body of a successful response.
@@ -49,6 +55,64 @@ pub trait Endpoint {
     /// The errors the operation answers with, besides those of reading the
     /// request body.
     type Error: Errors;
+}
+
+/// The parameters of a path: `()` for a path with none, or a [`PathParam`] for
+/// a path with one.
+pub trait PathParams: Sized {
+    /// The parameters `segments` hold, or `None` if one doesn't parse.
+    /// `segments` are the segments of a path that its endpoint's path names
+    /// with `{name}`, in order.
+    fn parse<'a>(segments: &mut impl Iterator<Item = &'a str>) -> Option<Self>;
+}
+
+impl PathParams for () {
+    fn parse<'a>(_segments: &mut impl Iterator<Item = &'a str>) -> Option<Self> {
+        Some(())
+    }
+}
+
+/// A path parameter: the value of one segment of a path, deserialised from a
+/// string holding the segment as it was sent, without percent-decoding.
+pub trait PathParam: DeserializeOwned {}
+
+impl<T: PathParam> PathParams for T {
+    fn parse<'a>(segments: &mut impl Iterator<Item = &'a str>) -> Option<Self> {
+        let segment: value::StrDeserializer<'_, value::Error> =
+            segments.next()?.into_deserializer();
+        T::deserialize(segment).ok()
+    }
+}
+
+/// The parameters `path` holds, if it is one of the paths `template` describes:
+/// each segment of `template` written `{name}` matches any one segment, and
+/// every other segment only itself. `None` if `path` has other segments, or if
+/// `P` doesn't parse the parameters' segments or leaves one of them.
+pub(super) fn path_params<P: PathParams>(template: &str, path: &str) -> Option<P> {
+    let mut templates = template.split('/');
+    let mut segments = path.split('/');
+    loop {
+        match (templates.next(), segments.next()) {
+            (None, None) => break,
+            (Some(template), Some(segment))
+                if param_name(template).is_some() || template == segment => {}
+            _ => return None,
+        }
+    }
+
+    let mut values = template
+        .split('/')
+        .zip(path.split('/'))
+        .filter(|&(template, _)| param_name(template).is_some())
+        .map(|(_, segment)| segment);
+    let params = P::parse(&mut values)?;
+    values.next().is_none().then_some(params)
+}
+
+/// The name of the path parameter a segment of a path template is, if it is
+/// one: `name` for `{name}`.
+pub(super) fn param_name(segment: &str) -> Option<&str> {
+    segment.strip_prefix('{')?.strip_suffix('}')
 }
 
 /// The body of a request: [`Empty`] or [`Json`].

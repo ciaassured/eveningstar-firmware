@@ -7,15 +7,17 @@
 
 use alloc::borrow::ToOwned;
 use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 use core::fmt::Write;
 
 use schemars::generate::SchemaSettings;
 use schemars::{JsonSchema, SchemaGenerator};
 use serde_json::{Map, Value, json};
 
+use super::endpoint::param_name;
 use super::{
-    Empty, Endpoint, Error, ErrorCode, Errors, Json, Operation, PATH, RequestBody, RouteError,
-    Scope,
+    Empty, Endpoint, Error, ErrorCode, Errors, Json, Operation, PATH, PathParam, RequestBody,
+    RouteError, Scope,
 };
 
 /// The document's description of the API as a whole, before the errors any
@@ -41,8 +43,9 @@ const BEARER_DESCRIPTION: &str = "A token in the `Authorization` header: \
 /// # Panics
 ///
 /// If a type's request and response schemas differ, an operation has two
-/// responses with the same status code, or a JSON response's type has no
-/// description.
+/// responses with the same status code, a JSON response's type has no
+/// description, or an operation's path names a different number of
+/// parameters than its `Params` type holds.
 #[must_use]
 pub fn openapi() -> Value {
     let mut document = Document::new();
@@ -102,6 +105,7 @@ impl Document {
     pub(super) fn operation<E>(&mut self, id: &str)
     where
         E: Endpoint,
+        E::Params: DocumentParams,
         E::Request: DocumentRequest,
         E::Response: DocumentResponse,
     {
@@ -114,6 +118,27 @@ impl Document {
         if let Some(description) = E::DESCRIPTION {
             operation["description"] = description.into();
         }
+
+        let names: Vec<&str> = E::PATH.split('/').filter_map(param_name).collect();
+        let schemas = E::Params::document(self);
+        assert_eq!(
+            names.len(),
+            schemas.len(),
+            "the path of `{id}` names {} parameters, and its `Params` holds {}",
+            names.len(),
+            schemas.len()
+        );
+        let parameters: Vec<Value> = names
+            .into_iter()
+            .zip(schemas)
+            .map(|(name, schema)| {
+                json!({ "name": name, "in": "path", "required": true, "schema": schema })
+            })
+            .collect();
+        if !parameters.is_empty() {
+            operation["parameters"] = parameters.into();
+        }
+
         if let Some(body) = E::Request::document(self) {
             operation["requestBody"] = body;
         }
@@ -234,6 +259,24 @@ impl<T: JsonSchema> DocumentRequest for Json<T> {
     }
 }
 
+/// The parameters of a path the document can describe.
+pub(super) trait DocumentParams {
+    /// The schema of each parameter, in the order of the path's segments.
+    fn document(document: &mut Document) -> Vec<Value>;
+}
+
+impl DocumentParams for () {
+    fn document(_document: &mut Document) -> Vec<Value> {
+        Vec::new()
+    }
+}
+
+impl<T: PathParam + JsonSchema> DocumentParams for T {
+    fn document(document: &mut Document) -> Vec<Value> {
+        alloc::vec![document.request::<T>()]
+    }
+}
+
 /// A response body the document can describe.
 pub(super) trait DocumentResponse {
     /// The successful response of an operation.
@@ -351,6 +394,35 @@ mod tests {
         let reboot = &document["paths"]["/system/reboot"]["post"];
         assert!(reboot["requestBody"].is_object());
         assert!(reboot["responses"]["202"].get("content").is_none());
+        assert!(reboot.get("parameters").is_none());
+        assert!(
+            document["paths"]["/system"]["get"]
+                .get("parameters")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn path_parameters_are_declared_with_their_schemas() {
+        let document = openapi();
+        let operation = &document["paths"]["/test/{item}/content"]["get"];
+        let parameter = &operation["parameters"][0];
+        assert_eq!(
+            parameter,
+            &json!({
+                "name": "item",
+                "in": "path",
+                "required": true,
+                "schema": { "$ref": "#/components/schemas/TestItem" },
+            })
+        );
+        assert!(component_accepts(&document, "TestItem", &json!("first")));
+        assert!(component_accepts(
+            &document,
+            "TestItem",
+            &json!("second_item")
+        ));
+        assert!(!component_accepts(&document, "TestItem", &json!("third")));
     }
 
     #[test]

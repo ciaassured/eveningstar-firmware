@@ -11,7 +11,11 @@ use crate::services::reboot::{self, Holder, Reason, Reboot};
 use crate::services::system::System;
 
 /// [`v1::GetSystem`].
-pub(super) async fn get_system(system: &'static System, (): ()) -> Result<v1::System, Infallible> {
+pub(super) async fn get_system(
+    system: &'static System,
+    (): (),
+    (): (),
+) -> Result<v1::System, Infallible> {
     Ok(v1::System {
         name: system.name(),
         id: system.id(),
@@ -23,7 +27,11 @@ pub(super) async fn get_system(system: &'static System, (): ()) -> Result<v1::Sy
 const _: () = assert!(reboot::HOLDERS <= v1::REBOOT_HOLDERS_MAX);
 
 /// [`v1::GetRebootStatus`].
-pub(super) async fn get_reboot(reboot: Reboot, (): ()) -> Result<v1::RebootStatus, Infallible> {
+pub(super) async fn get_reboot(
+    reboot: Reboot,
+    (): (),
+    (): (),
+) -> Result<v1::RebootStatus, Infallible> {
     let status = reboot.status();
     let now = Instant::now();
     Ok(v1::RebootStatus {
@@ -54,6 +62,7 @@ fn reason(reason: Reason) -> v1::RebootReason {
 /// [`v1::Reboot`]: reboots once the client has the response.
 pub(super) async fn post_reboot(
     reboot: Reboot,
+    (): (),
     request: v1::RebootRequest,
 ) -> Result<impl Reply<()>, Infallible> {
     // With no other hold, a graceful reboot would reset the chip before the
