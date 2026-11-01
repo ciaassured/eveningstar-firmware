@@ -2,20 +2,28 @@
 //! [`v1::Operation`], and its body read and its response written as the
 //! operation's [`Endpoint`] declares. Errors are answered with a JSON
 //! [`v1::Error`].
+//!
+//! A [`v1::Bytes`] body is written from a [`Source`], whole or in the part
+//! the request's `Range` asks for, a chunk at a time.
 
 use core::convert::Infallible;
+use core::fmt;
 
+use defmt::warn;
 use eveningstar_api::v1::{self, Call, Endpoint, Errors, Operation};
 use picoserve::ResponseSent;
 use picoserve::extract::{FromRef, FromRequest, JsonRejection};
-use picoserve::io::Read;
+use picoserve::io::{Read, Write};
 use picoserve::request::{Path, ReadAllBodyError, Request, RequestBody, RequestParts};
-use picoserve::response::{Connection, HeadersIter, Json, Response, ResponseWriter, StatusCode};
+use picoserve::response::custom::{CustomBody, CustomResponse};
+use picoserve::response::{
+    Body, Connection, HeadersIter, IntoResponse, Json, Response, ResponseWriter, StatusCode,
+};
 use picoserve::routing::{MethodHandlerService, PathRouterService};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use super::{AppState, system};
+use super::{AppState, TCP_BUFFER_LEN, system};
 
 /// The headers of every answer the API gives, including its errors. The answers
 /// are data: the browser mustn't read them as anything else, keep them, let
@@ -132,7 +140,8 @@ where
     R: Read,
     W: ResponseWriter<Error = R::Error>,
 {
-    let body = E::Request::read(request.parts, request.body_connection.body()).await;
+    let parts = request.parts;
+    let body = E::Request::read(parts, request.body_connection.body()).await;
     let result = match body {
         Ok(body) => handler(S::from_ref(state), params, body)
             .await
@@ -145,10 +154,9 @@ where
         Ok(reply) => reply,
         Err(code) => return write_error(code, connection, writer).await,
     };
-    let headers = Rep::CLOSES.then_some(("Connection", "close"));
     let (body, then) = reply.into_parts();
     let status = StatusCode::new(E::STATUS);
-    let sent = E::Response::write(body, status, headers, connection, writer).await;
+    let sent = E::Response::write(body, status, Rep::CLOSES, parts, connection, writer).await;
     then();
     sent
 }
@@ -159,15 +167,21 @@ pub(super) async fn write_error<R: Read, W: ResponseWriter<Error = R::Error>>(
     connection: Connection<'_, R>,
     writer: W,
 ) -> Result<ResponseSent, W::Error> {
+    writer
+        .write_response(connection, error_response(code))
+        .await
+}
+
+/// A response with `code`.
+fn error_response(code: v1::ErrorCode) -> Response<impl HeadersIter, impl Body> {
     // Every code in the API's error sets has a status.
     let status = code
         .status()
         .map_or(StatusCode::INTERNAL_SERVER_ERROR, StatusCode::new);
-    let response = Json(v1::Error { error: code })
+    Json(v1::Error { error: code })
         .into_response()
         .with_status_code(status)
-        .with_headers(HEADERS);
-    writer.write_response(connection, response).await
+        .with_headers(HEADERS)
 }
 
 /// A request body the server reads.
@@ -213,11 +227,14 @@ impl<T: DeserializeOwned> ReadBody for v1::Json<T> {
 
 /// A response body the server writes from a `V`.
 trait WriteBody<V>: v1::ResponseBody {
-    /// Writes a response with `status`, `headers` and a body holding `value`.
+    /// Writes the response to `request` with `status` and a body holding
+    /// `value`. If `closes`, the response tells the client the connection
+    /// closes.
     async fn write<R: Read, W: ResponseWriter<Error = R::Error>>(
         value: V,
         status: StatusCode,
-        headers: impl HeadersIter,
+        closes: bool,
+        request: RequestParts<'_>,
         connection: Connection<'_, R>,
         writer: W,
     ) -> Result<ResponseSent, W::Error>;
@@ -227,7 +244,8 @@ impl WriteBody<()> for v1::Empty {
     async fn write<R: Read, W: ResponseWriter<Error = R::Error>>(
         (): (),
         status: StatusCode,
-        headers: impl HeadersIter,
+        closes: bool,
+        _request: RequestParts<'_>,
         connection: Connection<'_, R>,
         writer: W,
     ) -> Result<ResponseSent, W::Error> {
@@ -236,7 +254,7 @@ impl WriteBody<()> for v1::Empty {
         let response = Response::empty(status)
             .with_headers(("Content-Length", "0"))
             .with_headers(HEADERS)
-            .with_headers(headers);
+            .with_headers(closes.then_some(("Connection", "close")));
         writer.write_response(connection, response).await
     }
 }
@@ -245,7 +263,8 @@ impl<T: Serialize> WriteBody<T> for v1::Json<T> {
     async fn write<R: Read, W: ResponseWriter<Error = R::Error>>(
         value: T,
         status: StatusCode,
-        headers: impl HeadersIter,
+        closes: bool,
+        _request: RequestParts<'_>,
         connection: Connection<'_, R>,
         writer: W,
     ) -> Result<ResponseSent, W::Error> {
@@ -253,8 +272,197 @@ impl<T: Serialize> WriteBody<T> for v1::Json<T> {
             .into_response()
             .with_status_code(status)
             .with_headers(HEADERS)
-            .with_headers(headers);
+            .with_headers(closes.then_some(("Connection", "close")));
         writer.write_response(connection, response).await
+    }
+}
+
+/// The source of a [`v1::Bytes`] body: its length, its tag, the name it is
+/// saved under, and its bytes, read a chunk at a time as the response is
+/// written.
+pub(super) trait Source {
+    /// The error of a read, which ends the body early.
+    type Error: defmt::Format;
+
+    /// The body's length in bytes.
+    fn len(&self) -> u64;
+
+    /// The body's strong entity tag, if it has one. A request whose
+    /// `If-Range` differs from it is answered with the whole body.
+    fn tag(&self) -> Option<v1::EntityTag<'_>>;
+
+    /// The name the part `selection` of the body is saved under. Characters
+    /// other than ASCII letters, digits, `.`, `-` and `_` are sent as `_`.
+    fn filename(&self, selection: v1::Selection) -> impl fmt::Display;
+
+    /// Reads the bytes from `offset` into `buffer`, filling it.
+    ///
+    /// A response reads each chunk of the body, at most [`CHUNK_LEN`] bytes,
+    /// with one call, in order, once the previous chunk is written, and
+    /// yields to the executor after writing it. A read that fails ends the
+    /// body before its length, and the connection closes, so the client sees
+    /// a short body.
+    async fn read(&self, offset: u64, buffer: &mut [u8]) -> Result<(), Self::Error>;
+}
+
+/// The most bytes of a binary body read and written at once: a quarter of a
+/// TCP buffer, which keeps the chunk's buffer within the stack frame limit.
+const CHUNK_LEN: usize = TCP_BUFFER_LEN / 4;
+
+impl<S: Source> WriteBody<S> for v1::Bytes {
+    /// Writes the part of the body `request` asks for. Every response with
+    /// the body or a part of it tells the client the connection closes, as
+    /// the connection closes once the body is written or a read of it fails.
+    async fn write<R: Read, W: ResponseWriter<Error = R::Error>>(
+        source: S,
+        status: StatusCode,
+        _closes: bool,
+        request: RequestParts<'_>,
+        connection: Connection<'_, R>,
+        writer: W,
+    ) -> Result<ResponseSent, W::Error> {
+        let header = |name| {
+            request
+                .headers()
+                .get(name)
+                .and_then(|value| value.as_str().ok())
+        };
+        // Range requests are defined for `GET` alone.
+        let range = (request.method() == v1::Method::Get.as_str())
+            .then(|| header("Range"))
+            .flatten();
+        let len = source.len();
+        let tag = source.tag();
+        let selection = v1::Selection::new(len, tag, range, header("If-Range"));
+        let content_range = selection.content_range(len);
+
+        let (status, first, count) = match selection {
+            v1::Selection::Whole => (status, 0, len),
+            v1::Selection::Part { first, last } => (
+                StatusCode::new(v1::Bytes::PARTIAL_STATUS),
+                first,
+                last - first + 1,
+            ),
+            v1::Selection::Unsatisfiable => {
+                return write_unsatisfiable(tag, content_range, connection, writer).await;
+            }
+        };
+
+        let headers = [
+            Some(("Content-Type", Header::Text("application/octet-stream"))),
+            Some(("Content-Length", Header::Number(count))),
+            Some(("Accept-Ranges", Header::Text("bytes"))),
+            tag.map(|tag| ("ETag", Header::Tag(tag))),
+            Some((
+                "Content-Disposition",
+                Header::Attachment(source.filename(selection)),
+            )),
+            content_range.map(|range| ("Content-Range", Header::Range(range))),
+        ];
+        // Custom, so the connection closes once the body is written: a body cut
+        // short leaves nothing else to read on it.
+        let response = CustomResponse::build(status)
+            .with_headers(headers)
+            .with_headers(HEADERS)
+            .with_body(Chunks {
+                source: &source,
+                first,
+                count,
+            });
+        response.write_to(connection, writer).await
+    }
+}
+
+/// Writes the `416` response to a request for no part of a binary body whose
+/// tag is `tag`, with the `Content-Range` `content_range`. Its body is the
+/// JSON error, so it names no attachment.
+async fn write_unsatisfiable<R: Read, W: ResponseWriter<Error = R::Error>>(
+    tag: Option<v1::EntityTag<'_>>,
+    content_range: Option<v1::ContentRange>,
+    connection: Connection<'_, R>,
+    writer: W,
+) -> Result<ResponseSent, W::Error> {
+    let response = error_response(v1::RangeError::RangeNotSatisfiable.code())
+        .with_header("Accept-Ranges", "bytes")
+        .with_headers(tag.map(|tag| ("ETag", tag)))
+        .with_headers(content_range.map(|range| ("Content-Range", range)));
+    writer.write_response(connection, response).await
+}
+
+/// The value of a header of a binary response. `F` writes the filename of an
+/// attachment.
+enum Header<'a, F> {
+    Text(&'static str),
+    Number(u64),
+    Tag(v1::EntityTag<'a>),
+    Range(v1::ContentRange),
+    /// `attachment`, saved under the name `F` writes, its characters other
+    /// than ASCII letters, digits, `.`, `-` and `_` written as `_`. The value
+    /// can't then end the quoted name, or the header.
+    Attachment(F),
+}
+
+impl<F: fmt::Display> fmt::Display for Header<'_, F> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Text(text) => f.write_str(text),
+            Self::Number(number) => write!(f, "{number}"),
+            Self::Tag(tag) => write!(f, "{tag}"),
+            Self::Range(range) => write!(f, "{range}"),
+            Self::Attachment(filename) => {
+                f.write_str("attachment; filename=\"")?;
+                fmt::write(&mut Filename(f), format_args!("{filename}"))?;
+                f.write_str("\"")
+            }
+        }
+    }
+}
+
+/// Writes a filename to the formatter it holds, its characters other than
+/// ASCII letters, digits, `.`, `-` and `_` as `_`.
+struct Filename<'a, 'f>(&'a mut fmt::Formatter<'f>);
+
+impl fmt::Write for Filename<'_, '_> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        for c in s.chars() {
+            let safe = c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_');
+            self.0.write_char(if safe { c } else { '_' })?;
+        }
+        Ok(())
+    }
+}
+
+/// `count` bytes of `source` from `first`, written a chunk at a time.
+struct Chunks<'a, S> {
+    source: &'a S,
+    first: u64,
+    count: u64,
+}
+
+impl<S: Source> CustomBody for Chunks<'_, S> {
+    async fn write_response_body<W: Write>(self, mut writer: W) -> Result<(), W::Error> {
+        let mut buffer = [0; CHUNK_LEN];
+        let mut offset = self.first;
+        let end = self.first + self.count;
+        while offset < end {
+            let len = usize::try_from(end - offset).map_or(CHUNK_LEN, |left| left.min(CHUNK_LEN));
+            let chunk = &mut buffer[..len];
+            if let Err(error) = self.source.read(offset, chunk).await {
+                warn!(
+                    "Binary response body cut short after {} of {} bytes: {}",
+                    offset - self.first,
+                    self.count,
+                    error
+                );
+                return Ok(());
+            }
+            writer.write_all(chunk).await?;
+            offset += chunk.len() as u64;
+            // A client reading as fast as the network allows would otherwise
+            // hold the executor until its socket buffer fills.
+            embassy_futures::yield_now().await;
+        }
+        Ok(())
     }
 }
 
