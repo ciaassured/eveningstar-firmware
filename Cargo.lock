@@ -1111,6 +1111,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "eveningstar-storage"
+version = "0.1.0"
+
+[[package]]
 name = "fancy-regex"
 version = "0.19.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

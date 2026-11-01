@@ -18,6 +18,7 @@
         config.packages.flash-boot
         config.packages.flash-app
         config.packages.flash-all
+        config.packages.storage-layout-write
       ];
 
       # Default target for idf.py when a project has no sdkconfig yet.

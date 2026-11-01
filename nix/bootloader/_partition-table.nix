@@ -26,8 +26,17 @@ idfBuild {
     import gen_esp32part
 
     table = gen_esp32part.PartitionTable.from_binary(open(sys.argv[1], "rb").read())
+    def flags(p):
+        return sum(1 << bit for flag, bit in p.FLAGS.items() if getattr(p, flag))
+
     layout = {
-        p.name: {"type": p.type, "subtype": p.subtype, "offset": p.offset, "size": p.size}
+        p.name: {
+            "type": p.type,
+            "subtype": p.subtype,
+            "offset": p.offset,
+            "size": p.size,
+            "flags": flags(p),
+        }
         for p in table
     }
     json.dump(layout, open(sys.argv[2], "w"), indent=2)
