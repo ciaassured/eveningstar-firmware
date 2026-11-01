@@ -343,6 +343,18 @@ fn field<const N: usize>(bytes: &[u8], at: usize) -> [u8; N] {
         .unwrap_or([0; N])
 }
 
+/// The length and the two SHA-256 digests of an image that verified, from one
+/// pass over it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Digests {
+    /// The image's length in bytes, the digest included.
+    size: u32,
+    /// The digest the image stores, of every byte before it.
+    stored: [u8; 32],
+    /// The digest of the whole image, the stored digest included.
+    file: [u8; 32],
+}
+
 /// An app image's header and length, read without hashing it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AppInfo {
@@ -370,8 +382,7 @@ impl AppInfo {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct App {
     header: Header,
-    size: u32,
-    digest: [u8; 32],
+    digests: Digests,
 }
 
 impl App {
@@ -384,13 +395,21 @@ impl App {
     /// The image's length in bytes, the digest included.
     #[must_use]
     pub const fn size(&self) -> u32 {
-        self.size
+        self.digests.size
     }
 
-    /// The image's SHA-256 digest, which the image stores and which matches it.
+    /// The image's SHA-256 digest, which the image stores and which matches
+    /// it: the digest of every byte before it.
     #[must_use]
     pub const fn digest(&self) -> &[u8; 32] {
-        &self.digest
+        &self.digests.stored
+    }
+
+    /// The SHA-256 of the whole image, the stored digest included: what
+    /// `sha256sum` prints for a file holding the image alone.
+    #[must_use]
+    pub const fn file_sha256(&self) -> &[u8; 32] {
+        &self.digests.file
     }
 }
 
@@ -398,8 +417,7 @@ impl App {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Bootloader {
     header: Header,
-    size: u32,
-    digest: [u8; 32],
+    digests: Digests,
     descriptor: Option<BootloaderDescriptor>,
 }
 
@@ -413,13 +431,21 @@ impl Bootloader {
     /// The image's length in bytes, the digest included.
     #[must_use]
     pub const fn size(&self) -> u32 {
-        self.size
+        self.digests.size
     }
 
-    /// The image's SHA-256 digest, which the image stores and which matches it.
+    /// The image's SHA-256 digest, which the image stores and which matches
+    /// it: the digest of every byte before it.
     #[must_use]
     pub const fn digest(&self) -> &[u8; 32] {
-        &self.digest
+        &self.digests.stored
+    }
+
+    /// The SHA-256 of the whole image, the stored digest included: what
+    /// `sha256sum` prints for a file holding the image alone.
+    #[must_use]
+    pub const fn file_sha256(&self) -> &[u8; 32] {
+        &self.digests.file
     }
 
     /// The bootloader descriptor, or `None` for a bootloader without one, as
@@ -742,32 +768,30 @@ impl<'s, S: Source + ?Sized> Verifier<'s, S> {
 
     /// Finishes the verification of an app.
     fn app(&mut self) -> Result<App, ImageError> {
-        let (size, digest) = self.finish()?;
+        let digests = self.finish()?;
         // A first segment's descriptor was checked as it was read.
         if self.segments == 0 {
             return Err(ImageError::MissingDescriptor);
         }
         Ok(App {
             header: self.header,
-            size,
-            digest,
+            digests,
         })
     }
 
     /// Finishes the verification of a bootloader.
     fn bootloader(&mut self) -> Result<Bootloader, ImageError> {
-        let (size, digest) = self.finish()?;
+        let digests = self.finish()?;
         Ok(Bootloader {
             header: self.header,
-            size,
-            digest,
+            digests,
             descriptor: BootloaderDescriptor::parse(&self.descriptor, self.descriptor_len),
         })
     }
 
     /// Checks the padding, the checksum and the digest after the segments, and
-    /// returns the image's size and digest.
-    fn finish(&mut self) -> Result<(u32, [u8; 32]), ImageError> {
+    /// returns the image's size and digests.
+    fn finish(&mut self) -> Result<Digests, ImageError> {
         let at = self.end;
         let tail = tail(self.source, at, self.header.hash_appended)?;
         let mut padding = [0; 16];
@@ -788,12 +812,29 @@ impl<'s, S: Source + ?Sized> Verifier<'s, S> {
             return Err(ImageError::NoDigest);
         }
         let stored: [u8; 32] = read_array(self.source, tail.unhashed_end)?;
-        let computed: [u8; 32] = core::mem::take(&mut self.sha).finalize().into();
-        if computed != stored {
-            return Err(ImageError::DigestMismatch);
-        }
-        Ok((tail.size, stored))
+        let file = finish_digests(core::mem::take(&mut self.sha), &stored)
+            .ok_or(ImageError::DigestMismatch)?;
+        Ok(Digests {
+            size: tail.size,
+            stored,
+            file,
+        })
     }
+}
+
+/// Finishes `sha`, the hash of every byte of an image before its digest, and
+/// compares it with `stored`, the digest the image stores. Returns the digest
+/// of the whole image when they match: a copy of `sha`, fed `stored`. Never
+/// inlined, so the two hashers stay out of the verifier's frame.
+#[inline(never)]
+fn finish_digests(sha: Sha256, stored: &[u8; 32]) -> Option<[u8; 32]> {
+    let mut file = sha.clone();
+    let computed: [u8; 32] = sha.finalize().into();
+    if computed != *stored {
+        return None;
+    }
+    file.update(stored);
+    Some(file.finalize().into())
 }
 
 #[cfg(test)]
