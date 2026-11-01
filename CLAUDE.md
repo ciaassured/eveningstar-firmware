@@ -41,6 +41,15 @@ The web UI (`web/`) is a static client of the public API, served by the firmware
 - The firmware reads the page from `EVENINGSTAR_WEB_UI` (a `web-ui-bundle` output). Without it, it serves a placeholder.
 - Web code has no `innerHTML`-style sinks, inline `style` attributes or web storage, and `src/ui` imports only `src/lib` and itself; `web-lint` enforces the rules it can.
 
+## Storage
+
+`docs/architecture.md` ("Storage") records the layout, the trust tiers, the handles and the OTA mechanism, and `specs/storage.md` what is left.
+
+- The internal flash is reached only through the handles of `eveningstar-storage` (`split`). `FlashStorage::new` is disallowed outside `crates/eveningstar/src/storage.rs`; don't add another route to the flash.
+- A layout change goes through `nix/board.nix`, then `storage-layout` (rewrites `layout.rs`) and `storage-testdata` (rewrites the fixtures). The layout can't change over OTA, so once boards ship, changing it needs the user's approval.
+- A new bootloader needs an entry in `crates/eveningstar-storage/src/known.rs`, which the `build` group prints when it is missing. The list only grows once boards have shipped.
+- Don't relax the trust tiers, the protected regions or the split between sensitive and public handles (`Read` against `SensitiveRead`) without asking the user.
+
 ## Project-specific notes
 
 - Target chip: `esp32c6`; keep dependencies, HAL features, and examples compatible with this chip.

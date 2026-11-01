@@ -8,18 +8,22 @@ documentation (`//!` comments), which this document links to by name.
 
 The workspace's crates live flat under `crates/`.
 
-| Crate               | Holds                                                     | Builds for        |
-|---------------------|-----------------------------------------------------------|-------------------|
-| `eveningstar-board` | Board support: the chip's pins, named by their role       | ESP32-C6          |
-| `eveningstar-api`   | The API contract: endpoints, request and response types   | ESP32-C6 and host |
-| `eveningstar`       | The firmware: services, transports, drivers and watchdogs | ESP32-C6          |
+| Crate                 | Holds                                                     | Builds for        |
+|-----------------------|-----------------------------------------------------------|-------------------|
+| `eveningstar-board`   | Board support: the chip's pins and flash, named by role   | ESP32-C6          |
+| `eveningstar-api`     | The API contract: endpoints, request and response types   | ESP32-C6 and host |
+| `eveningstar-storage` | The internal flash: layout, formats, handles and OTA      | ESP32-C6 and host |
+| `eveningstar`         | The firmware: services, transports, drivers and watchdogs | ESP32-C6          |
 
 ### `eveningstar-board`
 
 All knowledge of the board lives here: which pin does what, how shared buses
 are wired, and what each pin's starting state is. The board revision is chosen
 with a cargo feature. `Board::new` consumes the chip's peripherals and hands out
-pins by role, so the firmware never names a GPIO number.
+pins by role, so the firmware never names a GPIO number. It also hands out the
+two flash chips apart: `internal_flash`, inside the ESP32-C6 module, with
+`flash_cache` (SPI0, whose MMU says which flash page is mapped where), and
+`external_flash`, the SPI NAND on the shared bus.
 
 The crate's documentation states what the crate itself guarantees, never what
 its users do with what it hands out. It can't know what they do, now or later.
@@ -35,6 +39,15 @@ The crate is `no_std` and allocation-free, so the firmware can use it. The
 `schema` feature adds JSON Schemas of the types and the OpenAPI document, which
 need `alloc` and are only built on the host. The crate is listed in
 `host_crates` in `nix/checks.nix`, so its tests run on the host.
+
+### `eveningstar-storage`
+
+Everything about the internal flash that doesn't need the chip: the partition
+layout, the formats on the flash, the checks of what the board holds, the typed
+handles to the partitions and the OTA mechanism. It has no Espressif
+dependencies and reaches the flash through its `Flash` trait, so its tests run
+on the host against a RAM flash that can lose power at any write. It is listed
+in `host_crates` in `nix/checks.nix`. See [Storage](#storage).
 
 ### `eveningstar`
 
@@ -381,6 +394,169 @@ adding an AppArmor profile for `bwrap` that allows `userns`, lifts it.
 
 A language server in an editor runs `typescript` from `node_modules`, a native
 binary, on the host and unsandboxed. That risk is accepted.
+
+## Storage
+
+The ESP32-C6 module's internal flash (8 MiB) holds the bootloader, the
+partition table, two copies of the app, and the data that outlives a boot. The
+external NAND is separate and isn't covered here. The storage layer exists so
+that code which needs a partition can't also write the boot chain, the running
+app or space the board gives to something else, and can't send secrets off the
+device by passing the wrong handle. The crate's documentation (`lib.rs`,
+`partitions.rs`, `otadata.rs`) has the details.
+
+### The layout
+
+`nix/board.nix` declares every partition with its offset and size written out.
+The layout can't change over OTA, as the partition table and bootloader aren't
+updated from the firmware, so nothing is left for `gen_esp32part` to place. The
+partitions are `factory` (4 KiB, read-only, reserved for durable factory data),
+`otadata`, the app slots `ota_0` and `ota_1` (3 MiB each), a `config` partition
+per slot, `diag` and `reserved`. A slot is sized for about twice the firmware
+expected once WiFi and TLS are in, as slots can't grow later.
+
+- Configuration is per slot, so an update can't break the running firmware's
+  configuration, and the new firmware migrates from the old slot's partition.
+  A shared partition would undo that.
+- `factory` and `reserved` are space that later firmware can claim only because
+  the table already has it. No handle exists for them.
+- There is no `nvs` partition, as nothing uses that format.
+
+`nix/_storage-layout.nix` turns the board into `layout.rs`, which is committed
+so a plain `cargo build` needs no Nix. It rejects missing offsets, misaligned or
+overlapping partitions, partitions outside the flash and slot pairs of unequal
+size. The `lint` group fails when `layout.rs` is stale, and the `build` group
+checks that the table ESP-IDF builds resolves to the same partitions, which
+checks the numeric type, subtype and flag values against `gen_esp32part`.
+
+### Trust tiers
+
+`split` runs once per boot and returns the handles of the tier the board
+reaches, with a `Report` of what it found. It never fails: the worst outcome is
+the untrusted tier, so storage never stops the device from booting.
+
+| Tier      | Reached when                                              | Handles                                             |
+|-----------|-----------------------------------------------------------|-----------------------------------------------------|
+| Untrusted | the table at 0x8000 isn't the layout, the flash is smaller, or the app didn't boot from a slot | the boot chain, read only |
+| Data      | otherwise                                                 | + config, diag, otadata and the other slot          |
+| Full      | + the bootloader is known and the app's descriptor reads  | + `Ota`                                             |
+
+The table is compared entry by entry with the layout. It is slightly more
+lenient than the bootloader, which also requires the entry after the MD5 entry
+to be erased, and the MD5 isn't checked. When the table at 0x8000 isn't the
+layout, `split` looks for the one the bootloader used, so the boot-chain
+handles describe what is on the board. The running slot comes from the flash
+MMU, which says which page the CPU runs, not from the otadata, which says only
+what was selected.
+
+The full tier needs a bootloader in `known.rs`, identified by the SHA-256 its
+image stores. Only a bootloader known to support rollback is trusted with the
+boot selection, since an update under any other could leave a board that boots
+nothing. The list grows and doesn't shrink once boards have shipped, so no
+update takes a board out of the full tier.
+
+A board flashed by `cargo run` gets the untrusted tier: probe-rs writes its own
+bootloader and table. The firmware then runs on default configuration that it
+doesn't save, and logs why.
+
+### Handles
+
+A handle is a `Partition<'f, R>`, with `R` an uninhabited role. What it can do
+is a set of sealed traits it implements, so a misuse fails to compile (the
+`compile_fail` doctests in `partitions.rs` show each).
+
+- `SensitiveRead` is the read every handle has. `Read` adds permission for the
+  contents to leave the device, and only public handles (the boot chain, the
+  app slots, the otadata) have it. A function that exports data takes
+  `impl Read` and so can't be given a configuration or diag handle; one that
+  handles secrets takes `impl SensitiveRead` and accepts both.
+- `Erasable` and `Writable` are separate. The other slot's configuration can be
+  erased but not programmed: erasing is the secure wipe, as NOR flash keeps no
+  old copies elsewhere.
+- Public handles are `Copy`, so a download and the OTA code can read the same
+  slot. Sensitive and writable handles are made once, by `split`, and holding
+  one is the permission. `split` takes the flash as `&mut dyn Flash`, so a
+  second call can't make a second copy.
+- A role's size (`FixedSize`) comes from the layout and is a constant, so a
+  store can assert its needs at compile time. The boot-chain spans are found at
+  runtime and have none.
+- Sensitive handles don't implement the NOR flash traits. `into_nor_flash`
+  consumes a handle and returns an adapter for the store that owns the
+  partition. Erase sets 4 KiB sectors to `0xFF`, and program only clears bits,
+  with no read-modify-write that would erase what the caller didn't ask for.
+- Every erase and program also checks its absolute range against the protected
+  regions: the bootloader, the table's sector, `factory`, `reserved` and the
+  running app. A mistake in the crate's own arithmetic still can't reach them.
+
+A flash operation runs with interrupts disabled for up to a sector erase, so
+no call erases more than a sector or programs more than 4 KiB, and long
+operations yield between them. `.clippy.toml` disallows `FlashStorage::new`
+everywhere but `storage.rs`, so the internal flash has no route around the
+handles.
+
+### Updates and rollback
+
+`Ota`, in the full tier, is the only code that writes the other app slot and
+the otadata, so the typestate API is the only public way to change the boot
+selection. The otadata format and selection rules are ESP-IDF's, so the
+bootloader, built with app rollback, reads what the firmware writes. The crate
+has its own otadata code because `esp-bootloader-esp-idf`'s fails every
+operation when one entry is corrupt, can name an aborted image as current, and
+activates in two writes, between which a power cut boots the new image with no
+rollback.
+
+- Each entry is judged on its own, so a corrupt sector never hides the other.
+- An entry is written as an erase, then label and state, then the CRC, then the
+  sequence number last. A power cut during a NOR program can leave any subset
+  of the bits programmed, so a single 32-byte program can tear into an entry
+  that validates and boots the new image without arming the rollback. Until the
+  sequence number is written the entry reads as blank, and a torn sequence
+  number never matches the CRC, as the CRC is one to one on 32 bits.
+- `begin_update` first makes both entries select the running slot, cancelling a
+  pending activation in place, so no valid entry selects the slot being
+  rewritten. `Update::write` takes the image in parts of any size, and
+  `finish` verifies it as the bootloader will: chip, segments, checksum, the
+  required SHA-256, a project name equal to the running app's, and exactly the
+  image's length.
+- `finish` and `verify_other` return a `VerifiedImage`, the only thing
+  `activate` takes. It comes from the latest update, borrows the flash so it
+  can't outlive its `split`, and `activate` hashes the slot again. Activation
+  writes one `New` entry to the sector that isn't active, so a power cut leaves
+  the old selection. It means the image is intact and meant for this board; it
+  doesn't mean authentic.
+- Any booted image that isn't `Valid` needs confirming
+  (`BootState::needs_confirmation`): one booted `PendingVerify`, with no state,
+  or as the bootloader's fallback when the selected slot failed to load.
+  `Ota::confirm` makes it `Valid` in every case, writing a new entry for a
+  fallback. `begin_update` and `activate` refuse (`Unconfirmed`) until the
+  running image is `Valid`, and never write `Valid` for an image that wasn't.
+- Nothing in storage reboots. Below the full tier, `storage.rs` requests a
+  graceful reboot for a `PendingVerify` image, which can't be confirmed there,
+  so the bootloader rolls it back.
+
+The OTA service, not built yet, will confirm an image within a window of 10
+minutes after boot. On timeout it requests a graceful reboot in every case,
+including when no rollback target exists. A board then reboots every 10 minutes
+until someone confirms, which is accepted so that a user can confirm whichever
+image comes up.
+
+### Checks
+
+- `check-images` (an example of the crate) runs the firmware's own table
+  comparison, image verification and `split` on files. The `build` group runs it
+  on the Nix bootloader and table and on the release app, and fails on a
+  bootloader missing from `known.rs` (printing its entry), a table that isn't
+  the layout, or an app over 75% of its slot.
+- The crate's tests read fixtures built by Nix and real captures in
+  `crates/eveningstar-storage/testdata/` (see its README). The `build` group
+  fails when the Nix-built ones are stale.
+- The OTA tests cut the power after any erase or program, in each way a NOR
+  program can be cut, and boot a simulated bootloader afterwards, from a first
+  boot, a rollback target, a pending activation and a fallback.
+
+At boot, `storage.rs` reads the booted offset, wraps `esp_storage::FlashStorage`
+behind a critical-section mutex as the `Flash`, and logs the tier, the table,
+the bootloader, the running slot and the boot state.
 
 ## Faults and reboots
 

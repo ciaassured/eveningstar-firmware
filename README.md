@@ -44,7 +44,8 @@ probe-rs and streams its logs.
 > [!CAUTION]
 > Don't use `cargo run` to flash a board for real use. probe-rs writes its own
 > bootloader and partition table instead of the custom ones, so the board loses
-> OTA update support. Run `flash-all` to restore them.
+> OTA update support. The firmware also sees a layout it doesn't know and runs
+> without persistent storage. Run `flash-all` to restore them.
 
 Checks (formatting, Clippy and a release build), the same ones CI runs:
 
