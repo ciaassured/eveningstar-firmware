@@ -35,10 +35,11 @@ use embassy_time::Instant;
 use esp_hal::peripherals::{FLASH, SPI0};
 use esp_storage::{FlashStorage, FlashStorageError};
 use eveningstar_storage::otadata::{self, Sector, State, Validity};
-use eveningstar_storage::partitions::{Partition, PartitionTable};
+use eveningstar_storage::partitions::{Otadata, OtherApp, Partition, PartitionTable};
 use eveningstar_storage::table::{self, Fields, Found, Match};
 use eveningstar_storage::{
-    DeviceError, Entry, Flash, Limit, Report, SECTOR_SIZE, Slot, Storage, Text, Tier, layout, split,
+    BootChain, DeviceError, Entry, Flash, Limit, Report, SECTOR_SIZE, Slot, Storage, Text, Tier,
+    layout, split,
 };
 use static_cell::StaticCell;
 
@@ -62,23 +63,39 @@ static GENERATIONS: [AtomicU32; LAYOUT.len()] = [const { AtomicU32::new(0) }; LA
 /// Signalled after each erase and program of the internal flash.
 static WRITTEN: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
-/// What [`start`] hands out.
+/// What [`start`] hands out: the report, the public handles and the views of
+/// the write counts.
 #[derive(Debug)]
-#[expect(
-    dead_code,
-    reason = "nothing takes the storage handles or the write counts yet"
-)]
 pub(crate) struct Started {
-    /// The handles of the tier reached, and the report.
-    pub(crate) storage: Storage<'static>,
+    /// What `split` found, and the tier reached.
+    pub(crate) report: Report,
+    /// The handles whose contents may leave the device.
+    pub(crate) public: Public,
     /// The write generations of the layout's partitions.
     pub(crate) generations: Generations,
     /// The wake after each write.
     pub(crate) writes: Writes,
 }
 
+/// The public handles of the tier reached: those that implement
+/// [`Read`](eveningstar_storage::partitions::Read), all `Copy`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Public {
+    /// The boot chain, in every tier.
+    pub(crate) boot: BootChain<'static>,
+    /// The app slot that isn't running, in the data and full tiers.
+    pub(crate) other_app: Option<Partition<'static, OtherApp>>,
+    /// The otadata, in the data and full tiers.
+    #[expect(dead_code, reason = "nothing reads the otadata after the boot yet")]
+    pub(crate) otadata: Option<Partition<'static, Otadata>>,
+}
+
 /// Splits the internal flash into handles, logs the report, and returns the
-/// handles with the views of the write counts.
+/// public handles with the views of the write counts.
+///
+/// No task owns a sensitive handle (the configurations, diag) or the OTA
+/// mechanism yet, so they are dropped here; they can't be made again this
+/// boot.
 ///
 /// When the running image is `PendingVerify` and the tier isn't full
 /// ([`Report::cannot_confirm`]), it requests a graceful reboot through
@@ -115,8 +132,14 @@ pub(crate) async fn start(
     );
     log(&storage, capacity);
     confirm_or_reboot(&storage.report, reboot);
+    let Storage { report, boot, data } = storage;
     Started {
-        storage,
+        report,
+        public: Public {
+            boot,
+            other_app: data.as_ref().map(|data| data.other_app),
+            otadata: data.as_ref().map(|data| data.otadata),
+        },
         generations: Generations(()),
         writes: Writes(()),
     }
@@ -133,7 +156,6 @@ impl Generations {
     /// flash: the wrapping sum of the generations of the partitions the span
     /// overlaps, so it changes with every write to any of them. 0 for a span
     /// outside every partition, as no write is counted there.
-    #[expect(dead_code, reason = "nothing reads the generations yet")]
     #[expect(
         clippy::unused_self,
         reason = "the view is the permission to read, not data"
@@ -153,7 +175,6 @@ pub(crate) struct Writes(());
 impl Writes {
     /// Waits for the next erase or program of the internal flash, or returns
     /// at once when one has finished since the last wait returned.
-    #[expect(dead_code, reason = "no task waits for writes yet")]
     pub(crate) async fn wait(&mut self) {
         WRITTEN.wait().await;
     }
@@ -405,9 +426,18 @@ fn log_bootloader(report: &Report) {
     match report.bootloader {
         Ok(id) => {
             if let Some(name) = id.name {
-                info!("Bootloader: {=str}", name);
+                info!(
+                    "Bootloader: {=str}, digest {}, file SHA-256 {}",
+                    name,
+                    Hex(&id.digest),
+                    Hex(&id.file_sha256)
+                );
             } else {
-                warn!("Bootloader: unknown, digest {=[u8]:02x}", id.digest);
+                warn!(
+                    "Bootloader: unknown, digest {}, file SHA-256 {}",
+                    Hex(&id.digest),
+                    Hex(&id.file_sha256)
+                );
             }
         }
         Err(err) => warn!("Bootloader doesn't verify: {}", Debug2Format(&err)),
@@ -470,6 +500,23 @@ fn log_otadata(report: &Report, otadata: &otadata::Otadata) {
             Fmt(state.running),
             Fmt(selected),
         );
+    }
+}
+
+/// A SHA-256 digest, formatted as 64 lowercase hex digits with nothing
+/// between them, as `sha256sum` and `esptool image-info` print it.
+pub(crate) struct Hex<'a>(pub(crate) &'a [u8; 32]);
+
+impl Format for Hex<'_> {
+    fn format(&self, f: Formatter<'_>) {
+        const DIGITS: &[u8; 16] = b"0123456789abcdef";
+        let mut text = [0; 64];
+        for (pair, byte) in text.as_chunks_mut::<2>().0.iter_mut().zip(self.0) {
+            for (digit, nibble) in pair.iter_mut().zip([byte >> 4, byte & 0x0F]) {
+                *digit = DIGITS[usize::from(nibble)];
+            }
+        }
+        defmt::write!(f, "{=str}", core::str::from_utf8(&text).unwrap_or_default());
     }
 }
 

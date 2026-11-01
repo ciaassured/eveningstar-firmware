@@ -61,6 +61,7 @@ mod wd {
         // Tolerates two missed checks.
         link: LinkMonitor = Duration::from_ticks(crate::ethernet::LINK_CHECK_INTERVAL.as_ticks() * 3),
         reboot: Reboot = crate::services::reboot::WATCHDOG_TIMEOUT,
+        storage_check: StorageCheck = crate::services::storage::WATCHDOG_TIMEOUT,
     }
 }
 
@@ -111,17 +112,17 @@ async fn main(spawner: Spawner) {
         wd_handles.blinky
     )));
 
-    // Nothing takes a storage handle yet, so the handles are dropped when
-    // `main` returns. They can't be made again: the flash is split once per
-    // boot.
-    let _storage = storage::start(
+    let [seed, boot] = random_values(board.rng.reborrow(), board.adc1.reborrow());
+
+    let internal = storage::start(
         board.internal_flash,
         board.flash_cache,
         reboot.graceful_only(),
     )
     .await;
+    // Nothing reads the view yet; the check task runs and logs on its own.
+    let _storage = services::storage::start(spawner, internal, boot, wd_handles.storage_check);
 
-    let seed = random_seed(board.rng.reborrow(), board.adc1.reborrow());
     match ethernet::start(
         spawner,
         board.ethernet,
@@ -138,11 +139,12 @@ async fn main(spawner: Spawner) {
     }
 }
 
-/// Draws a true random seed, briefly enabling ADC1 as the RNG's entropy source.
-fn random_seed(rng: RNG<'_>, adc1: ADC1<'_>) -> u64 {
+/// Draws `N` true random values, briefly enabling ADC1 as the RNG's entropy
+/// source. Each value takes two of the RNG's 32-bit words.
+fn random_values<const N: usize>(rng: RNG<'_>, adc1: ADC1<'_>) -> [u64; N] {
     let _source = TrngSource::new(rng, adc1);
     let trng = defmt::unwrap!(Trng::try_new());
-    (u64::from(trng.random()) << 32) | u64::from(trng.random())
+    core::array::from_fn(|_| (u64::from(trng.random()) << 32) | u64::from(trng.random()))
 }
 
 #[embassy_executor::task]
