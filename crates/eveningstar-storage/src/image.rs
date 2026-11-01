@@ -509,6 +509,30 @@ pub fn app_descriptor<S: Source + ?Sized>(source: &S) -> Result<AppDescriptor, I
     Ok(descriptor)
 }
 
+/// Reads the descriptor of the bootloader image in `source`, checking the
+/// header and the first segment's header, but nothing after it: `None` for a
+/// bootloader without one, as ESP-IDF releases before 5.3 build them, as
+/// [`Bootloader::descriptor`] gives it.
+///
+/// # Errors
+///
+/// [`ImageError::Read`] when reading fails, and the errors of the header and
+/// the first segment's header.
+pub fn bootloader_descriptor<S: Source + ?Sized>(
+    source: &S,
+) -> Result<Option<BootloaderDescriptor>, ImageError> {
+    let (header, _) = read_header(source)?;
+    if header.segment_count == 0 {
+        return Ok(None);
+    }
+    let (segment, _) = read_segment(source, HEADER_LEN, 0)?;
+    if segment.len < BOOTLOADER_DESC_LEN {
+        return Ok(None);
+    }
+    let bytes: [u8; BOOTLOADER_DESC_READ] = read_array(source, segment.data)?;
+    Ok(BootloaderDescriptor::parse(&bytes, segment.len))
+}
+
 /// The first segment of the image in `source`, after checking the header and
 /// the segment's header.
 fn first_segment<S: Source + ?Sized>(source: &S) -> Result<Segment, ImageError> {

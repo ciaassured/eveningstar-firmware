@@ -74,9 +74,12 @@ impl Limit {
 }
 
 /// The bootloader's identity: the digests of its image, and its name when it
-/// is known.
+/// is known, and its length, from its verification. Its descriptor reads from
+/// the bootloader's handle ([`image::bootloader_descriptor`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BootloaderId {
+    /// The image's length in bytes, the digest included.
+    pub size: u32,
     /// The SHA-256 digest the image stores and matches, of every byte before
     /// it.
     pub digest: [u8; 32],
@@ -298,6 +301,7 @@ impl<'f> Checks<'f> {
         let region = self.bootloader_region();
         let verified = image::verify_bootloader(&region).await;
         self.bootloader = verified.map(|bootloader| BootloaderId {
+            size: bootloader.size(),
             digest: *bootloader.digest(),
             file_sha256: *bootloader.file_sha256(),
             name: known::name(bootloader.digest()),
