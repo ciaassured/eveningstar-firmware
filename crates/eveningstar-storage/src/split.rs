@@ -73,12 +73,16 @@ impl Limit {
     }
 }
 
-/// The bootloader's identity: the digest of its image, and its name when it
+/// The bootloader's identity: the digests of its image, and its name when it
 /// is known.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BootloaderId {
-    /// The SHA-256 digest the image stores and matches.
+    /// The SHA-256 digest the image stores and matches, of every byte before
+    /// it.
     pub digest: [u8; 32],
+    /// The SHA-256 of the whole image, the stored digest included: what
+    /// `sha256sum` prints for a file holding the image alone.
+    pub file_sha256: [u8; 32],
     /// Its name in [`known::BOOTLOADERS`], or `None` when it isn't listed.
     pub name: Option<&'static str>,
 }
@@ -217,12 +221,18 @@ pub struct Storage<'f> {
 /// Every handle lies inside the flash, and the data and full tiers' are the
 /// layout's partitions. `flash` is borrowed mutably for as long as any handle
 /// lives, so a second call can't hand out a second copy of a unique handle.
-pub async fn split(flash: &mut dyn Flash, booted: u32) -> Storage<'_> {
+///
+/// The table is compared when `split` is called, the rest when the future
+/// runs. The checks' state moves into the future rather than living in its
+/// frame, which holds the [`Storage`] it returns.
+pub fn split(flash: &mut dyn Flash, booted: u32) -> impl Future<Output = Storage<'_>> {
     let flash: &dyn Flash = flash;
     let mut checks = Checks::new(flash, booted);
-    checks.verify_bootloader().await;
-    checks.search_unknown_bootloader();
-    checks.storage()
+    async move {
+        checks.verify_bootloader().await;
+        checks.search_unknown_bootloader();
+        checks.storage()
+    }
 }
 
 /// What `split` checks, in order: the table, the bootloader, the other
@@ -289,6 +299,7 @@ impl<'f> Checks<'f> {
         let verified = image::verify_bootloader(&region).await;
         self.bootloader = verified.map(|bootloader| BootloaderId {
             digest: *bootloader.digest(),
+            file_sha256: *bootloader.file_sha256(),
             name: known::name(bootloader.digest()),
         });
     }
