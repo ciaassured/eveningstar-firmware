@@ -1570,7 +1570,7 @@ fn long_operations_yield_to_the_executor() {
     let slot = Region::new(&flash, OTA_1.offset, OTA_1.size).unwrap();
     flash.poke(OTA_1.offset, &new);
     let verifying = block_on(image::verify_app(&slot)).wakes;
-    assert_eq!(verifying, new.len() / 4096);
+    assert_eq!(verifying, (new.len() - 32) / image::YIELD_INTERVAL as usize);
 
     let image = run(async {
         // One otadata write, an erase and three programs, and the slot's
