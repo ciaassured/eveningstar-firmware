@@ -59,7 +59,7 @@ pub(crate) const QUIET: Duration = Duration::from_secs(3);
 /// [`YIELD_INTERVAL`](image::YIELD_INTERVAL) bytes hashed, so the tasks that
 /// yield often, such as the Ethernet controller's after each SPI transaction,
 /// get the executor to themselves for a while.
-pub(crate) const PAUSE: Duration = Duration::from_millis(1);
+pub(crate) const PAUSE: Duration = Duration::from_millis(4);
 
 /// The byte an erased flash reads as.
 const ERASED: u8 = 0xFF;
