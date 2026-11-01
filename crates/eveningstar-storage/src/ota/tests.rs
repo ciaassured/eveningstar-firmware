@@ -206,7 +206,7 @@ fn update_and_boot(flash: &RamFlash, running: Slot, image: &[u8], rng: &mut Rng)
 fn updated(old: &[u8], new: &[u8]) -> RamFlash {
     let flash = flashed(old);
     update_and_boot(&flash, Ota0, new, &mut Rng::new(0x0DD));
-    run(ota_on(&flash, Ota1).mark_valid()).unwrap();
+    run(ota_on(&flash, Ota1).confirm()).unwrap();
     assert_eq!(reboot(&flash), Ota1);
     let state = state_of(&flash, Ota1);
     assert_eq!(state.state, Some(State::Valid));
@@ -264,6 +264,7 @@ fn an_update_is_written_activated_booted_and_confirmed_and_then_another() {
             selected: Some(Ota0),
             state: Some(State::Valid),
             rollback_target: false,
+            needs_confirmation: false,
         }
     );
     let image = run(update(&mut ota, &new, &mut rng, 20_000)).unwrap();
@@ -291,9 +292,10 @@ fn an_update_is_written_activated_booted_and_confirmed_and_then_another() {
             selected: Some(Ota1),
             state: Some(State::PendingVerify),
             rollback_target: true,
+            needs_confirmation: true,
         }
     );
-    run(ota.mark_valid()).unwrap();
+    run(ota.confirm()).unwrap();
     assert_eq!(ota.boot_state().state, Some(State::Valid));
     assert_eq!(reboot(&flash), Ota1);
     assert_eq!(reboot(&flash), Ota1);
@@ -305,6 +307,7 @@ fn an_update_is_written_activated_booted_and_confirmed_and_then_another() {
             selected: Some(Ota1),
             state: Some(State::Valid),
             rollback_target: true,
+            needs_confirmation: false,
         }
     );
 
@@ -318,7 +321,7 @@ fn an_update_is_written_activated_booted_and_confirmed_and_then_another() {
     assert_eq!(reboot(&flash), Ota0);
     let mut ota = ota_on(&flash, Ota0);
     assert_eq!(ota.boot_state().state, Some(State::PendingVerify));
-    run(ota.mark_valid()).unwrap();
+    run(ota.confirm()).unwrap();
     assert_eq!(reboot(&flash), Ota0);
     assert_eq!(state_of(&flash, Ota0).state, Some(State::Valid));
     assert!(holds(&flash, Ota0, &newer));
@@ -759,7 +762,7 @@ fn a_refused_update_still_makes_a_verified_image_stale() {
     let ops = flash.ops().len();
     assert_eq!(
         run(ota.begin_update()).err(),
-        Some(OtaError::Plan(PlanError::PendingVerify))
+        Some(OtaError::Plan(PlanError::Unconfirmed))
     );
     assert_eq!(run(ota.activate(old)), Err(OtaError::Stale));
     assert_eq!(flash.ops().len(), ops, "nothing written");
@@ -886,7 +889,7 @@ fn an_image_isnt_activated_while_the_running_one_is_unconfirmed() {
     let old = run(ota.verify_other()).unwrap();
     assert_eq!(
         run(ota.activate(old)),
-        Err(OtaError::Plan(PlanError::PendingVerify))
+        Err(OtaError::Plan(PlanError::Unconfirmed))
     );
     // Rolling back is the way back.
     run(ota.roll_back()).unwrap();
@@ -950,7 +953,7 @@ fn beginning_an_update_cancels_an_activation_not_yet_booted() {
 }
 
 #[test]
-fn beginning_an_update_after_a_fallback_takes_the_broken_slot_out_of_the_selection() {
+fn after_a_fallback_an_update_follows_a_confirmation() {
     let new = app_version("0.2.0");
     let flash = flashed(APP);
     let mut ota = ota_on(&flash, Ota0);
@@ -967,18 +970,31 @@ fn beginning_an_update_after_a_fallback_takes_the_broken_slot_out_of_the_selecti
             selected: Some(Ota1),
             state: Some(State::Valid),
             rollback_target: false,
+            needs_confirmation: true,
         }
     );
+    let ops = flash.ops().len();
     assert_eq!(
-        run(ota.mark_valid()),
-        Err(OtaError::Plan(PlanError::NotSelected))
+        run(ota.begin_update()).err(),
+        Some(OtaError::Plan(PlanError::Unconfirmed))
     );
     assert_eq!(
         run(ota.roll_back()),
         Err(OtaError::Plan(PlanError::NotSelected))
     );
     assert!(matches!(run(ota.verify_other()), Err(OtaError::Image(_))));
+    assert_eq!(flash.ops().len(), ops, "nothing written");
 
+    // Confirmed beside the active entry, which stays until replaced.
+    let beside = otadata_of(&flash).active().unwrap().other();
+    run(ota.confirm()).unwrap();
+    assert_eq!(flash.ops()[ops..], entry_ops(OTADATA_AT + beside.offset()));
+    let state = ota.boot_state();
+    assert_eq!(
+        (state.selected, state.state),
+        (Some(Ota0), Some(State::Valid))
+    );
+    assert!(!state.needs_confirmation);
     assert!(run(ota.begin_update()).is_ok());
     let otadata = otadata_of(&flash);
     for sector in Sector::ALL {
@@ -991,6 +1007,42 @@ fn beginning_an_update_after_a_fallback_takes_the_broken_slot_out_of_the_selecti
 }
 
 #[test]
+fn a_decayed_selected_image_leaves_the_other_running_until_it_is_confirmed() {
+    // An update booted once; then the old image, its rollback target,
+    // decays. Unconfirmed, the reboot aborts the update, the bootloader
+    // can't load the old image and falls back to the update, now aborted.
+    let new = app_version("0.2.0");
+    let newer = app_version("0.3.0");
+    let flash = flashed(APP);
+    update_and_boot(&flash, Ota0, &new, &mut Rng::new(11));
+    flash.poke(OTA_0.offset + 0x2000, &[!APP[0x2000]]);
+    assert_eq!(reboot(&flash), Ota1);
+    let mut ota = ota_on(&flash, Ota1);
+    let state = ota.boot_state();
+    assert_eq!(state.selected, Some(Ota0));
+    assert_eq!(state.state, Some(State::Aborted));
+    assert!(state.needs_confirmation);
+    assert_eq!(
+        run(update(&mut ota, &newer, &mut Rng::new(12), 9000)).err(),
+        Some(OtaError::Plan(PlanError::Unconfirmed))
+    );
+    // Unconfirmed, every boot falls back the same way.
+    assert_eq!(reboot(&flash), Ota1);
+    let mut ota = ota_on(&flash, Ota1);
+    run(ota.confirm()).unwrap();
+    assert!(!ota.boot_state().needs_confirmation);
+    assert_eq!(reboot(&flash), Ota1);
+    assert_eq!(state_of(&flash, Ota1).state, Some(State::Valid));
+    // The update goes ahead, over the decayed image.
+    let mut ota = ota_on(&flash, Ota1);
+    let image = run(update(&mut ota, &newer, &mut Rng::new(13), 9000)).unwrap();
+    run(ota.activate(image)).unwrap();
+    assert_eq!(reboot(&flash), Ota0);
+    assert_eq!(state_of(&flash, Ota0).state, Some(State::PendingVerify));
+    assert!(holds(&flash, Ota0, &newer));
+}
+
+#[test]
 fn beginning_an_update_is_refused_while_the_running_image_is_unconfirmed() {
     let flash = flashed(APP);
     update_and_boot(&flash, Ota0, &app_version("0.2.0"), &mut Rng::new(3));
@@ -998,16 +1050,16 @@ fn beginning_an_update_is_refused_while_the_running_image_is_unconfirmed() {
     let ops = flash.ops().len();
     assert_eq!(
         run(ota.begin_update()).err(),
-        Some(OtaError::Plan(PlanError::PendingVerify))
+        Some(OtaError::Plan(PlanError::Unconfirmed))
     );
     assert_eq!(flash.ops().len(), ops, "nothing written");
     assert!(holds(&flash, Ota0, APP));
-    run(ota.mark_valid()).unwrap();
+    run(ota.confirm()).unwrap();
     assert!(run(ota.begin_update()).is_ok());
 }
 
 #[test]
-fn beginning_an_update_without_a_valid_entry_selects_the_running_slot_first() {
+fn without_a_valid_entry_an_update_follows_a_confirmation() {
     // An aborted entry and a corrupt one; ota_0 doesn't load, so the
     // bootloader started ota_1.
     let mut otadata = vec![0xFF; OTADATA_LEN];
@@ -1027,7 +1079,18 @@ fn beginning_an_update_without_a_valid_entry_selects_the_running_slot_first() {
     assert_eq!(reboot(&flash), Ota1);
     let mut ota = ota_on(&flash, Ota1);
     assert_eq!(ota.boot_state().selected, None);
+    assert!(ota.boot_state().needs_confirmation);
     let new = app_version("0.2.0");
+    assert_eq!(
+        finish_with(&mut ota, &new).err(),
+        Some(OtaError::Plan(PlanError::Unconfirmed))
+    );
+    // The entry the bootloader writes on blank otadata, in the first
+    // sector.
+    let ops = flash.ops().len();
+    run(ota.confirm()).unwrap();
+    assert_eq!(flash.ops()[ops..], entry_ops(OTADATA_AT));
+    assert_eq!(otadata_of(&flash).selected(), Some(Ota1));
     let image = finish_with(&mut ota, &new).unwrap();
     let otadata = otadata_of(&flash);
     for sector in Sector::ALL {
@@ -1079,39 +1142,229 @@ fn beginning_an_update_stops_when_the_otadata_doesnt_keep_what_is_written() {
 // Confirming.
 
 #[test]
-fn marking_valid_confirms_the_running_image_once() {
+fn confirming_rewrites_a_pending_image_s_entry_once() {
     let flash = flashed(APP);
     let mut ota = ota_on(&flash, Ota0);
-    run(ota.mark_valid()).unwrap();
+    run(ota.confirm()).unwrap();
     assert_eq!(flash.ops(), [], "already valid");
 
     update_and_boot(&flash, Ota0, &app_version("0.2.0"), &mut Rng::new(4));
     let mut ota = ota_on(&flash, Ota1);
     let ops = flash.ops().len();
     let active = otadata_of(&flash).active().unwrap();
-    run(ota.mark_valid()).unwrap();
-    // The active entry, rewritten in place.
+    run(ota.confirm()).unwrap();
+    // The active entry, rewritten in place: the rollback target stays.
     let at = OTADATA_AT + active.offset();
     assert_eq!(flash.ops()[ops..], entry_ops(at));
     assert_eq!(otadata_of(&flash).active(), Some(active));
-    run(ota.mark_valid()).unwrap();
+    assert!(ota.boot_state().rollback_target);
+    run(ota.confirm()).unwrap();
     assert_eq!(flash.ops().len(), ops + 4);
     assert_eq!(reboot(&flash), Ota1);
     assert_eq!(state_of(&flash, Ota1).state, Some(State::Valid));
 }
 
 #[test]
-fn marking_valid_is_refused_while_another_slot_is_selected() {
+fn confirming_leaves_an_activation_not_yet_booted() {
     let flash = flashed(APP);
     let mut ota = ota_on(&flash, Ota0);
     let image = finish_with(&mut ota, &app_version("0.2.0")).unwrap();
     run(ota.activate(image)).unwrap();
     let ops = flash.ops().len();
-    assert_eq!(
-        run(ota.mark_valid()),
-        Err(OtaError::Plan(PlanError::NotSelected))
-    );
+    assert!(!ota.boot_state().needs_confirmation);
+    run(ota.confirm()).unwrap();
     assert_eq!(flash.ops().len(), ops);
+    assert_eq!(ota.boot_state().selected, Some(Ota1));
+    assert_eq!(reboot(&flash), Ota1);
+}
+
+/// A board booted in a state that needs a confirmation, running from the
+/// returned slot.
+struct Unconfirmed {
+    name: &'static str,
+    flash: RamFlash,
+    running: Slot,
+    /// The image the running slot holds.
+    image: Vec<u8>,
+}
+
+/// A board in each state a booted image needs a confirmation in.
+fn unconfirmed_boards() -> Vec<Unconfirmed> {
+    let old = small_app("1.0.0", 0);
+    let new = small_app("2.0.0", 500);
+    let otadata_with = |entries: &[(u32, State)]| {
+        let mut otadata = vec![0xFF; OTADATA_LEN];
+        for (at, &(seq, state)) in [0, 4096].into_iter().zip(entries) {
+            otadata[at..at + 32].copy_from_slice(&otadata::SelectEntry::new(seq, state).to_bytes());
+        }
+        otadata
+    };
+    let board = |otadata: &[u8], images: [Option<&[u8]>; 2]| {
+        let flash = RamFlash::with(
+            FLASH_LEN,
+            &[
+                (0, BOOTLOADER),
+                (TABLE_OFFSET, TABLE),
+                (OTADATA_AT, otadata),
+            ],
+        );
+        for (slot, image) in Slot::ALL.into_iter().zip(images) {
+            if let Some(image) = image {
+                flash.poke(slot.partition().offset, image);
+            }
+        }
+        flash
+    };
+    let decay = |flash: &RamFlash, slot: Slot| {
+        let at = slot.partition().offset + 0x40;
+        flash.poke(at, &[!flash.at(at, 1)[0]]);
+    };
+
+    // Booted once after an update.
+    let pending = flashed(&old);
+    update_and_boot(&pending, Ota0, &new, &mut Rng::new(20));
+    // The same, after its rollback target decayed: the bootloader aborts it,
+    // can't load the target and falls back to it.
+    let aborted = RamFlash::new(pending.bytes());
+    decay(&aborted, Ota0);
+    assert_eq!(reboot(&aborted), Ota1);
+    // A fallback to a slot no entry names.
+    let unnamed = board(
+        &otadata_with(&[(1, State::Valid)]),
+        [Some(&old), Some(&new)],
+    );
+    decay(&unnamed, Ota0);
+    assert_eq!(reboot(&unnamed), Ota1);
+    // A fallback from an activation that didn't load, beside a valid entry.
+    let tried = flashed(&old);
+    let mut ota = ota_on(&tried, Ota0);
+    let image = finish_with(&mut ota, &new).unwrap();
+    run(ota.activate(image)).unwrap();
+    decay(&tried, Ota1);
+    assert_eq!(reboot(&tried), Ota0);
+    // No state.
+    let undefined = board(&otadata_with(&[(1, State::Undefined)]), [Some(&old), None]);
+    assert_eq!(reboot(&undefined), Ota0);
+    // No valid entry: ota_0 doesn't load.
+    let none = board(
+        &otadata_with(&[(3, State::Aborted), (4, State::Invalid)]),
+        [None, Some(&new)],
+    );
+    assert_eq!(reboot(&none), Ota1);
+    vec![
+        Unconfirmed {
+            name: "pending",
+            flash: pending,
+            running: Ota1,
+            image: new.clone(),
+        },
+        Unconfirmed {
+            name: "fallback, own entry aborted",
+            flash: aborted,
+            running: Ota1,
+            image: new.clone(),
+        },
+        Unconfirmed {
+            name: "fallback, no own entry",
+            flash: unnamed,
+            running: Ota1,
+            image: new.clone(),
+        },
+        Unconfirmed {
+            name: "fallback, own entry valid",
+            flash: tried,
+            running: Ota0,
+            image: old.clone(),
+        },
+        Unconfirmed {
+            name: "undefined",
+            flash: undefined,
+            running: Ota0,
+            image: old.clone(),
+        },
+        Unconfirmed {
+            name: "no valid entry",
+            flash: none,
+            running: Ota1,
+            image: new,
+        },
+    ]
+}
+
+#[test]
+fn confirming_makes_any_booted_image_valid_and_lets_an_update_begin() {
+    let next = small_app("3.0.0", 900);
+    for board in unconfirmed_boards() {
+        let Unconfirmed {
+            name,
+            flash,
+            running,
+            ..
+        } = board;
+        let mut ota = ota_on(&flash, running);
+        assert!(ota.boot_state().needs_confirmation, "{name}");
+        let ops = flash.ops().len();
+        assert_eq!(
+            run(ota.begin_update()).err(),
+            Some(OtaError::Plan(PlanError::Unconfirmed)),
+            "{name}"
+        );
+        assert_eq!(flash.ops().len(), ops, "{name}: nothing written");
+
+        run(ota.confirm()).unwrap();
+        let state = ota.boot_state();
+        assert_eq!(state.selected, Some(running), "{name}");
+        assert_eq!(state.state, Some(State::Valid), "{name}");
+        assert!(!state.needs_confirmation, "{name}");
+        confined(&flash, ops, running);
+        assert_eq!(reboot(&flash), running, "{name}");
+        assert_eq!(
+            state_of(&flash, running).state,
+            Some(State::Valid),
+            "{name}"
+        );
+
+        recovers(&flash, running, &next, name);
+    }
+}
+
+#[test]
+fn a_cut_confirmation_boots_as_before() {
+    let next = small_app("3.0.0", 900);
+    let mut total = 0;
+    for board in unconfirmed_boards() {
+        let start = board.flash.bytes();
+        let boots_of = |flash: &RamFlash| {
+            let copy = RamFlash::new(flash.bytes());
+            [reboot(&copy), reboot(&copy)]
+        };
+        let before = boots_of(&RamFlash::new(start.clone()));
+        let mut whole = None;
+        total += sweep(
+            &start,
+            board.running,
+            |ota| run(ota.confirm()),
+            |flash, case| {
+                let case = format!("{}, {case}", board.name);
+                confined(flash, 0, board.running);
+                let boots = boots_of(flash);
+                if whole.is_none() {
+                    // The first check is the whole write's.
+                    assert_eq!(boots, [board.running; 2], "{case}");
+                    whole = Some(boots);
+                } else {
+                    assert_eq!(boots, before, "{case}");
+                }
+                assert!(holds(flash, board.running, &board.image), "{case}");
+                // The next attempt confirms what boots and updates.
+                let running = reboot(flash);
+                let mut ota = ota_on(flash, running);
+                run(ota.confirm()).unwrap();
+                recovers(flash, running, &next, &case);
+            },
+        );
+    }
+    assert!(total > 200, "{total}");
 }
 
 // Rolling back.
@@ -1130,6 +1383,7 @@ fn an_update_that_isnt_confirmed_rolls_back_at_the_next_boot() {
             selected: Some(Ota0),
             state: Some(State::Valid),
             rollback_target: false,
+            needs_confirmation: false,
         }
     );
     let aborted = otadata_of(&flash)
@@ -1158,7 +1412,7 @@ fn rolling_back_starts_the_other_slot_at_the_next_boot() {
         update_and_boot(&flash, Ota0, &new, &mut Rng::new(6));
         let mut ota = ota_on(&flash, Ota1);
         if confirmed {
-            run(ota.mark_valid()).unwrap();
+            run(ota.confirm()).unwrap();
         }
         let ops = flash.ops().len();
         let active = otadata_of(&flash).active().unwrap();
@@ -1178,6 +1432,7 @@ fn rolling_back_starts_the_other_slot_at_the_next_boot() {
                 selected: Some(Ota0),
                 state: Some(State::Valid),
                 rollback_target: false,
+                needs_confirmation: false,
             }
         );
         assert_eq!(
@@ -1254,14 +1509,14 @@ fn no_operation_writes_outside_the_other_slot_and_the_otadata() {
         run(ota.activate(image)).unwrap();
         let image = run(update(&mut ota, &newer, &mut rng, 30_000)).unwrap();
         run(ota.activate(image)).unwrap();
-        let _ = run(ota.mark_valid());
+        let _ = run(ota.confirm());
         confined(flash, from, running);
         assert!(holds(flash, running, running_image));
         // Booted, confirmed and rolled back from the new slot.
         assert_eq!(reboot(flash), running.other());
         let from = flash.ops().len();
         let mut ota = ota_on(flash, running.other());
-        run(ota.mark_valid()).unwrap();
+        run(ota.confirm()).unwrap();
         run(ota.roll_back()).unwrap();
         confined(flash, from, running.other());
         assert!(holds(flash, running.other(), &newer));
@@ -1284,12 +1539,13 @@ fn the_guard_refuses_what_a_wrong_span_would_write() {
         run(ota.begin_update()).err(),
         Some(OtaError::Access(AccessError::Protected))
     );
-    // The boot chain in place of the otadata, holding no valid entry.
+    // The boot chain in place of the otadata, holding no valid entry: a
+    // confirmation would write its first sector.
     let boot = Region::new(&flash, 0, OTADATA.size).unwrap();
     let mut ota = Ota::new(region(OTA_1), boot, Ota0, project);
     assert_eq!(
-        run(ota.begin_update()).err(),
-        Some(OtaError::Access(AccessError::Protected))
+        run(ota.confirm()),
+        Err(OtaError::Access(AccessError::Protected))
     );
     assert!(holds(&flash, Ota0, APP));
     assert_eq!(flash.at(0, BOOTLOADER.len()), BOOTLOADER);
@@ -1344,7 +1600,7 @@ fn long_operations_yield_to_the_executor() {
 
     assert_eq!(reboot(&flash), Ota1);
     let mut ota = ota_on(&flash, Ota1);
-    assert_eq!(block_on(ota.mark_valid()).wakes, 4);
+    assert_eq!(block_on(ota.confirm()).wakes, 4);
     let verifying = block_on(image::verify_app(APP)).wakes;
     let roll_back = block_on(ota.roll_back());
     assert_eq!(roll_back.output, Ok(()));
@@ -1444,7 +1700,7 @@ fn recovers(flash: &RamFlash, running: Slot, image: &[u8], case: &str) {
     assert_eq!(boot_flash(flash), Some(running.other()), "{case}");
     let mut ota = ota_on(flash, running.other());
     assert_eq!(ota.boot_state().state, Some(State::PendingVerify), "{case}");
-    run(ota.mark_valid()).unwrap();
+    run(ota.confirm()).unwrap();
     assert_eq!(boot_flash(flash), Some(running.other()), "{case}");
     assert!(holds(flash, running.other(), image), "{case}");
 }
@@ -1479,10 +1735,11 @@ fn update_starts(old: &[u8], other: &[u8]) -> [Start; 4] {
     let mut ota = ota_on(&activated, Ota0);
     let image = finish_with(&mut ota, other).unwrap();
     run(ota.activate(image)).unwrap();
-    // A fallback from `other`, which broke after its activation.
+    // A fallback from `other`, which broke after its activation, confirmed.
     let fallback = RamFlash::new(activated.bytes());
     fallback.poke(OTA_1.offset + 0x40, &[!other[0x40]]);
     assert_eq!(reboot(&fallback), Ota0);
+    run(ota_on(&fallback, Ota0).confirm()).unwrap();
     [
         Start {
             name: "first boot",
@@ -1503,7 +1760,7 @@ fn update_starts(old: &[u8], other: &[u8]) -> [Start; 4] {
             activated: Some(other.to_vec()),
         },
         Start {
-            name: "fallback",
+            name: "confirmed fallback",
             flash: fallback.bytes(),
             running: Ota0,
             activated: None,
@@ -1574,7 +1831,7 @@ fn a_cut_confirmation_boots_the_new_image_confirmed_or_the_old_one() {
     let cuts = sweep(
         &start.bytes(),
         Ota1,
-        |ota| run(ota.mark_valid()),
+        |ota| run(ota.confirm()),
         |flash, case| {
             confined(flash, 0, Ota1);
             let first = reboot(flash);
@@ -1630,9 +1887,7 @@ struct Board<'a> {
     /// The image the running slot holds, by index in `images`.
     running_image: usize,
     /// Whether each slot's image was confirmed since it was written: the
-    /// image `flash-all` wrote, or one a valid entry gave the state `Valid`
-    /// while it ran, through `mark_valid` or, after a fallback, the entries
-    /// `begin_update` writes for the running slot.
+    /// image `flash-all` wrote, or one `confirm` confirmed, and nothing else.
     confirmed: [bool; 2],
     /// A finished image not yet activated.
     held: Option<VerifiedImage<'a>>,
@@ -1659,6 +1914,7 @@ struct Stats {
     fallbacks: usize,
     stale: usize,
     refused: usize,
+    unconfirmed: usize,
 }
 
 impl<'a> Board<'a> {
@@ -1701,7 +1957,9 @@ impl<'a> Board<'a> {
         if self.rng.below(4) == 0 {
             let at = self.rng.below(24);
             let tear = match self.rng.below(3) {
-                0 => Tear::Prefix(self.rng.below(32)),
+                // Short of the 4 bytes of the shortest program, so the cut
+                // program never lands whole.
+                0 => Tear::Prefix(self.rng.below(4)),
                 1 => Tear::Bits(self.rng.next_u64()),
                 _ => Tear::AllBut(self.rng.below(256)),
             };
@@ -1721,13 +1979,13 @@ impl<'a> Board<'a> {
         }
         confined(self.flash, self.checked, self.running);
         self.checked = ops.len();
-        let otadata = otadata_of(self.flash);
-        if Sector::ALL.into_iter().any(|sector| {
-            otadata
-                .valid(sector)
-                .is_some_and(|entry| entry.slot() == self.running && entry.state == State::Valid)
-        }) {
-            self.confirmed[self.running.number() as usize] = true;
+        // Only `confirm` makes an image confirmed.
+        if !self.ota.boot_state().needs_confirmation {
+            assert!(
+                self.confirmed[self.running.number() as usize],
+                "an image became valid without a confirmation\n{}",
+                self.trail()
+            );
         }
         assert_eq!(
             self.image_in(self.running),
@@ -1777,8 +2035,10 @@ impl<'a> Board<'a> {
         match state.selected {
             Some(selected) if selected != running => {
                 // A fallback, only from a slot that doesn't hold a whole
-                // image: here, one whose image decayed.
+                // image: here, one whose image decayed. It needs a
+                // confirmation before anything is updated.
                 assert_eq!(self.image_in(selected), None, "{}", self.trail());
+                assert!(state.needs_confirmation, "{}", self.trail());
                 self.stats.fallbacks += 1;
             }
             _ if !self.confirmed[running.number() as usize] => {
@@ -1833,7 +2093,7 @@ impl<'a> Board<'a> {
     fn update(&mut self) {
         let index = self.rng.below(self.images.len());
         self.maybe_cut();
-        let pending = self.ota.boot_state().state == Some(State::PendingVerify);
+        let unconfirmed = self.ota.boot_state().needs_confirmation;
         let result = match self.write(index, false, None) {
             Ok(image) => {
                 let image = image.unwrap();
@@ -1846,8 +2106,14 @@ impl<'a> Board<'a> {
             self.stats.activated += 1;
             assert_eq!(self.ota.boot_state().selected, Some(self.running.other()));
         }
-        if result == Err(OtaError::Plan(PlanError::PendingVerify)) {
-            assert!(pending, "{}", self.trail());
+        assert_eq!(
+            result == Err(OtaError::Plan(PlanError::Unconfirmed)),
+            unconfirmed,
+            "{}",
+            self.trail()
+        );
+        if unconfirmed {
+            self.stats.unconfirmed += 1;
         }
         let _ = self.end(result);
     }
@@ -1921,19 +2187,18 @@ impl<'a> Board<'a> {
         let _ = self.end(result);
     }
 
-    fn mark_valid(&mut self) {
+    fn confirm(&mut self) {
         let state = self.ota.boot_state();
         self.maybe_cut();
-        let result = run(self.ota.mark_valid());
-        match result {
-            Ok(()) => {
+        let result = run(self.ota.confirm());
+        if result.is_ok() {
+            let after = self.ota.boot_state();
+            assert!(!after.needs_confirmation, "{}", self.trail());
+            if state.needs_confirmation {
+                assert_eq!(after.selected, Some(self.running), "{}", self.trail());
                 self.confirmed[self.running.number() as usize] = true;
                 self.stats.confirmed += 1;
             }
-            Err(OtaError::Plan(PlanError::NotSelected)) => {
-                assert_ne!(state.selected, Some(self.running), "{}", self.trail());
-            }
-            _ => {}
         }
         let _ = self.end(result);
     }
@@ -1986,7 +2251,7 @@ impl<'a> Board<'a> {
             6 => self.finish(),
             7 => self.activate_held(),
             8 => self.switch_back(),
-            9..=11 => self.mark_valid(),
+            9..=11 => self.confirm(),
             12 => self.roll_back(),
             13 if self.rng.below(8) == 0 => self.decay(),
             _ => self.reboot(),
@@ -2012,11 +2277,12 @@ fn random_updates_confirmations_rollbacks_and_power_cuts_keep_the_board_booting(
         let stats = &board.stats;
         assert!(stats.cuts > 150, "{seed}: {stats:?}");
         assert!(stats.updates_booted > 100, "{seed}: {stats:?}");
-        assert!(stats.confirmed > 200, "{seed}: {stats:?}");
+        assert!(stats.confirmed > 30, "{seed}: {stats:?}");
         assert!(stats.rolled_back > 10, "{seed}: {stats:?}");
         assert!(stats.aborted > 30, "{seed}: {stats:?}");
         assert!(stats.stale > 1, "{seed}: {stats:?}");
         assert!(stats.refused > 80, "{seed}: {stats:?}");
+        assert!(stats.unconfirmed > 50, "{seed}: {stats:?}");
         fallbacks += stats.fallbacks;
     }
     // Rare: a decayed image selected at a reboot.

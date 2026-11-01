@@ -86,10 +86,16 @@ impl From<AccessError> for OtaError {
 /// which verifies what was written and returns a [`VerifiedImage`].
 /// [`activate`](Self::activate) selects it, and the bootloader starts it at
 /// the next boot as [`State::PendingVerify`](otadata::State::PendingVerify).
-/// Unless [`mark_valid`](Self::mark_valid) confirms it, the boot after that
+/// Unless [`confirm`](Self::confirm) confirms it, the boot after that
 /// returns to the running slot; [`roll_back`](Self::roll_back) returns to it
 /// on purpose. Nothing here reboots: activating and rolling back take effect
 /// at the next boot.
+///
+/// An update begins, and an image is activated, only from a running image
+/// that is confirmed `Valid` ([`BootState::needs_confirmation`]). Any other
+/// booted image, whether booted `PendingVerify`, with no state, or as the
+/// bootloader's fallback from a slot that didn't load, becomes `Valid` only
+/// through `confirm`.
 ///
 /// A power cut at any point leaves a selection that boots the running image,
 /// or an activated image that verified, started once with its rollback
@@ -142,8 +148,8 @@ impl<'f> Ota<'f> {
     ///
     /// # Errors
     ///
-    /// [`OtaError::Plan`] with [`PlanError::PendingVerify`] while the running
-    /// image hasn't been confirmed, or with another error of the planner;
+    /// [`OtaError::Plan`] with [`PlanError::Unconfirmed`] until the running
+    /// image is confirmed `Valid`, or with another error of the planner;
     /// [`OtaError::Unsettled`] when two writes don't settle the selection;
     /// [`OtaError::Access`] when an erase or program fails.
     pub async fn begin_update(&mut self) -> Result<Update<'_, 'f>, OtaError> {
@@ -191,7 +197,8 @@ impl<'f> Ota<'f> {
     /// slot no longer holds it; [`OtaError::Image`] when the slot can't be
     /// read; [`OtaError::Plan`] when the active entry doesn't select the
     /// running slot (an activation already made, a fallback) or the running
-    /// image hasn't been confirmed; [`OtaError::Access`] when the write fails.
+    /// image isn't confirmed `Valid`; [`OtaError::Access`] when the write
+    /// fails.
     pub async fn activate(&mut self, image: VerifiedImage<'f>) -> Result<(), OtaError> {
         self.check(image).await?;
         let write = otadata::read(&self.otadata).plan_activate(self.running)?;
@@ -229,20 +236,26 @@ impl<'f> Ota<'f> {
         self.verify().await
     }
 
-    /// Confirms the running image (O7): its entry, the active one, is
-    /// rewritten in place with state `Valid`, which cancels its rollback.
-    /// Nothing is written when it already is `Valid`.
+    /// Confirms the running image (O7): makes it `Valid` and the one the
+    /// active entry selects, whatever state it booted in, as
+    /// [`plan_confirm`](otadata::Otadata::plan_confirm) plans it. Booted
+    /// `PendingVerify` or with another state, its entry is rewritten in
+    /// place, which cancels its rollback; booted as a fallback from the other
+    /// slot, or with no valid entry, a `Valid` entry for it is written to the
+    /// sector that isn't active. Nothing is written when it is confirmed
+    /// already, during an activation not booted yet included.
     ///
-    /// A power cut leaves the other entry active, which rolls back at the
-    /// next boot.
+    /// A power cut leaves the boot selection as before the call: a rollback
+    /// for a `PendingVerify` image, the same fallback for one booted as a
+    /// fallback.
     ///
     /// # Errors
     ///
-    /// [`OtaError::Plan`] when the active entry doesn't select the running
-    /// slot or the other sector can't be read, and [`OtaError::Access`] when
+    /// [`OtaError::Plan`] when a sector the write leaves alone can't be read
+    /// or the sequence numbers are exhausted, and [`OtaError::Access`] when
     /// the write fails.
-    pub async fn mark_valid(&mut self) -> Result<(), OtaError> {
-        if let Some(write) = otadata::read(&self.otadata).plan_mark_valid(self.running)? {
+    pub async fn confirm(&mut self) -> Result<(), OtaError> {
+        if let Some(write) = otadata::read(&self.otadata).plan_confirm(self.running)? {
             self.execute(&write).await?;
         }
         Ok(())
