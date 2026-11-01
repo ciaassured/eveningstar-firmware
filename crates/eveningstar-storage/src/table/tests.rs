@@ -569,28 +569,59 @@ const BOOTLOADER: &[u8] = &[0xE9; 0x100];
 fn the_nix_table_is_found_where_it_was_moved() {
     for offset in [0x1000, 0x8000, 0xC000, 0xF000] {
         let flash = flash_with(0x1_0000, &[(0, BOOTLOADER), (offset, TABLE)]);
-        assert_eq!(find(&flash[..], 0x1_0000), Some(offset), "{offset:#x}");
+        assert_eq!(
+            find(&flash[..], 0x1_0000),
+            Found::One(offset),
+            "{offset:#x}"
+        );
     }
     // Booted from ota_1, the same table is found: it has an app entry there.
     let flash = flash_with(0x31_0000, &[(0, BOOTLOADER), (0xC000, TABLE)]);
-    assert_eq!(find(&flash[..], 0x31_0000), Some(0xC000));
+    assert_eq!(find(&flash[..], 0x31_0000), Found::One(0xC000));
     // Booted from ota_1, a table below it but above ota_0 is found too.
     let flash = flash_with(0x31_0000, &[(0, BOOTLOADER), (0x30_0000, TABLE)]);
-    assert_eq!(find(&flash[..], 0x31_0000), Some(0x30_0000));
+    assert_eq!(find(&flash[..], 0x31_0000), Found::One(0x30_0000));
 }
 
 #[test]
 fn the_espflash_table_is_found_where_it_was_moved() {
     for offset in [0x8000, 0x9000, 0xE000] {
         let flash = flash_with(0x1_0000, &[(0, BOOTLOADER), (offset, ESPFLASH_TABLE)]);
-        assert_eq!(find(&flash[..], 0x1_0000), Some(offset), "{offset:#x}");
+        assert_eq!(
+            find(&flash[..], 0x1_0000),
+            Found::One(offset),
+            "{offset:#x}"
+        );
     }
 }
 
 #[test]
-fn the_first_table_with_the_booted_app_is_taken() {
+fn two_tables_with_the_booted_app_are_several() {
+    // A table left over from an earlier layout, below or above the current
+    // one: either could be the one the bootloader read.
     let flash = flash_with(0x1_0000, &[(0x3000, ESPFLASH_TABLE), (0x8000, TABLE)]);
-    assert_eq!(find(&flash[..], 0x1_0000), Some(0x3000));
+    assert_eq!(find(&flash[..], 0x1_0000), Found::Several(0x3000, 0x8000));
+    let flash = flash_with(0x1_0000, &[(0x8000, TABLE), (0xC000, TABLE)]);
+    assert_eq!(find(&flash[..], 0x1_0000), Found::Several(0x8000, 0xC000));
+    // The first two of three.
+    let flash = flash_with(
+        0x1_0000,
+        &[(0x2000, TABLE), (0x8000, TABLE), (0xC000, ESPFLASH_TABLE)],
+    );
+    assert_eq!(find(&flash[..], 0x1_0000), Found::Several(0x2000, 0x8000));
+    // Booted from ota_1, a table inside ota_0 counts too.
+    let flash = flash_with(0x31_0000, &[(0x8000, TABLE), (0x20_0000, TABLE)]);
+    assert_eq!(
+        find(&flash[..], 0x31_0000),
+        Found::Several(0x8000, 0x20_0000)
+    );
+}
+
+#[test]
+fn only_one_found_table_has_an_offset() {
+    assert_eq!(Found::One(0x8000).offset(), Some(0x8000));
+    assert_eq!(Found::Nothing.offset(), None);
+    assert_eq!(Found::Several(0x8000, 0xC000).offset(), None);
 }
 
 #[test]
@@ -618,53 +649,55 @@ fn tables_without_the_booted_app_are_skipped() {
             (0x2000, &data_there),
             (0x3000, &malformed),
             (0x4000, &unterminated[..]),
-            (0x8000, ESPFLASH_TABLE),
             (0xC000, TABLE),
         ],
     );
-    assert_eq!(find(&flash[..], 0x1_0000), Some(0x8000));
-    // The espflash table has no app at ota_1's offset; the Nix table has.
-    assert_eq!(find(&flash[..], 0x31_0000), Some(0xC000));
+    assert_eq!(find(&flash[..], 0x1_0000), Found::One(0xC000));
+    assert_eq!(find(&flash[..], 0x31_0000), Found::One(0xC000));
+    // The espflash table has an app at ota_0's offset but not at ota_1's.
+    let flash = flash_with(0x10_0000, &[(0x8000, ESPFLASH_TABLE), (0xC000, TABLE)]);
+    assert_eq!(find(&flash[..], 0x1_0000), Found::Several(0x8000, 0xC000));
+    assert_eq!(find(&flash[..], 0x31_0000), Found::One(0xC000));
 }
 
 #[test]
 fn a_table_in_sector_0_or_at_the_booted_offset_isnt_found() {
     let flash = flash_with(0x2_0000, &[(0, TABLE), (0x1_0000, TABLE)]);
-    assert_eq!(find(&flash[..], 0x1_0000), None);
+    assert_eq!(find(&flash[..], 0x1_0000), Found::Nothing);
 }
 
 #[test]
 fn no_table_is_found_on_an_erased_flash() {
     let flash = vec![0xFF; 0x1_0000];
-    assert_eq!(find(&flash[..], 0x1_0000), None);
+    assert_eq!(find(&flash[..], 0x1_0000), Found::Nothing);
     let flash = vec![0x00; 0x1_0000];
-    assert_eq!(find(&flash[..], 0x1_0000), None);
+    assert_eq!(find(&flash[..], 0x1_0000), Found::Nothing);
 }
 
 #[test]
 fn a_booted_offset_of_0_or_off_a_sector_finds_nothing() {
     let flash = flash_with(0x2_0000, &[(0x8000, TABLE)]);
-    assert_eq!(find(&flash[..], 0), None);
-    assert_eq!(find(&flash[..], 0x1000), None);
-    assert_eq!(find(&flash[..], 0x1_0001), None);
-    assert_eq!(find(&flash[..], 0x1_0800), None);
+    assert_eq!(find(&flash[..], 0), Found::Nothing);
+    assert_eq!(find(&flash[..], 0x1000), Found::Nothing);
+    assert_eq!(find(&flash[..], 0x1_0001), Found::Nothing);
+    assert_eq!(find(&flash[..], 0x1_0800), Found::Nothing);
     // An app entry at an offset off a sector, matching it, still isn't taken.
     let odd = table_with_md5(&[Entry {
         offset: 0x1_0800,
         ..PARTITIONS[2]
     }]);
     let flash = flash_with(0x2_0000, &[(0x8000, &odd)]);
-    assert_eq!(find(&flash[..], 0x1_0800), None);
+    assert_eq!(find(&flash[..], 0x1_0800), Found::Nothing);
 }
 
 #[test]
 fn a_flash_shorter_than_the_booted_offset_is_searched_as_far_as_it_goes() {
     let flash = flash_with(0xD000, &[(0xC000, TABLE)]);
-    assert_eq!(find(&flash[..], 0x31_0000), Some(0xC000));
+    assert_eq!(find(&flash[..], 0x31_0000), Found::One(0xC000));
     // The table needs its entries and the MD5 entry after them.
-    assert_eq!(find(&flash[..0xC120], 0x31_0000), Some(0xC000));
-    assert_eq!(find(&flash[..0xC11F], 0x31_0000), None);
-    assert_eq!(find(&[][..], 0x31_0000), None);
+    assert_eq!(find(&flash[..0xC120], 0x31_0000), Found::One(0xC000));
+    assert_eq!(find(&flash[..0xC11F], 0x31_0000), Found::Nothing);
+    assert_eq!(find(&[][..], 0x31_0000), Found::Nothing);
 }
 
 // Never panicking.
@@ -760,11 +793,16 @@ fn random_flash_never_panics_discovery() {
             1 => 0x1000 * (round % 17),
             _ => rng.next_u32() & !0xFFF,
         };
-        if let Some(found) = find(&flash[..], booted) {
-            assert_eq!(found % SECTOR_SIZE, 0);
-            assert!(found > 0 && found < booted);
-            assert!(boots(&flash[..], found, booted));
-        }
+        let tables: Vec<u32> = (1..booted / SECTOR_SIZE)
+            .map(|sector| sector * SECTOR_SIZE)
+            .filter(|&offset| boots(&flash[..], offset, booted))
+            .collect();
+        let expected = match tables[..] {
+            [] => Found::Nothing,
+            [offset] => Found::One(offset),
+            [first, second, ..] => Found::Several(first, second),
+        };
+        assert_eq!(find(&flash[..], booted), expected);
     }
 }
 

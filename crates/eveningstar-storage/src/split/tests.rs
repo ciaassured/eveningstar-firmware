@@ -13,7 +13,7 @@ use crate::table::Match;
 use crate::test_support::{
     APP, BOOTLOADER, ESPFLASH_BOOTLOADER, ESPFLASH_TABLE, FLASH_LEN, OTADATA_AT,
     OTADATA_FIRST_BOOT, RamFlash, Rng, TABLE, block_on, espflash_board, flash_with, lend,
-    nix_board, run,
+    nix_board, run, table_with_md5,
 };
 
 const NIX_NAME: &str = "ESP-IDF v5.5.2, app rollback";
@@ -273,7 +273,7 @@ fn a_board_flashed_by_cargo_run_is_untrusted_with_espflash_s_table() {
     assert_eq!(report.tier(), Tier::Untrusted);
     assert_eq!(report.limit, Some(Limit::Table));
     assert!(!report.table.matches());
-    assert_eq!(report.found_table, Some(0x8000));
+    assert_eq!(report.found_table, Some(Found::One(0x8000)));
     assert_eq!(report.table_offset(), Some(0x8000));
     let bootloader = report.bootloader.unwrap();
     assert_eq!(bootloader.name, None);
@@ -292,10 +292,10 @@ fn a_board_flashed_by_cargo_run_is_untrusted_with_espflash_s_table() {
     let mut bytes = vec![0; ESPFLASH_TABLE.len()];
     Source::read(&table, 0, &mut bytes).unwrap();
     assert_eq!(bytes, ESPFLASH_TABLE);
-    // espflash's factory app partition.
+    // The image, inside espflash's factory app partition.
     assert_eq!(
         span(&storage.boot.running_app.unwrap()),
-        (0x1_0000, 0x7F_0000)
+        (0x1_0000, APP.len() as u32)
     );
 }
 
@@ -309,13 +309,142 @@ fn a_moved_table_is_found_and_untrusted() {
     let report = storage.report;
     assert_eq!(report.limit, Some(Limit::Table));
     assert_eq!(report.table.partitions, [Match::Missing; 8]);
-    assert_eq!(report.found_table, Some(0xC000));
+    assert_eq!(report.found_table, Some(Found::One(0xC000)));
     // The bootloader up to the table found.
     assert_eq!(span(&storage.boot.bootloader), (0, 0xC000));
     assert_eq!(report.bootloader.unwrap().name, Some(NIX_NAME));
     assert_eq!(span(&storage.boot.table.unwrap()), (0xC000, table::MAX_LEN));
-    assert_eq!(span(&storage.boot.running_app.unwrap()), entry_span(OTA_0));
+    assert_eq!(
+        span(&storage.boot.running_app.unwrap()),
+        (OTA_0.offset, APP.len() as u32)
+    );
     assert!(storage.data.is_none());
+}
+
+#[test]
+fn several_moved_tables_are_no_table() {
+    // A table left at 0x8000 by an earlier layout, and the bootloader's at
+    // 0xC000: which one it reads is unknown.
+    let flash = RamFlash::with(
+        FLASH_LEN,
+        &[
+            (0, BOOTLOADER),
+            (0x9000, ESPFLASH_TABLE),
+            (0xC000, TABLE),
+            (OTA_0.offset, APP),
+        ],
+    );
+    let storage = split_on(&flash, OTA_0.offset);
+    let report = storage.report;
+    assert_eq!(report.limit, Some(Limit::Table));
+    assert_eq!(report.found_table, Some(Found::Several(0x9000, 0xC000)));
+    assert_eq!(report.table_offset(), None);
+    assert!(storage.boot.table.is_none());
+    assert_eq!(span(&storage.boot.bootloader), (0, TABLE_OFFSET));
+    assert_eq!(
+        span(&storage.boot.running_app.unwrap()),
+        (OTA_0.offset, APP.len() as u32)
+    );
+    assert!(storage.data.is_none());
+}
+
+#[test]
+fn an_unknown_bootloader_with_another_table_is_untrusted() {
+    // The layout's table at 0x8000, and another below the running app: an
+    // unknown bootloader could read either.
+    for (at, other) in [(0xC000, TABLE), (0x9000, ESPFLASH_TABLE)] {
+        let flash = patched(&nix_board(), &[(0, ESPFLASH_BOOTLOADER), (at, other)]);
+        let storage = split_on(&flash, OTA_0.offset);
+        let report = storage.report;
+        assert!(report.table.matches());
+        assert_eq!(report.limit, Some(Limit::OtherTable), "{at:#x}");
+        assert_eq!(report.tier(), Tier::Untrusted);
+        assert_eq!(report.found_table, Some(Found::Several(TABLE_OFFSET, at)));
+        assert_eq!(report.table_offset(), None);
+        assert_eq!(report.running, None);
+        assert_eq!(report.boot_state, None);
+        assert!(storage.boot.table.is_none());
+        assert!(storage.data.is_none());
+        assert!(!report.cannot_confirm());
+    }
+    // Booted from ota_1, a table inside ota_0 counts.
+    let flash = patched(
+        &nix_board(),
+        &[
+            (0, ESPFLASH_BOOTLOADER),
+            (OTA_1.offset, APP),
+            (OTA_0.offset + 0x1000, TABLE),
+        ],
+    );
+    let storage = split_on(&flash, OTA_1.offset);
+    assert_eq!(storage.report.limit, Some(Limit::OtherTable));
+    // A corrupt bootloader isn't known either.
+    let mut bootloader = BOOTLOADER.to_vec();
+    bootloader[0x100] ^= 0x01;
+    let flash = patched(&nix_board(), &[(0, &bootloader), (0xC000, TABLE)]);
+    let storage = split_on(&flash, OTA_0.offset);
+    assert_eq!(storage.report.limit, Some(Limit::OtherTable));
+}
+
+#[test]
+fn an_unknown_bootloader_with_only_the_compiled_table_keeps_the_data_tier() {
+    // A table without an app at the booted offset can't be the bootloader's.
+    let elsewhere = table_with_md5(&[Entry {
+        offset: 0x2_0000,
+        ..OTA_0
+    }]);
+    let flash = patched(
+        &nix_board(),
+        &[(0, ESPFLASH_BOOTLOADER), (0xC000, &elsewhere)],
+    );
+    let storage = split_on(&flash, OTA_0.offset);
+    let report = storage.report;
+    assert_eq!(report.limit, Some(Limit::BootloaderUnknown));
+    assert_eq!(report.found_table, Some(Found::One(TABLE_OFFSET)));
+    assert_eq!(report.table_offset(), Some(TABLE_OFFSET));
+    assert!(storage.data.is_some());
+}
+
+#[test]
+fn a_known_bootloader_ignores_other_tables() {
+    // A known bootloader reads the compiled offset, so a leftover table
+    // elsewhere doesn't matter, and the board isn't searched.
+    let flash = patched(&nix_board(), &[(0xC000, TABLE)]);
+    let storage = split_on(&flash, OTA_0.offset);
+    assert_eq!(storage.report.tier(), Tier::Full);
+    assert_eq!(storage.report.found_table, None);
+    // Nor when the full tier is missed for the app's descriptor.
+    let flash = patched(
+        &nix_board(),
+        &[(0xC000, TABLE), (OTA_0.offset, &[0xFF; 64])],
+    );
+    let storage = split_on(&flash, OTA_0.offset);
+    assert_eq!(storage.report.limit, Some(Limit::AppDescriptor));
+    assert_eq!(storage.report.found_table, None);
+}
+
+#[test]
+fn the_untrusted_running_app_is_cut_to_its_entry() {
+    // An entry shorter than the image.
+    let short = Entry {
+        size: 0x1000,
+        ..OTA_0
+    };
+    let table = table_with_md5(&[short]);
+    let flash = RamFlash::with(
+        FLASH_LEN,
+        &[(0, BOOTLOADER), (0xC000, &table), (OTA_0.offset, APP)],
+    );
+    let storage = split_on(&flash, OTA_0.offset);
+    assert_eq!(storage.report.found_table, Some(Found::One(0xC000)));
+    assert_eq!(
+        span(&storage.boot.running_app.unwrap()),
+        (OTA_0.offset, 0x1000)
+    );
+    // No image: the entry.
+    let flash = RamFlash::with(FLASH_LEN, &[(0, BOOTLOADER), (0xC000, TABLE)]);
+    let storage = split_on(&flash, OTA_0.offset);
+    assert_eq!(span(&storage.boot.running_app.unwrap()), entry_span(OTA_0));
 }
 
 #[test]
@@ -324,7 +453,7 @@ fn without_a_table_the_running_app_is_its_image() {
     let storage = split_on(&flash, OTA_0.offset);
     let report = storage.report;
     assert_eq!(report.limit, Some(Limit::Table));
-    assert_eq!(report.found_table, None);
+    assert_eq!(report.found_table, Some(Found::Nothing));
     assert_eq!(report.table_offset(), None);
     assert!(storage.boot.table.is_none());
     assert_eq!(span(&storage.boot.bootloader), (0, TABLE_OFFSET));
@@ -393,8 +522,11 @@ fn a_flash_smaller_than_the_layout_is_untrusted() {
     assert_eq!(storage.report.limit, Some(Limit::FlashSize));
     assert_eq!(storage.report.tier(), Tier::Untrusted);
     assert!(storage.data.is_none());
-    // The table entry for ota_0 fits, so it is the running app.
-    assert_eq!(span(&storage.boot.running_app.unwrap()), entry_span(OTA_0));
+    // The image, inside ota_0's entry.
+    assert_eq!(
+        span(&storage.boot.running_app.unwrap()),
+        (OTA_0.offset, APP.len() as u32)
+    );
 }
 
 #[test]
@@ -402,6 +534,7 @@ fn the_limits_name_their_tiers() {
     assert_eq!(Limit::Table.tier(), Tier::Untrusted);
     assert_eq!(Limit::FlashSize.tier(), Tier::Untrusted);
     assert_eq!(Limit::NotASlot.tier(), Tier::Untrusted);
+    assert_eq!(Limit::OtherTable.tier(), Tier::Untrusted);
     assert_eq!(Limit::BootloaderInvalid.tier(), Tier::Data);
     assert_eq!(Limit::BootloaderUnknown.tier(), Tier::Data);
     assert_eq!(Limit::AppDescriptor.tier(), Tier::Data);

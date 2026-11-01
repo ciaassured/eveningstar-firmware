@@ -439,23 +439,53 @@ pub fn compare_layout<S: Source + ?Sized>(flash: &S) -> LayoutComparison {
     compare(flash, layout::TABLE_OFFSET, &layout::PARTITIONS)
 }
 
+/// The tables [`find`] found that a bootloader could have read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Found {
+    /// No sector holds one.
+    Nothing,
+    /// One sector does, at this offset: the table the bootloader read.
+    One(u32),
+    /// Several sectors do, the first two at these offsets. The bootloader
+    /// read one of them, and nothing on the flash says which.
+    Several(u32, u32),
+}
+
+impl Found {
+    /// The offset of the table the bootloader read, when exactly one was
+    /// found.
+    #[must_use]
+    pub const fn offset(self) -> Option<u32> {
+        match self {
+            Self::One(offset) => Some(offset),
+            Self::Nothing | Self::Several(..) => None,
+        }
+    }
+}
+
 /// Finds the table a bootloader that booted the app at `booted` read, in
 /// `flash`, a source that starts at the start of the flash.
 ///
 /// Looks at each sector from the second (the first holds the bootloader) up
-/// to the one below `booted`, and returns the offset of the first that holds a
-/// well-formed table with an app entry starting exactly at `booted`. Tables
-/// without one are skipped, as are sectors that can't be read. `None` when no
-/// sector holds such a table, and for a `booted` that isn't a multiple of
-/// [`SECTOR_SIZE`], where no partition can start.
+/// to the one below `booted` for a well-formed table with an app entry
+/// starting exactly at `booted`. Tables without one are skipped, as are
+/// sectors that can't be read. A table left over from an earlier layout
+/// qualifies as well as the one the bootloader read, so a second table is
+/// [`Found::Several`], not a choice. [`Found::Nothing`] for a `booted` that
+/// isn't a multiple of [`SECTOR_SIZE`], where no partition can start.
 #[must_use]
-pub fn find<S: Source + ?Sized>(flash: &S, booted: u32) -> Option<u32> {
+pub fn find<S: Source + ?Sized>(flash: &S, booted: u32) -> Found {
     if !booted.is_multiple_of(SECTOR_SIZE) {
-        return None;
+        return Found::Nothing;
     }
-    (1..booted / SECTOR_SIZE)
+    let mut tables = (1..booted / SECTOR_SIZE)
         .map(|sector| sector * SECTOR_SIZE)
-        .find(|&offset| boots(flash, offset, booted))
+        .filter(|&offset| boots(flash, offset, booted));
+    match (tables.next(), tables.next()) {
+        (None, _) => Found::Nothing,
+        (Some(offset), None) => Found::One(offset),
+        (Some(first), Some(second)) => Found::Several(first, second),
+    }
 }
 
 /// Whether the table at `offset` is well formed and has an app entry starting
