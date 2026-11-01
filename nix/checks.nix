@@ -10,12 +10,13 @@
       # share one entry point. Arguments select check groups: `lint` (rustfmt
       # and clippy, that the generated storage layout is current, and the web
       # UI's lint and type check), `build` (a release build, which also links,
-      # with the web UI bundled, and the partition table ESP-IDF builds checked
-      # against the storage layout) and `test` (the tests of the crates that
-      # also build on the host, and the web UI's). With no arguments, every
-      # group runs. `lint` and `test` are each two finer groups, `rust-lint`
-      # and `web-lint`, `rust-test` and `web-test`, which CI runs as separate
-      # jobs.
+      # with the web UI bundled, the partition table ESP-IDF builds checked
+      # against the storage layout, and the storage crate's Nix-built test
+      # fixtures checked against what Nix builds) and `test` (the tests of the
+      # crates that also build on the host, and the web UI's). With no
+      # arguments, every group runs. `lint` and `test` are each two finer
+      # groups, `rust-lint` and `web-lint`, `rust-test` and `web-test`, which CI
+      # runs as separate jobs.
       packages.checks = pkgs.writeShellApplication {
         name = "eveningstar-checks";
         runtimeInputs = [ toolchain pkgs.stdenv.cc pkgs.diffutils pkgs.jq ];
@@ -63,6 +64,22 @@
               echo "the partition table ESP-IDF builds differs from the storage layout" >&2
               return 1
             }
+          }
+
+          # The storage crate's tests read the partition table and bootloader
+          # Nix builds from committed copies, which have to equal what Nix
+          # builds now.
+          # shellcheck disable=SC2329 # run through run_check
+          check_storage_testdata() {
+            local testdata file stale=0
+            testdata="$(nix build --no-link --print-out-paths .#storage-testdata)" || return 1
+            for file in partition-table.bin bootloader.bin; do
+              cmp "crates/eveningstar-storage/testdata/$file" "$testdata/$file" || stale=1
+            done
+            if [ "$stale" -ne 0 ]; then
+              echo "crates/eveningstar-storage/testdata does not match what Nix builds: run storage-testdata" >&2
+              return 1
+            fi
           }
 
           # A separate target directory, so these checks and builds with another
@@ -117,6 +134,7 @@
                   status=1
                 fi
                 run_check "partition table" check_partition_table
+                run_check "storage test fixtures" check_storage_testdata
                 ;;
               rust-test)
                 run_check "host tests" cargo test --all-features \
