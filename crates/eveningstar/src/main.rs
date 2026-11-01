@@ -63,6 +63,7 @@ mod wd {
         link: LinkMonitor = Duration::from_ticks(crate::ethernet::LINK_CHECK_INTERVAL.as_ticks() * 3),
         reboot: Reboot = crate::services::reboot::WATCHDOG_TIMEOUT,
         storage_check: StorageCheck = crate::services::storage::WATCHDOG_TIMEOUT,
+        storage_download: StorageDownload = crate::services::storage::DOWNLOAD_WATCHDOG_TIMEOUT,
     }
 }
 
@@ -121,9 +122,15 @@ async fn main(spawner: Spawner) {
         reboot.graceful_only(),
     )
     .await;
-    // Nothing reads the view yet; the check task runs and logs on its own.
     let sha = sha::start(board.sha);
-    let _storage = services::storage::start(spawner, internal, boot, sha, wd_handles.storage_check);
+    let storage = services::storage::start(
+        spawner,
+        internal,
+        boot,
+        sha,
+        wd_handles.storage_check,
+        wd_handles.storage_download,
+    );
 
     match ethernet::start(
         spawner,
@@ -136,7 +143,15 @@ async fn main(spawner: Spawner) {
     )
     .await
     {
-        Ok(stack) => http::start(spawner, stack, http::AppState { system, reboot }),
+        Ok(stack) => http::start(
+            spawner,
+            stack,
+            http::AppState {
+                system,
+                reboot,
+                storage,
+            },
+        ),
         Err(err) => error!("Ethernet unavailable: {}", err),
     }
 }

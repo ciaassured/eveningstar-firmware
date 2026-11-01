@@ -78,4 +78,42 @@ export const OPERATIONS = {
     idempotent: false,
     scope: OPERATION_SCOPE.Reboot,
   },
+  GetStorage: {
+    method: "GET",
+    path: "/storage",
+    response: "json",
+    idempotent: true,
+    scope: OPERATION_SCOPE.GetStorage,
+  },
+  GetInternalFlash: {
+    method: "GET",
+    path: "/storage/internal",
+    response: "json",
+    idempotent: true,
+    scope: OPERATION_SCOPE.GetInternalFlash,
+  },
+  GetRegions: {
+    method: "GET",
+    path: "/storage/internal/regions",
+    response: "json",
+    idempotent: true,
+    scope: OPERATION_SCOPE.GetRegions,
+  },
+  GetPartitionTable: {
+    method: "GET",
+    path: "/storage/internal/table",
+    response: "json",
+    idempotent: true,
+    scope: OPERATION_SCOPE.GetPartitionTable,
+  },
+  // Its body is binary, which the client doesn't read: the document gives it
+  // no JSON body, so the descriptor's response is "empty", and a call through
+  // the client fails to decode the body.
+  GetRegionContent: {
+    method: "GET",
+    path: "/storage/internal/regions/{region}/content",
+    response: "empty",
+    idempotent: true,
+    scope: OPERATION_SCOPE.GetRegionContent,
+  },
 } as const satisfies { [K in OperationId]: Descriptor<K> };

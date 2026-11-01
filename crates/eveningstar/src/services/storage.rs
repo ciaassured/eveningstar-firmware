@@ -26,6 +26,9 @@
 //! The task is supervised by its own watchdog handle, fed on every read of a
 //! check, never on a timer, so a check that hangs while the rest of the
 //! system runs is caught. The handle is idle while the task waits for writes.
+//!
+//! The [`regions`] of the flash are named by their role this boot, and a
+//! public region's content is read for a [`download`], one at a time.
 
 use core::cell::RefCell;
 use core::future::Future;
@@ -46,6 +49,14 @@ use crate::sha::Sha;
 use crate::storage::{Generations, Hex, Public, Started, Writes};
 use crate::watchdog::WatchdogHandle;
 use crate::wd;
+
+mod download;
+mod regions;
+
+pub(crate) use download::{
+    Content, ContentError, ContentReadError, Part, WATCHDOG_TIMEOUT as DOWNLOAD_WATCHDOG_TIMEOUT,
+};
+pub(crate) use regions::{AppSlot, Contents, Region, RegionName};
 
 /// Task watchdog timeout of the check task. A check feeds on every read, many
 /// times a millisecond, so this only has to outlast the supervisor's polls.
@@ -125,11 +136,14 @@ pub(crate) enum Progress {
 /// The service's fixed state, made once by [`start`].
 #[derive(Debug)]
 struct Service {
+    capacity: u32,
+    booted: Option<u32>,
     report: Report,
     public: Public,
     generations: Generations,
     boot: u64,
     sha: Sha,
+    download: download::Lock,
 }
 
 /// The latest result per [`AppRole`], indexed by the role's value.
@@ -139,8 +153,9 @@ static CHECKS: Mutex<CriticalSectionRawMutex, RefCell<[Option<Check>; AppRole::A
 /// Spawns the check task and returns the handle to the service.
 ///
 /// `boot` is a random value drawn once per boot, and the checks hash with
-/// `sha`. Takes the check task's watchdog handle, of which there is one, so
-/// there is one call.
+/// `sha`. Takes the check task's and the download's watchdog handles, of
+/// which there is one each, so there is one call. The download's is idle
+/// until a download starts.
 ///
 /// # Panics
 ///
@@ -155,21 +170,27 @@ pub(crate) fn start(
     boot: u64,
     sha: Sha,
     wd: WatchdogHandle<wd::StorageCheck>,
+    download_wd: WatchdogHandle<wd::StorageDownload>,
 ) -> StorageView {
     static SERVICE: StaticCell<Service> = StaticCell::new();
 
     let Started {
+        capacity,
+        booted,
         report,
         public,
         generations,
         writes,
     } = started;
     let service: &'static Service = SERVICE.init(Service {
+        capacity,
+        booted,
         report,
         public,
         generations,
         boot,
         sha,
+        download: download::Lock::new(download_wd),
     });
     spawner.spawn(defmt::unwrap!(check_task(service, writes, wd)));
     StorageView(service)
@@ -181,7 +202,6 @@ pub(crate) fn start(
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct StorageView(&'static Service);
 
-#[expect(dead_code, reason = "nothing reads the storage view yet")]
 impl StorageView {
     /// What `split` found, and the tier reached.
     pub(crate) fn report(self) -> &'static Report {
