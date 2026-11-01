@@ -63,10 +63,16 @@ static GENERATIONS: [AtomicU32; LAYOUT.len()] = [const { AtomicU32::new(0) }; LA
 /// Signalled after each erase and program of the internal flash.
 static WRITTEN: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
-/// What [`start`] hands out: the report, the public handles and the views of
-/// the write counts.
+/// What [`start`] hands out: the flash's size and booted offset, the report,
+/// the public handles and the views of the write counts.
 #[derive(Debug)]
 pub(crate) struct Started {
+    /// The flash's size in bytes, from its JEDEC ID; 0 when the ID isn't one
+    /// `esp-storage` knows.
+    pub(crate) capacity: u32,
+    /// The offset of the app the bootloader started, from MMU entry 0;
+    /// `None` when the entry maps no page.
+    pub(crate) booted: Option<u32>,
     /// What `split` found, and the tier reached.
     pub(crate) report: Report,
     /// The handles whose contents may leave the device.
@@ -86,7 +92,6 @@ pub(crate) struct Public {
     /// The app slot that isn't running, in the data and full tiers.
     pub(crate) other_app: Option<Partition<'static, OtherApp>>,
     /// The otadata, in the data and full tiers.
-    #[expect(dead_code, reason = "nothing reads the otadata after the boot yet")]
     pub(crate) otadata: Option<Partition<'static, Otadata>>,
 }
 
@@ -118,7 +123,8 @@ pub(crate) async fn start(
 
     let started = Instant::now();
     let flash = INTERNAL_FLASH.init(InternalFlash::new(flash, cache));
-    let booted = flash.booted_offset().unwrap_or_else(|| {
+    let mmu_booted = flash.booted_offset();
+    let booted = mmu_booted.unwrap_or_else(|| {
         error!("MMU entry 0 maps no flash page: the booted offset is unknown");
         UNKNOWN_BOOTED
     });
@@ -134,6 +140,8 @@ pub(crate) async fn start(
     confirm_or_reboot(&storage.report, reboot);
     let Storage { report, boot, data } = storage;
     Started {
+        capacity,
+        booted: mmu_booted,
         report,
         public: Public {
             boot,
