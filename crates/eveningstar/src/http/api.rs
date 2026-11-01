@@ -4,7 +4,8 @@
 //! [`v1::Error`].
 //!
 //! A [`v1::Bytes`] body is written from a [`Source`], whole or in the part
-//! the request's `Range` asks for, a chunk at a time.
+//! the request's `Range` asks for, a chunk at a time through a buffer the
+//! handler hands over with it ([`Download`]).
 
 use core::convert::Infallible;
 use core::fmt;
@@ -26,7 +27,7 @@ use picoserve::routing::{MethodHandlerService, PathRouterService};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use super::{AppState, TCP_BUFFER_LEN, storage, system};
+use super::{AppState, storage, system};
 
 /// The headers of every answer the API gives, including its errors. The answers
 /// are data: the browser mustn't read them as anything else, keep them, let
@@ -440,24 +441,29 @@ pub(super) trait Source {
 
     /// Reads the bytes from `offset` into `buffer`, filling it.
     ///
-    /// A response reads each chunk of the body, at most [`CHUNK_LEN`] bytes,
-    /// with one call, in order, once the previous chunk is written, and
-    /// yields to the executor after writing it. A read that fails ends the
-    /// body before its length, and the connection closes, so the client sees
-    /// a short body.
+    /// A response reads each chunk of the body, at most the length of its
+    /// [`Download`]'s buffer, with one call, in order, once the previous chunk
+    /// is written, and yields to the executor after writing it. A read that
+    /// fails ends the body before its length, and the connection closes, so
+    /// the client sees a short body.
     async fn read(&self, offset: u64, buffer: &mut [u8]) -> Result<(), Self::Error>;
 }
 
-/// The most bytes of a binary body read and written at once: a quarter of a
-/// TCP buffer, which keeps the chunk's buffer within the stack frame limit.
-const CHUNK_LEN: usize = TCP_BUFFER_LEN / 4;
+/// The value of a [`v1::Bytes`] body: its source, and the buffer each chunk of
+/// it is read into and written from, whose length is the most bytes read and
+/// written at once. The buffer is the handler's, so it need not be on the
+/// stack.
+pub(super) struct Download<S, B> {
+    pub(super) source: S,
+    pub(super) buffer: B,
+}
 
-impl<S: Source> WriteBody<S> for v1::Bytes {
+impl<S: Source, B: DerefMut<Target = [u8]>> WriteBody<Download<S, B>> for v1::Bytes {
     /// Writes the part of the body `request` asks for. Every response with
     /// the body or a part of it tells the client the connection closes, as
     /// the connection closes once the body is written or a read of it fails.
     async fn write<R: Read, W: ResponseWriter<Error = R::Error>>(
-        source: S,
+        download: Download<S, B>,
         status: StatusCode,
         _closes: bool,
         request: RequestParts<'_>,
@@ -474,6 +480,7 @@ impl<S: Source> WriteBody<S> for v1::Bytes {
         let range = (request.method() == v1::Method::Get.as_str())
             .then(|| header("Range"))
             .flatten();
+        let Download { source, mut buffer } = download;
         let len = source.len();
         let tag = source.tag();
         let selection = v1::Selection::new(len, tag, range, header("If-Range"));
@@ -509,6 +516,7 @@ impl<S: Source> WriteBody<S> for v1::Bytes {
             .with_headers(HEADERS)
             .with_body(Chunks {
                 source: &source,
+                buffer: &mut buffer,
                 first,
                 count,
             });
@@ -575,21 +583,27 @@ impl fmt::Write for Filename<'_, '_> {
     }
 }
 
-/// `count` bytes of `source` from `first`, written a chunk at a time.
+/// `count` bytes of `source` from `first`, written a chunk at a time through
+/// `buffer`.
 struct Chunks<'a, S> {
     source: &'a S,
+    buffer: &'a mut [u8],
     first: u64,
     count: u64,
 }
 
 impl<S: Source> CustomBody for Chunks<'_, S> {
     async fn write_response_body<W: Write>(self, mut writer: W) -> Result<(), W::Error> {
-        let mut buffer = [0; CHUNK_LEN];
+        let chunk_len = self.buffer.len();
+        if chunk_len == 0 && self.count > 0 {
+            warn!("Binary response body cut short: no buffer to read it into");
+            return Ok(());
+        }
         let mut offset = self.first;
         let end = self.first + self.count;
         while offset < end {
-            let len = usize::try_from(end - offset).map_or(CHUNK_LEN, |left| left.min(CHUNK_LEN));
-            let chunk = &mut buffer[..len];
+            let len = usize::try_from(end - offset).map_or(chunk_len, |left| left.min(chunk_len));
+            let chunk = &mut self.buffer[..len];
             if let Err(error) = self.source.read(offset, chunk).await {
                 warn!(
                     "Binary response body cut short after {} of {} bytes: {}",
