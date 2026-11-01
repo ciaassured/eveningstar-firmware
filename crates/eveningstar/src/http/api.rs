@@ -172,16 +172,25 @@ pub(super) async fn write_error<R: Read, W: ResponseWriter<Error = R::Error>>(
         .await
 }
 
-/// A response with `code`.
+/// Seconds a client is told to wait, in `Retry-After`, before asking again
+/// after [`v1::ErrorCode::Busy`]. The device serves one download at a time,
+/// and a whole app slot takes several seconds on a local network, so asking
+/// sooner mostly finds it still busy.
+const BUSY_RETRY_AFTER_S: &str = "5";
+
+/// A response with `code`. One with [`v1::ErrorCode::Busy`] says when to ask
+/// again, in `Retry-After`.
 fn error_response(code: v1::ErrorCode) -> Response<impl HeadersIter, impl Body> {
     // Every code in the API's error sets has a status.
     let status = code
         .status()
         .map_or(StatusCode::INTERNAL_SERVER_ERROR, StatusCode::new);
+    let retry_after = (code == v1::ErrorCode::Busy).then_some(("Retry-After", BUSY_RETRY_AFTER_S));
     Json(v1::Error { error: code })
         .into_response()
         .with_status_code(status)
         .with_headers(HEADERS)
+        .with_headers(retry_after)
 }
 
 /// A request body the server reads.
