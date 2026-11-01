@@ -19,7 +19,7 @@ pub use v2::{ETHERNET_MAC_READ, EthernetChip, EthernetSpi, FlashCs, FlashSpi};
 use core::fmt;
 
 use esp_hal::gpio::{AnyPin, Input, InputConfig, Level, Output, OutputConfig, Pull};
-use esp_hal::peripherals::{ADC1, FLASH, FROM_CPU_INTR0, RNG, RTC_TIMER, TIMG0};
+use esp_hal::peripherals::{ADC1, FLASH, FROM_CPU_INTR0, RNG, RTC_TIMER, SPI0, TIMG0};
 
 #[derive(Debug)]
 pub struct Board {
@@ -32,6 +32,12 @@ pub struct Board {
     /// The flash inside the ESP32-C6 module, which the chip boots and runs
     /// code from.
     pub internal_flash: FLASH<'static>,
+    /// SPI0, the controller the CPU reads the internal flash through: its
+    /// cache, and the MMU that maps flash pages into the address space code
+    /// and data are read from. The MMU's entries are reached through an index
+    /// register, which selects an entry, and a content register, which holds
+    /// the selected entry's physical page and valid bit.
+    pub flash_cache: SPI0<'static>,
     pub external_flash: Flash,
     pub timg0: TIMG0<'static>,
     pub rtc_timer: RTC_TIMER<'static>,
