@@ -34,8 +34,8 @@ what hasn't been verified.
 - **OTA service.** It owns `Ota` and decides how updates arrive and are
   authenticated: `VerifiedImage` means intact and meant for this board, not
   authentic. Its confirmation policy:
-  - After a boot with `BootState::needs_confirmation`, health checks run in a
-    window of 10 minutes, and the service calls `Ota::confirm` when they pass.
+  - After a boot with `BootState::needs_confirmation`, a user has 10 minutes
+    to confirm the image, which calls `Ota::confirm`.
   - On timeout it requests a graceful reboot in every case, including when
     there is no rollback target. A board then reboots every 10 minutes until it
     is confirmed. That is accepted so that a user can confirm whichever image

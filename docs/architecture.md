@@ -20,8 +20,8 @@ The workspace's crates live flat under `crates/`.
 All knowledge of the board lives here: which pin does what, how shared buses
 are wired, and what each pin's starting state is. The board revision is chosen
 with a cargo feature. `Board::new` consumes the chip's peripherals and hands out
-pins by role, so the firmware never names a GPIO number. It also hands out the
-two flash chips apart: `internal_flash`, inside the ESP32-C6 module, with
+pins by role, so the firmware never names a GPIO number. The two flash chips
+are handed out separately: `internal_flash`, inside the ESP32-C6 module, with
 `flash_cache` (SPI0, whose MMU says which flash page is mapped where), and
 `external_flash`, the SPI NAND on the shared bus.
 
@@ -415,9 +415,10 @@ partitions are `factory` (4 KiB, read-only, reserved for durable factory data),
 per slot, `diag` and `reserved`. A slot is sized for about twice the firmware
 expected once WiFi and TLS are in, as slots can't grow later.
 
-- Configuration is per slot, so an update can't break the running firmware's
-  configuration, and the new firmware migrates from the old slot's partition.
-  A shared partition would undo that.
+- Configuration is per slot, so after a rollback the old firmware finds its
+  configuration as it left it, whatever the newer firmware wrote. The new
+  firmware migrates from the old slot's partition after an update. A shared
+  partition would undo that.
 - `factory` and `reserved` are space that later firmware can claim only because
   the table already has it. No handle exists for them.
 - There is no `nvs` partition, as nothing uses that format.
@@ -435,11 +436,11 @@ checks the numeric type, subtype and flag values against `gen_esp32part`.
 reaches, with a `Report` of what it found. It never fails: the worst outcome is
 the untrusted tier, so storage never stops the device from booting.
 
-| Tier      | Reached when                                              | Handles                                             |
-|-----------|-----------------------------------------------------------|-----------------------------------------------------|
-| Untrusted | the table at 0x8000 isn't the layout, the flash is smaller, or the app didn't boot from a slot | the boot chain, read only |
-| Data      | otherwise                                                 | + config, diag, otadata and the other slot          |
-| Full      | + the bootloader is known and the app's descriptor reads  | + `Ota`                                             |
+| Tier      | Reached when                                                                                   | Handles                                    |
+|-----------|------------------------------------------------------------------------------------------------|--------------------------------------------|
+| Untrusted | the table at 0x8000 isn't the layout, the flash is smaller, or the app didn't boot from a slot | the boot chain, read only                  |
+| Data      | otherwise                                                                                      | + config, diag, otadata and the other slot |
+| Full      | + the bootloader is known and the running app's descriptor can be read                         | + `Ota`                                    |
 
 The table is compared entry by entry with the layout. It is slightly more
 lenient than the bootloader, which also requires the entry after the MD5 entry
@@ -534,11 +535,11 @@ rollback.
   graceful reboot for a `PendingVerify` image, which can't be confirmed there,
   so the bootloader rolls it back.
 
-The OTA service, not built yet, will confirm an image within a window of 10
-minutes after boot. On timeout it requests a graceful reboot in every case,
-including when no rollback target exists. A board then reboots every 10 minutes
-until someone confirms, which is accepted so that a user can confirm whichever
-image comes up.
+The OTA service, not built yet, will give a user 10 minutes after boot to
+confirm an image that needs it. On timeout it requests a graceful reboot in
+every case, including when no rollback target exists. A board then reboots every
+10 minutes until someone confirms, which is accepted so that a user can confirm
+whichever image comes up.
 
 ### Checks
 
