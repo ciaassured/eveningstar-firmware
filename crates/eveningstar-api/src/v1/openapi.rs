@@ -430,7 +430,7 @@ mod tests {
     fn error_responses_name_their_codes() {
         let document = openapi();
         let responses = document["components"]["responses"].as_object().unwrap();
-        assert_eq!(responses.len(), 5);
+        assert_eq!(responses.len(), 6);
         for (name, response) in responses {
             let code: ErrorCode = serde_json::from_value(json!(name)).unwrap();
             let status = status(code);

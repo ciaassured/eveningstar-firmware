@@ -316,6 +316,9 @@ pub enum ErrorCode {
     MethodNotAllowed,
     /// The request's body is larger than the device can read.
     PayloadTooLarge,
+    /// The request's `Range` header asks for several ranges, or for none
+    /// that is part of the body.
+    RangeNotSatisfiable,
     /// A code this version of the crate does not know.
     #[serde(other)]
     #[cfg_attr(feature = "schema", schemars(skip))]
@@ -333,6 +336,7 @@ impl ErrorCode {
             Self::MethodNotAllowed => Some(405),
             Self::PayloadTooLarge => Some(413),
             Self::UnsupportedMediaType => Some(415),
+            Self::RangeNotSatisfiable => Some(416),
             Self::Unknown => None,
         }
     }
@@ -500,6 +504,10 @@ mod tests {
         let json = serde_json::to_string(&error).unwrap();
         assert_eq!(json, r#"{"error":"payload_too_large"}"#);
         assert_eq!(serde_json::from_str::<Error>(&json).unwrap(), error);
+        assert_eq!(
+            serde_json::to_string(&ErrorCode::RangeNotSatisfiable).unwrap(),
+            r#""range_not_satisfiable""#
+        );
     }
 
     #[test]
@@ -564,6 +572,7 @@ mod tests {
                 ErrorCode::MethodNotAllowed,
                 ErrorCode::PayloadTooLarge,
                 ErrorCode::UnsupportedMediaType,
+                ErrorCode::RangeNotSatisfiable,
             ] {
                 let error = serde_json::to_value(Error { error }).unwrap();
                 assert!(schema_accepts::<Error>(&error));
