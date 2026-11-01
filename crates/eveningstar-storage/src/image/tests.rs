@@ -58,10 +58,19 @@ const ESPFLASH_BOOTLOADER_DIGEST: &str =
     "f11dbe3ab3cbdfe22c670a509d1af9ff391f7e2e23deefeed8879f8277f93aa2";
 const APP_DIGEST: &str = "ee6c7951f0c52e956abdd6e22b0104c3736412f971bc3c78f7da36e972514c2d";
 
+// `sha256sum` of each image alone: the files, and the first 22016 bytes of
+// the espflash bootloader's.
+const NIX_BOOTLOADER_FILE_SHA256: &str =
+    "e49b7315251ccf47f23fd93ac064b4509e325715b085d2c236d79fa992eab3d2";
+const ESPFLASH_BOOTLOADER_FILE_SHA256: &str =
+    "b1d7d018cc62f3fb30b901d5bacf95f58ab879f70ebec50d231f092e976c9318";
+const APP_FILE_SHA256: &str = "561b57c28e5a430dd0f1659646afa24f68793036f6a45670aec3c41914877d3b";
+
 #[test]
 fn the_nix_bootloader_verifies() {
     let verified = bootloader(BOOTLOADER).unwrap();
     assert_eq!(hex(verified.digest()), NIX_BOOTLOADER_DIGEST);
+    assert_eq!(hex(verified.file_sha256()), NIX_BOOTLOADER_FILE_SHA256);
     assert_eq!(verified.size(), 22672);
     assert_eq!(verified.size() as usize, BOOTLOADER.len());
     let header = verified.header();
@@ -81,6 +90,7 @@ fn the_nix_bootloader_verifies_in_its_partition() {
     let flash = in_partition(BOOTLOADER, 0x8000);
     let verified = bootloader(&flash).unwrap();
     assert_eq!(hex(verified.digest()), NIX_BOOTLOADER_DIGEST);
+    assert_eq!(hex(verified.file_sha256()), NIX_BOOTLOADER_FILE_SHA256);
     assert_eq!(verified.size(), 22672);
 }
 
@@ -88,6 +98,8 @@ fn the_nix_bootloader_verifies_in_its_partition() {
 fn the_espflash_bootloader_verifies() {
     let verified = bootloader(ESPFLASH_BOOTLOADER).unwrap();
     assert_eq!(hex(verified.digest()), ESPFLASH_BOOTLOADER_DIGEST);
+    // Of the image alone, without the erased bytes after it.
+    assert_eq!(hex(verified.file_sha256()), ESPFLASH_BOOTLOADER_FILE_SHA256);
     assert_eq!(verified.size(), 22016);
     assert_eq!(verified.header().segment_count, 3);
     let descriptor = verified.descriptor().unwrap();
@@ -103,6 +115,7 @@ fn the_espflash_bootloader_verifies() {
 fn the_app_verifies() {
     let verified = app(APP).unwrap();
     assert_eq!(hex(verified.digest()), APP_DIGEST);
+    assert_eq!(hex(verified.file_sha256()), APP_FILE_SHA256);
     assert_eq!(verified.size() as usize, APP.len());
     let header = verified.header();
     assert_eq!(header.segment_count, 4);
@@ -129,7 +142,19 @@ fn the_app_verifies_in_its_slot() {
     let slot = in_partition(APP, 0x30_0000);
     let verified = app(&slot).unwrap();
     assert_eq!(hex(verified.digest()), APP_DIGEST);
+    assert_eq!(hex(verified.file_sha256()), APP_FILE_SHA256);
     assert_eq!(verified.size() as usize, APP.len());
+}
+
+#[test]
+fn the_file_digest_covers_the_whole_image_and_nothing_after() {
+    for image in [APP, BOOTLOADER, &ESPFLASH_BOOTLOADER[..22016]] {
+        let verified = bootloader(&in_partition(image, image.len() + 4096)).unwrap();
+        let whole: [u8; 32] = Sha256::digest(image).into();
+        let before: [u8; 32] = Sha256::digest(&image[..image.len() - 32]).into();
+        assert_eq!(verified.file_sha256(), &whole);
+        assert_eq!(verified.digest(), &before);
+    }
 }
 
 #[test]
@@ -158,6 +183,7 @@ fn a_bootloader_isnt_an_app_but_an_app_passes_as_a_bootloader() {
     // An app's first segment doesn't start with a bootloader descriptor.
     let verified = bootloader(APP).unwrap();
     assert_eq!(hex(verified.digest()), APP_DIGEST);
+    assert_eq!(hex(verified.file_sha256()), APP_FILE_SHA256);
     assert_eq!(verified.descriptor(), None);
 }
 
@@ -196,6 +222,7 @@ fn built_images_verify() {
     let verified = app(&image).unwrap();
     assert_eq!(verified.size() as usize, image.len());
     assert_eq!(&verified.digest()[..], &image[image.len() - 32..]);
+    assert_eq!(verified.file_sha256()[..], Sha256::digest(&image)[..]);
     let descriptor = app_descriptor(&image[..]).unwrap();
     assert_eq!(descriptor.project_name().to_str(), Some("eveningstar"));
     assert_eq!(descriptor.version().to_str(), Some("1.2.3"));
