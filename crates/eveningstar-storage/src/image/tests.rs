@@ -87,6 +87,7 @@ fn the_nix_bootloader_verifies() {
     assert_eq!(descriptor.secure_version(), 0);
     assert_eq!(descriptor.idf_version().to_str(), Some("v5.5.2"));
     assert_eq!(descriptor.date_time().to_str(), Some(""));
+    assert_eq!(bootloader_descriptor(BOOTLOADER), Ok(Some(*descriptor)));
 }
 
 #[test]
@@ -112,6 +113,10 @@ fn the_espflash_bootloader_verifies() {
     assert_eq!(
         descriptor.idf_version().to_str(),
         Some("v6.1-beta1-497-g14f663f003e")
+    );
+    assert_eq!(
+        bootloader_descriptor(ESPFLASH_BOOTLOADER),
+        Ok(Some(*descriptor))
     );
     assert_ne!(verified.digest(), bootloader(BOOTLOADER).unwrap().digest());
 }
@@ -337,6 +342,7 @@ fn a_bootloader_without_segments_verifies_without_a_descriptor() {
     assert_eq!(image.len(), 32 + 32);
     let verified = bootloader(&image).unwrap();
     assert_eq!(verified.descriptor(), None);
+    assert_eq!(bootloader_descriptor(&image[..]), Ok(None));
     assert_eq!(app(&image), Err(ImageError::MissingDescriptor));
     assert_eq!(inspect_app(&image[..]), Err(ImageError::MissingDescriptor));
 }
@@ -345,11 +351,15 @@ fn a_bootloader_without_segments_verifies_without_a_descriptor() {
 fn a_bootloader_with_a_short_or_unmarked_first_segment_has_no_descriptor() {
     let mut builder = bootloader_image();
     builder.segments[0].1.truncate(76);
-    assert_eq!(bootloader(&builder.build()).unwrap().descriptor(), None);
+    let image = builder.build();
+    assert_eq!(bootloader(&image).unwrap().descriptor(), None);
+    assert_eq!(bootloader_descriptor(&image[..]), Ok(None));
 
     let mut builder = bootloader_image();
     builder.segments[0].1[0] = 0x51;
-    assert_eq!(bootloader(&builder.build()).unwrap().descriptor(), None);
+    let image = builder.build();
+    assert_eq!(bootloader(&image).unwrap().descriptor(), None);
+    assert_eq!(bootloader_descriptor(&image[..]), Ok(None));
 }
 
 // Each corruption, with its error.
