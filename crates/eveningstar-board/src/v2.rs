@@ -171,6 +171,7 @@ impl Board {
             from_cpu_intr0: peripherals.FROM_CPU_INTR0,
             rng: peripherals.RNG,
             adc1: peripherals.ADC1,
+            sha: peripherals.SHA,
         }
     }
 }

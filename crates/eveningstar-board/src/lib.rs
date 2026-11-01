@@ -19,7 +19,7 @@ pub use v2::{ETHERNET_MAC_READ, EthernetChip, EthernetSpi, FlashCs, FlashSpi};
 use core::fmt;
 
 use esp_hal::gpio::{AnyPin, Input, InputConfig, Level, Output, OutputConfig, Pull};
-use esp_hal::peripherals::{ADC1, FLASH, FROM_CPU_INTR0, RNG, RTC_TIMER, SPI0, TIMG0};
+use esp_hal::peripherals::{ADC1, FLASH, FROM_CPU_INTR0, RNG, RTC_TIMER, SHA, SPI0, TIMG0};
 
 #[derive(Debug)]
 pub struct Board {
@@ -47,6 +47,9 @@ pub struct Board {
     /// ADC1. Together with [`Board::rng`] it can serve as the entropy source for
     /// true random numbers; see [`esp_hal::rng::TrngSource`].
     pub adc1: ADC1<'static>,
+    /// The SHA accelerator, which hashes with SHA-1 and the SHA-2 family in
+    /// hardware.
+    pub sha: SHA<'static>,
 }
 
 /// Ethernet controller (MAC + PHY), with its SPI device and control
