@@ -5,7 +5,8 @@
 //!
 //! The list only grows once boards have shipped: every bootloader a board in
 //! the field may have stays in it, so no firmware update takes a board out of
-//! the full tier.
+//! the full tier. The `build` check group fails while the bootloader built
+//! from `nix/board.nix` isn't listed, printing the entry for it.
 
 use core::fmt;
 
