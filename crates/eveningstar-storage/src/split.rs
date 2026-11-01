@@ -235,9 +235,11 @@ pub struct Storage<'f> {
 /// in the board's table, or its image's length when the table has none. The
 /// boot state is read in the data and full tiers.
 ///
-/// Every handle lies inside the flash, the data and full tiers' are the
-/// layout's partitions, and each is made once per call.
-pub async fn split(flash: &dyn Flash, booted: u32) -> Storage<'_> {
+/// Every handle lies inside the flash, and the data and full tiers' are the
+/// layout's partitions. `flash` is borrowed mutably for as long as any handle
+/// lives, so a second call can't hand out a second copy of a unique handle.
+pub async fn split(flash: &mut dyn Flash, booted: u32) -> Storage<'_> {
+    let flash: &dyn Flash = flash;
     let mut checks = Checks::new(flash, booted);
     checks.verify_bootloader().await;
     checks.storage()

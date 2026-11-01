@@ -12,7 +12,8 @@ use crate::region::is_protected;
 use crate::table::Match;
 use crate::test_support::{
     APP, BOOTLOADER, ESPFLASH_BOOTLOADER, ESPFLASH_TABLE, FLASH_LEN, OTADATA_AT,
-    OTADATA_FIRST_BOOT, RamFlash, Rng, TABLE, block_on, espflash_board, flash_with, nix_board, run,
+    OTADATA_FIRST_BOOT, RamFlash, Rng, TABLE, block_on, espflash_board, flash_with, lend,
+    nix_board, run,
 };
 
 const NIX_NAME: &str = "ESP-IDF v5.5.2, app rollback";
@@ -93,7 +94,7 @@ fn consistent(storage: &Storage<'_>, capacity: u32) {
 }
 
 fn split_on(flash: &RamFlash, booted: u32) -> Storage<'_> {
-    let storage = run(split(flash, booted));
+    let storage = run(split(lend(flash), booted));
     consistent(&storage, flash.bytes().len() as u32);
     assert_eq!(flash.ops(), [], "split never writes");
     storage
@@ -183,7 +184,7 @@ fn a_board_running_from_ota_1_hands_out_the_other_slot_s_partitions() {
 #[test]
 fn the_bootloader_is_hashed_with_yields() {
     let flash = nix_board();
-    let done = block_on(split(&flash, OTA_0.offset));
+    let done = block_on(split(lend(&flash), OTA_0.offset));
     // 22 KiB hashed, a yield every 4 KiB.
     assert_eq!(done.wakes, BOOTLOADER.len() / 4096);
     assert_eq!(done.output.report.tier(), Tier::Full);

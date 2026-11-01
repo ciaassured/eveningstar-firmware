@@ -3,13 +3,13 @@ use sha2::{Digest as _, Sha256};
 
 use super::*;
 use crate::layout::{CONFIG_0, CONFIG_1, DIAG, OTA_0, OTA_1, OTADATA};
-use crate::test_support::{APP, BOOTLOADER, Op, RamFlash, block_on, nix_board, run};
+use crate::test_support::{APP, BOOTLOADER, Op, RamFlash, block_on, lend, nix_board, run};
 use crate::{Data, Entry, Slot, Storage, split};
 
 const SECTOR: u32 = SECTOR_SIZE;
 
 fn storage(flash: &RamFlash) -> Storage<'_> {
-    run(split(flash, OTA_0.offset))
+    run(split(lend(flash), OTA_0.offset))
 }
 
 fn data(flash: &RamFlash) -> Data<'_> {
@@ -45,7 +45,7 @@ fn entry_span(entry: Entry) -> (u32, u32) {
 fn fixed_size_handles_are_their_layout_partitions_in_either_slot() {
     for (flash, running) in [(nix_board(), Slot::Ota0), (ota_1_board(), Slot::Ota1)] {
         let booted = running.partition().offset;
-        let Storage { data, .. } = run(split(&flash, booted));
+        let Storage { data, .. } = run(split(lend(&flash), booted));
         let data = data.expect("the data tier");
         assert_eq!(span(&data.config), entry_span(running.config()));
         assert_eq!(

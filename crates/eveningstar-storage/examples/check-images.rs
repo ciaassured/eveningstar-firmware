@@ -257,8 +257,8 @@ fn check_tier(checks: &mut Checks, bootloader: &[u8], table: &[u8], app: &[u8]) 
             _ => return checks.fail("the images don't fit their places"),
         }
     }
-    let board = Board(flash);
-    let storage = block_on(split(&board, layout::OTA_0.offset));
+    let mut board = Board(flash);
+    let storage = block_on(split(&mut board, layout::OTA_0.offset));
     let report = storage.report;
     match report.limit {
         None => checks.check(report.tier() == Tier::Full, "reaches the full tier"),
