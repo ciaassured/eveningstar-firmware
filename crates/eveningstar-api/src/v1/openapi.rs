@@ -187,6 +187,7 @@ impl Document {
 
         // One response per error code, from the codes' schemas.
         let unsatisfiable = name(ErrorCode::RangeNotSatisfiable);
+        let busy = name(ErrorCode::Busy);
         let responses: Map<String, Value> = schemas["ErrorCode"]["oneOf"]
             .as_array()
             .into_iter()
@@ -207,6 +208,15 @@ impl Document {
                 if name == unsatisfiable {
                     response["headers"] = json!({
                         "Content-Range": content_range("`bytes */<length>`: the body's length."),
+                    });
+                }
+                if name == busy {
+                    response["headers"] = json!({
+                        "Retry-After": {
+                            "description": "Seconds to wait before asking again.",
+                            "required": true,
+                            "schema": { "type": "integer", "minimum": 0 },
+                        },
                     });
                 }
                 (name, response)
@@ -628,7 +638,11 @@ mod tests {
     fn error_responses_name_their_codes() {
         let document = openapi();
         let responses = document["components"]["responses"].as_object().unwrap();
-        assert_eq!(responses.len(), 6);
+        assert_eq!(responses.len(), 9);
+        assert_eq!(
+            responses["busy"]["headers"]["Retry-After"]["required"],
+            true
+        );
         for (name, response) in responses {
             let code: ErrorCode = serde_json::from_value(json!(name)).unwrap();
             let status = status(code);

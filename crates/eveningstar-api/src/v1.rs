@@ -18,6 +18,7 @@ mod endpoint;
 #[cfg(feature = "schema")]
 mod openapi;
 mod range;
+mod storage;
 
 pub use endpoint::{
     BodyError, Bytes, Empty, Endpoint, Errors, Json, Method, PathParam, PathParams, RangeError,
@@ -26,6 +27,17 @@ pub use endpoint::{
 #[cfg(feature = "schema")]
 pub use openapi::openapi;
 pub use range::{ContentRange, EntityTag, Selection};
+pub use storage::{
+    AppDescriptor, AppImage, AppSlot, BOOTLOADER_NAME_MAX_LEN, BoardTable, BootState,
+    BootloaderInfo, BootloaderStatus, CheckStatus, Checks, Contents, ENTRY_FIELDS_MAX, EntryField,
+    EntryValidity, FLASH_TEXT_MAX_LEN, FlashText, GetInternalFlash, GetPartitionTable,
+    GetRegionContent, GetRegions, GetStorage, ImageFault, ImageStatus, InternalFlash,
+    LABEL_MAX_LEN, Label, LayoutMatch, Limit, MatchStatus, OtaState, OtadataEntry, PartitionKind,
+    REGIONS_MAX, ROLES_MAX, Region, RegionContentError, RegionInfo, Regions, Role,
+    STORAGE_DEVICES_MAX, Sha256, SlotName, StorageDevice, StorageDevices, StorageId, StorageKind,
+    StorageStatus, TABLE_ENTRIES_MAX, TableEnd, TableEntry, TableRead, TableSearch, TableSummary,
+    Tier,
+};
 
 /// Path prefix of every version 1 endpoint.
 pub const PATH: &str = "/api/v1";
@@ -396,6 +408,15 @@ pub enum ErrorCode {
     /// The request's `Range` header asks for several ranges, or for none
     /// that is part of the body.
     RangeNotSatisfiable,
+    /// The region holds configuration, secrets or factory data, which never
+    /// leave the device, whatever the session may do.
+    Sensitive,
+    /// The device can't read the region this boot, as its flash isn't laid
+    /// out as the firmware expects.
+    Unavailable,
+    /// The device is serving another download, which it serves one at a
+    /// time. The `Retry-After` header says when to ask again.
+    Busy,
     /// A code this version of the crate does not know.
     #[serde(other)]
     #[cfg_attr(feature = "schema", schemars(skip))]
@@ -414,6 +435,9 @@ impl ErrorCode {
             Self::PayloadTooLarge => Some(413),
             Self::UnsupportedMediaType => Some(415),
             Self::RangeNotSatisfiable => Some(416),
+            Self::Sensitive => Some(403),
+            Self::Unavailable => Some(409),
+            Self::Busy => Some(503),
             Self::Unknown => None,
         }
     }
@@ -749,6 +773,9 @@ mod tests {
                 ErrorCode::PayloadTooLarge,
                 ErrorCode::UnsupportedMediaType,
                 ErrorCode::RangeNotSatisfiable,
+                ErrorCode::Sensitive,
+                ErrorCode::Unavailable,
+                ErrorCode::Busy,
             ] {
                 let error = serde_json::to_value(Error { error }).unwrap();
                 assert!(schema_accepts::<Error>(&error));

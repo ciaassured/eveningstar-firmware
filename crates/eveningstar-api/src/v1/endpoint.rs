@@ -74,13 +74,21 @@ impl PathParams for () {
 
 /// A path parameter: the value of one segment of a path, deserialised from a
 /// string holding the segment as it was sent, without percent-decoding.
-pub trait PathParam: DeserializeOwned {}
+pub trait PathParam: DeserializeOwned {
+    /// Whether the value names something this version of the crate knows. A
+    /// segment that deserialises to a value that isn't known, such as the
+    /// `Unknown` variant of an enum that later versions may extend, doesn't
+    /// parse.
+    fn is_known(&self) -> bool {
+        true
+    }
+}
 
 impl<T: PathParam> PathParams for T {
     fn parse<'a>(segments: &mut impl Iterator<Item = &'a str>) -> Option<Self> {
         let segment: value::StrDeserializer<'_, value::Error> =
             segments.next()?.into_deserializer();
-        T::deserialize(segment).ok()
+        T::deserialize(segment).ok().filter(PathParam::is_known)
     }
 }
 
@@ -235,6 +243,8 @@ macro_rules! errors {
         }
     };
 }
+
+pub(super) use errors;
 
 errors! {
     /// The errors of reading a [`Json`] request body.
