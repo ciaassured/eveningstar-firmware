@@ -118,6 +118,11 @@ fn a_board_flashed_by_nix_reaches_the_full_tier() {
         known::Hex(&bootloader.digest).to_string(),
         "6d53be01af0220ee443c48d3692f8c6939afc534c7c35838aa9678e25b562421"
     );
+    // `sha256sum testdata/bootloader.bin`.
+    assert_eq!(
+        known::Hex(&bootloader.file_sha256).to_string(),
+        "e49b7315251ccf47f23fd93ac064b4509e325715b085d2c236d79fa992eab3d2"
+    );
     assert_eq!(report.booted, OTA_0.offset);
     assert_eq!(report.running, Some(Slot::Ota0));
     let app = report.app.unwrap();
