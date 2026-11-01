@@ -315,18 +315,126 @@ pub(crate) fn otadata_of(first: &[u8; 32], second: &[u8; 32]) -> Vec<u8> {
 
 const SECTOR_LEN: u32 = crate::otadata::SECTOR_SIZE;
 
-/// `write` executed on `otadata`: its sector erased, then its entry
-/// programmed.
-pub(crate) fn apply(otadata: &mut [u8], write: &crate::otadata::Write) {
-    apply_cut(otadata, write, 32);
+/// How a program a power cut stops leaves its bytes. NOR programming only
+/// clears bits, so what lands is some of the bits the program clears.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Tear {
+    /// Its first `n` bytes land, as a program that runs in address order.
+    Prefix(usize),
+    /// A random subset of the bits it clears lands, short of all of them,
+    /// drawn from the seed: about half, three quarters or fifteen sixteenths
+    /// of them.
+    Bits(u64),
+    /// Every bit it clears lands but one: the `n`th of them, counted modulo
+    /// their number.
+    AllBut(usize),
 }
 
-/// `write` cut short on `otadata`: its sector erased, then only the first
-/// `programmed` bytes of its entry programmed.
-pub(crate) fn apply_cut(otadata: &mut [u8], write: &crate::otadata::Write, programmed: usize) {
+impl Tear {
+    /// Programs `new` over `old` as far as the tear lets it.
+    pub(crate) fn land(self, old: &mut [u8], new: &[u8]) {
+        // The bits the program clears, in address order.
+        let clears: Vec<(usize, u8)> = old
+            .iter()
+            .zip(new)
+            .enumerate()
+            .flat_map(|(i, (old, new))| {
+                let clear = old & !new;
+                (0..8)
+                    .map(|bit| 1_u8 << bit)
+                    .filter(move |bit| clear & bit != 0)
+                    .map(move |bit| (i, bit))
+            })
+            .collect();
+        let lands: Vec<bool> = match self {
+            Self::Prefix(n) => clears.iter().map(|&(i, _)| i < n).collect(),
+            Self::Bits(seed) => {
+                let mut rng = Rng::new(seed);
+                let draws = [1, 2, 4][(seed % 3) as usize];
+                let mut lands: Vec<bool> = clears
+                    .iter()
+                    .map(|_| (0..draws).any(|_| rng.below(2) == 0))
+                    .collect();
+                if !lands.is_empty() && lands.iter().all(|&land| land) {
+                    let kept = rng.below(lands.len());
+                    lands[kept] = false;
+                }
+                lands
+            }
+            Self::AllBut(n) => {
+                let kept = n % clears.len().max(1);
+                (0..clears.len()).map(|j| j != kept).collect()
+            }
+        };
+        for (&(i, bit), land) in clears.iter().zip(lands) {
+            if land {
+                old[i] &= !bit;
+            }
+        }
+    }
+}
+
+/// Where a power cut stops a planned otadata write: after its erase and its
+/// first `done` programs, with the next one torn as `tear` says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Cut {
+    pub(crate) done: usize,
+    pub(crate) tear: Tear,
+}
+
+/// `write` executed on `otadata`: its sector erased, then its programs made,
+/// in order.
+pub(crate) fn apply(otadata: &mut [u8], write: &crate::otadata::Write) {
+    apply_cut(otadata, write, None);
+}
+
+/// `write` on `otadata`, cut short as `cut` says, or whole when it is
+/// `None`: its sector erased, then its programs made, in order, until the
+/// cut.
+pub(crate) fn apply_cut(otadata: &mut [u8], write: &crate::otadata::Write, cut: Option<Cut>) {
     let at = write.offset() as usize;
     otadata[at..at + SECTOR_LEN as usize].fill(0xFF);
-    otadata[at..at + programmed].copy_from_slice(&write.bytes()[..programmed]);
+    for (index, (offset, bytes)) in write.programs().into_iter().enumerate() {
+        let span = &mut otadata[offset as usize..offset as usize + bytes.len()];
+        match cut {
+            Some(cut) if index == cut.done => {
+                cut.tear.land(span, bytes);
+                return;
+            }
+            _ => {
+                for (old, new) in span.iter_mut().zip(bytes) {
+                    *old &= new;
+                }
+            }
+        }
+    }
+}
+
+/// The cuts of `write` the tests try: in each of its programs, every prefix
+/// and every bit but one, and random subsets of its bits.
+pub(crate) fn every_cut(write: &crate::otadata::Write) -> Vec<Cut> {
+    let mut cuts = Vec::new();
+    for (done, (_, bytes)) in write.programs().into_iter().enumerate() {
+        let clears: usize = bytes.iter().map(|b| b.count_zeros() as usize).sum();
+        let tears = (0..bytes.len())
+            .map(Tear::Prefix)
+            .chain((0..clears).map(Tear::AllBut))
+            .chain((0..6).map(|seed| Tear::Bits(0x7EA2 + seed)));
+        cuts.extend(tears.map(|tear| Cut { done, tear }));
+    }
+    cuts
+}
+
+/// A random cut of `write`.
+pub(crate) fn random_cut(rng: &mut Rng, write: &crate::otadata::Write) -> Cut {
+    let done = rng.below(3);
+    let len = write.programs()[done].1.len();
+    let tear = match rng.below(3) {
+        0 => Tear::Prefix(rng.below(len)),
+        1 => Tear::Bits(rng.next_u64()),
+        _ => Tear::AllBut(rng.below(256)),
+    };
+    Cut { done, tear }
 }
 
 /// An `esp_select_entry_t` as ESP-IDF's C code sees it, read from raw bytes
@@ -479,9 +587,8 @@ pub(crate) struct RamFlash {
     /// The number of erases and programs that succeed before every later one
     /// fails.
     fail_after: Mutex<Option<usize>>,
-    /// How many leading bytes of the first program that fails are still
-    /// programmed.
-    torn: Mutex<usize>,
+    /// How the first program that fails lands.
+    tear: Mutex<Option<Tear>>,
     /// Reads that touch this range fail.
     fail_reads: Mutex<Option<core::ops::Range<u32>>>,
 }
@@ -501,7 +608,7 @@ impl RamFlash {
             bytes: Mutex::new(bytes),
             ops: Mutex::default(),
             fail_after: Mutex::default(),
-            torn: Mutex::default(),
+            tear: Mutex::default(),
             fail_reads: Mutex::default(),
         }
     }
@@ -518,11 +625,11 @@ impl RamFlash {
     }
 
     /// Cuts the power once `n` more erases and programs have succeeded: every
-    /// later one fails, and when the first to fail is a program, its first
-    /// `torn` bytes are programmed all the same.
-    pub(crate) fn cut_after(&self, n: usize, torn: usize) {
+    /// later one fails, and when the first to fail is a program, it lands as
+    /// `tear` says all the same.
+    pub(crate) fn cut_after(&self, n: usize, tear: Tear) {
         self.fail_after(n);
-        *self.torn.lock().unwrap() = torn;
+        *self.tear.lock().unwrap() = Some(tear);
     }
 
     /// Makes every read that touches `range` fail.
@@ -533,7 +640,7 @@ impl RamFlash {
     /// Lets every erase, program and read succeed again.
     pub(crate) fn heal(&self) {
         *self.fail_after.lock().unwrap() = None;
-        *self.torn.lock().unwrap() = 0;
+        *self.tear.lock().unwrap() = None;
         *self.fail_reads.lock().unwrap() = None;
     }
 
@@ -642,7 +749,7 @@ impl crate::Flash for RamFlash {
         let range = self.range(address, crate::SECTOR_SIZE as usize);
         if let Err(error) = self.record(Op::Erase(address)) {
             // A cut erase lands whole or not at all here.
-            *self.torn.lock().unwrap() = 0;
+            *self.tear.lock().unwrap() = None;
             return Err(error);
         }
         self.bytes.lock().unwrap()[range].fill(0xFF);
@@ -661,16 +768,16 @@ impl crate::Flash for RamFlash {
             bytes.len()
         );
         let range = self.range(address, bytes.len());
-        let landed = match self.record(Op::Program(address, bytes.len() as u32)) {
-            Ok(()) => bytes.len(),
-            Err(_) => core::mem::take(&mut *self.torn.lock().unwrap()).min(bytes.len()),
-        };
+        let recorded = self.record(Op::Program(address, bytes.len() as u32));
         let mut flash = self.bytes.lock().unwrap();
-        for (old, new) in flash[range].iter_mut().zip(&bytes[..landed]) {
-            *old &= new;
+        if recorded.is_err() {
+            if let Some(tear) = self.tear.lock().unwrap().take() {
+                tear.land(&mut flash[range], bytes);
+            }
+            return recorded;
         }
-        if landed < bytes.len() {
-            return Err(crate::DeviceError);
+        for (old, new) in flash[range].iter_mut().zip(bytes) {
+            *old &= new;
         }
         Ok(())
     }

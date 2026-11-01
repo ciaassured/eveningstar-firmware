@@ -94,8 +94,8 @@ impl From<AccessError> for OtaError {
 /// A power cut at any point leaves a selection that boots the running image,
 /// or an activated image that verified, started once with its rollback
 /// armed: no valid otadata entry selects the other slot from the start of an
-/// update until its activation, and the activation selects it with state
-/// `New` in a single write.
+/// update until its activation, and the activation's entry becomes valid only
+/// once whole, with state `New`, as its sequence number is programmed last.
 pub struct Ota<'f> {
     other: Region<'f>,
     otadata: Region<'f>,
@@ -301,14 +301,17 @@ impl<'f> Ota<'f> {
     }
 
     /// Makes the otadata write `write`: its sector erased, then its entry
-    /// programmed.
+    /// programmed in the order its programs come, the sequence number last.
     async fn execute(&self, write: &Write) -> Result<(), AccessError> {
         let at = write.offset();
         let running = Some(self.running);
         self.otadata
             .erase(at, at + otadata::SECTOR_SIZE, running)
             .await?;
-        self.otadata.program(at, &write.bytes(), running).await
+        for (offset, bytes) in write.programs() {
+            self.otadata.program(offset, bytes, running).await?;
+        }
+        Ok(())
     }
 }
 

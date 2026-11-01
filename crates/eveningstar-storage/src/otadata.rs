@@ -27,15 +27,21 @@
 //! holds garbage never hides the other entry, and no plan needs to read the
 //! sector it overwrites.
 //!
-//! Plans are descriptions of one write: erase one sector of the partition, then
-//! program one whole entry at its start. Nothing in this module touches the
-//! flash.
+//! Plans are descriptions of one write: erase one sector of the partition,
+//! then program the entry at its start in three parts, the sequence number
+//! last ([`Write::programs`]). Nothing in this module touches the flash.
 //!
-//! A power cut can leave the written sector erased, or with any prefix of the
-//! entry programmed and the rest erased. Programming writes the state before
-//! the CRC, and only sequence number 0 has a CRC of `0xFFFFFFFF`, the erased
-//! value. So a partly programmed entry with a sequence number other than 0 is
-//! never valid, and no plan writes a new entry with sequence number 0.
+//! A power cut can leave the written sector erased, or with the programs
+//! before the cut whole and any subset of the bits the cut one clears. Until
+//! the sequence number is programmed it reads `0xFFFFFFFF`, so the entry is
+//! blank whatever else was programmed. Cut while the sequence number is
+//! programmed, the entry holds another sequence number than the planned one,
+//! and the CRC of a 32-bit sequence number is one to one ([`crc`]), so the
+//! CRC stored, whole by then, doesn't match it. An entry is therefore valid
+//! only once every program is whole, its state included, whatever its
+//! sequence number.
+
+use core::fmt;
 
 use crate::source::{Source, read_array};
 use crate::{ReadError, Slot};
@@ -58,6 +64,10 @@ const _: () = assert!(crate::layout::OTADATA.size == 2 * SECTOR_SIZE);
 /// `esp_rom_crc32_le(UINT32_MAX, &seq, 4)`, a reflected CRC-32 with the
 /// register starting at 0 and the result inverted, over the four
 /// little-endian bytes of `seq`.
+///
+/// It is one to one: each step of the register is linear over GF(2), and a
+/// CRC of a message no longer than its polynomial's degree loses nothing, so
+/// two sequence numbers never share a CRC.
 #[must_use]
 pub const fn crc(seq: u32) -> u32 {
     // Feeding the four little-endian bytes one at a time, low bit first, is
@@ -349,14 +359,23 @@ pub enum PlanError {
     },
 }
 
-/// A planned write: erase `sector`, then program `entry` at its start.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// A planned write: erase `sector`, then program an entry at its start, in
+/// the order [`programs`](Self::programs) gives.
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Write {
     sector: Sector,
-    entry: SelectEntry,
+    /// The entry, as stored.
+    bytes: [u8; ENTRY_LEN],
 }
 
 impl Write {
+    fn new(sector: Sector, entry: SelectEntry) -> Self {
+        Self {
+            sector,
+            bytes: entry.to_bytes(),
+        }
+    }
+
     /// The sector to erase and program.
     #[must_use]
     pub const fn sector(&self) -> Sector {
@@ -365,21 +384,47 @@ impl Write {
 
     /// The entry to program.
     #[must_use]
-    pub const fn entry(&self) -> &SelectEntry {
-        &self.entry
+    pub fn entry(&self) -> SelectEntry {
+        SelectEntry::from_bytes(&self.bytes)
     }
 
-    /// The offset of the sector, and of the bytes to program, from the start
-    /// of the partition.
+    /// The offset of the sector, and of the entry, from the start of the
+    /// partition.
     #[must_use]
     pub const fn offset(&self) -> u32 {
         self.sector.offset()
     }
 
-    /// The bytes to program, in one go.
+    /// The entry's bytes, as the sector starts once every program is made.
     #[must_use]
-    pub fn bytes(&self) -> [u8; ENTRY_LEN] {
-        self.entry.to_bytes()
+    pub const fn bytes(&self) -> [u8; ENTRY_LEN] {
+        self.bytes
+    }
+
+    /// The programs that write the entry once its sector is erased, in
+    /// order, each the offset of its bytes from the start of the partition
+    /// and the bytes: the label and the state, then the CRC, then the
+    /// sequence number. Each starts and ends on a word boundary.
+    ///
+    /// Until the last program, the sequence number reads as erased, so the
+    /// entry is blank; the module documentation says why a cut in the last
+    /// one leaves no valid entry either.
+    #[must_use]
+    pub fn programs(&self) -> [(u32, &[u8]); 3] {
+        let at = self.offset();
+        // Sequence number 0..4, label 4..24, state 24..28, CRC 28..32.
+        let (seq, rest) = self.bytes.split_at(4);
+        let (label_state, crc) = rest.split_at(24);
+        [(at + 4, label_state), (at + 28, crc), (at, seq)]
+    }
+}
+
+impl fmt::Debug for Write {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Write")
+            .field("sector", &self.sector)
+            .field("entry", &self.entry())
+            .finish_non_exhaustive()
     }
 }
 
@@ -547,10 +592,7 @@ impl Otadata {
                 return Ok(None);
             }
         } else if other_runs {
-            return Ok(Some(Write {
-                sector,
-                entry: active.with_state(State::Invalid),
-            }));
+            return Ok(Some(Write::new(sector, active.with_state(State::Invalid))));
         }
         self.plan_select(running, State::Valid).map(Some)
     }
@@ -562,9 +604,10 @@ impl Otadata {
     /// The active entry has to select `running`. The new entry goes to the
     /// sector that isn't active, with the active entry's sequence number plus
     /// 1, and replaces the entry there, which isn't needed while the active
-    /// one stays. State, sequence number and CRC are written together, so the
-    /// entry is never valid with a state other than `New`, and the bootloader
-    /// never boots the activated image without being able to roll it back.
+    /// one stays. The state is programmed before the sequence number, which
+    /// makes the entry valid, so the entry is never valid with a state other
+    /// than `New`, and the bootloader never boots the activated image without
+    /// being able to roll it back.
     ///
     /// A power cut leaves the sector erased or holding a partial entry, which
     /// isn't valid, so the active entry still selects `running`.
@@ -595,12 +638,10 @@ impl Otadata {
     /// entry, the rollback target, stays.
     ///
     /// A power cut leaves the active sector erased or holding a partial entry,
-    /// which isn't valid unless its sequence number is 0. The other entry then
-    /// decides: for a [`State::PendingVerify`] image, as it would at the next
-    /// boot without the write, since the bootloader aborts the image there;
-    /// otherwise it rolls back. An entry with sequence number 0 may stay valid
-    /// with a partly written state, which is [`State::Unknown`] and boots
-    /// `running` without rollback.
+    /// which isn't valid. The other entry then decides: for a
+    /// [`State::PendingVerify`] image, as it would at the next boot without
+    /// the write, since the bootloader aborts the image there; otherwise it
+    /// rolls back.
     ///
     /// # Errors
     ///
@@ -612,10 +653,7 @@ impl Otadata {
         if active.state == State::Valid {
             return Ok(None);
         }
-        Ok(Some(Write {
-            sector,
-            entry: active.with_state(State::Valid),
-        }))
+        Ok(Some(Write::new(sector, active.with_state(State::Valid))))
     }
 
     /// Plans marking the running image [`State::Invalid`], so the bootloader
@@ -627,10 +665,8 @@ impl Otadata {
     /// does.
     ///
     /// A power cut leaves the active sector erased or holding a partial entry,
-    /// which isn't valid unless its sequence number is 0, so the rollback
-    /// target is selected as it would be after the write. An entry with
-    /// sequence number 0 may stay valid with a partly written state, which
-    /// is [`State::Unknown`], so `running` boots again.
+    /// which isn't valid, so the rollback target is selected as it would be
+    /// after the write.
     ///
     /// # Errors
     ///
@@ -643,10 +679,7 @@ impl Otadata {
         if !self.boot_state(running).rollback_target {
             return Err(PlanError::NoRollbackTarget);
         }
-        Ok(Write {
-            sector,
-            entry: active.with_state(State::Invalid),
-        })
+        Ok(Write::new(sector, active.with_state(State::Invalid)))
     }
 
     /// The active entry and its sector when it selects `running`, and the
@@ -680,10 +713,7 @@ impl Otadata {
                 self.kept(Sector::Second)?;
                 (Sector::First, slot.number() + 1)
             };
-        Ok(Write {
-            sector,
-            entry: SelectEntry::new(seq, state),
-        })
+        Ok(Write::new(sector, SelectEntry::new(seq, state)))
     }
 }
 
