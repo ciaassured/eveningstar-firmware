@@ -4,6 +4,10 @@ import type { ApiClient } from "../api/client.ts";
 import { Transport } from "../api/transport.ts";
 import type { Timers } from "../api/transport.ts";
 import { createDevice } from "../device/device.ts";
+import { createDownloads } from "../downloads/service.ts";
+import type { Downloads, DownloadsDeps } from "../downloads/service.ts";
+import { createStorage } from "../storage/service.ts";
+import type { Storage } from "../storage/service.ts";
 import type { Device } from "../device/device.ts";
 import { createActivity } from "../live/activity.ts";
 import type { Activity, ActivityEnvironment } from "../live/activity.ts";
@@ -24,6 +28,10 @@ export interface Environment {
   now: () => number;
   activity: ActivityEnvironment;
   router: RouterEnvironment;
+  /** Saving and checking downloads, and keeping the tab open while they run. */
+  downloads: Pick<DownloadsDeps, "save" | "sha256" | "guardUnload">;
+  /** Writes text to the clipboard; `undefined` outside a secure context, where the browser has none for pages. */
+  clipboard: ((text: string) => Promise<void>) | undefined;
 }
 
 /** Everything the views share. */
@@ -38,6 +46,10 @@ export interface Services {
   readonly timers: Timers;
   /** The time, refreshed every second while the page is in use. */
   readonly now: ReadonlySignal<number>;
+  readonly storage: Storage;
+  /** The app-wide download queue, which carries on across routes. */
+  readonly downloads: Downloads;
+  readonly clipboard: ((text: string) => Promise<void>) | undefined;
 }
 
 export function createServices(environment: Environment): Services {
@@ -68,8 +80,30 @@ export function createServices(environment: Environment): Services {
     now: environment.now,
     active: activity.active,
   });
+  const storage = createStorage({
+    api,
+    timers: environment.timers,
+    now: environment.now,
+    active: activity.active,
+    restarts: device.restarts,
+    async deviceName() {
+      const known = device.system.value.peek()?.name;
+      if (known !== undefined) return known;
+      const result = await device.system.load("action");
+      return result.ok ? result.value.name : undefined;
+    },
+  });
+  const downloads = createDownloads({
+    ...environment.downloads,
+    api,
+    prepare: (target) => storage.prepare(target),
+    timers: environment.timers,
+    now: environment.now,
+    random: environment.random,
+  });
   session.onUserChange(() => {
     device.reset();
+    storage.reset();
   });
 
   return {
@@ -82,5 +116,8 @@ export function createServices(environment: Environment): Services {
     device,
     timers: environment.timers,
     now: createTicker(environment.timers, environment.now, activity.active),
+    storage,
+    downloads,
+    clipboard: environment.clipboard,
   };
 }
