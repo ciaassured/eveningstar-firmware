@@ -115,10 +115,6 @@ impl<T: WatchdogType> WatchdogHandle<T> {
 
     /// Stops the deadline until the next [`feed`](Self::feed), while the task
     /// waits for an outside event.
-    #[expect(
-        dead_code,
-        reason = "no supervised task waits for an outside event yet"
-    )]
     pub(crate) fn idle(&self) {
         self.mailbox.signal(Message::Idle);
     }
@@ -293,20 +289,22 @@ macro_rules! watchdog {
             )*
         }
 
+        // Each task's name and timeout, in the order of `Index`.
+        const NAMES: [&str; COUNT] = [ $( stringify!($field), )* ];
+        const TIMEOUTS: [embassy_time::Duration; COUNT] = [ $( $timeout, )* ];
+
         pub(crate) fn supervisor(rwdt: Rwdt, wdt: Wdt<TIMG0<'static>>) -> (Supervisor<COUNT>, Handles) {
+            // Built in a loop rather than entry by entry, so the frame doesn't
+            // grow with each task.
             let supervisor = Supervisor::new(
-                [
-                    $(
-                        WatchdogInfo {
-                            name: stringify!($field),
-                            timeout: $timeout,
-                            last_fed: Instant::MIN,
-                            idle: false,
-                            retired: false,
-                            mailbox: &MAILBOXES[Index::$Kind as usize],
-                        },
-                    )*
-                ],
+                core::array::from_fn(|index| WatchdogInfo {
+                    name: NAMES[index],
+                    timeout: TIMEOUTS[index],
+                    last_fed: Instant::MIN,
+                    idle: false,
+                    retired: false,
+                    mailbox: &MAILBOXES[index],
+                }),
                 rwdt,
                 wdt);
 
