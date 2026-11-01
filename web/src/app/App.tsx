@@ -1,6 +1,7 @@
 import { Dashboard } from "../pages/Dashboard.tsx";
 import { Login } from "../pages/Login.tsx";
 import { NotFound } from "../pages/NotFound.tsx";
+import { Storage } from "../pages/Storage.tsx";
 import { System } from "../pages/System.tsx";
 import { ServicesProvider, useServices } from "./context.ts";
 import { Shell } from "./Shell.tsx";
@@ -14,6 +15,8 @@ function RouteView() {
       return <Dashboard />;
     case "system":
       return <System />;
+    case "storage":
+      return <Storage />;
     case "login":
       return <Login />;
     case "not-found":

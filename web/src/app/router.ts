@@ -4,6 +4,7 @@ import { signal } from "@preact/signals";
 export type Route =
   | { name: "dashboard" }
   | { name: "system" }
+  | { name: "storage" }
   | { name: "login" }
   | { name: "not-found"; path: string };
 
@@ -11,6 +12,7 @@ export type Route =
 export const NAVIGATION: readonly { route: Route["name"]; path: string; label: string }[] = [
   { route: "dashboard", path: "/", label: "Dashboard" },
   { route: "system", path: "/system", label: "System" },
+  { route: "storage", path: "/storage", label: "Storage" },
 ];
 
 /** The route a URL fragment such as `#/system` names. */
@@ -22,6 +24,8 @@ export function parseRoute(hash: string): Route {
       return { name: "dashboard" };
     case "/system":
       return { name: "system" };
+    case "/storage":
+      return { name: "storage" };
     case "/login":
       return { name: "login" };
     default:
@@ -41,6 +45,8 @@ export function pathOf(route: Route): string {
       return "/";
     case "system":
       return "/system";
+    case "storage":
+      return "/storage";
     case "login":
       return "/login";
     case "not-found":

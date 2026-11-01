@@ -1,0 +1,38 @@
+.digest {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
+}
+
+.short {
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+.whole {
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.button {
+  padding: 0 var(--space-2);
+  min-height: 24px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  color: var(--accent);
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.message {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.message:empty {
+  display: none;
+}

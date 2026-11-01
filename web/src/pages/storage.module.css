@@ -1,0 +1,144 @@
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.section {
+  font-size: 1rem;
+  font-weight: 600;
+  margin-top: var(--space-2);
+}
+
+.summary {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.tableHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.subheading {
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.download {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.state {
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.details {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.mini {
+  border-collapse: collapse;
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.mini th,
+.mini td {
+  padding: var(--space-1) var(--space-3) var(--space-1) 0;
+  text-align: start;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.mini thead th {
+  font-size: 0.75rem;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.mini tbody th {
+  font-weight: 400;
+}
+
+.differs {
+  font-weight: 600;
+}
+
+.scroll {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.board {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.note {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.monoCell {
+  font-family: var(--font-mono);
+}
+
+.otadata summary {
+  cursor: pointer;
+  color: var(--accent);
+}
+
+.otadata[open] summary {
+  margin-bottom: var(--space-2);
+}
+
+.fill {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  max-width: 16rem;
+}
+
+.range {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: 0.85rem;
+  flex: 1 1 10rem;
+}
+
+.input {
+  min-height: 34px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--map-region);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  font-family: var(--font-mono);
+}
+
+.error {
+  color: var(--st-critical);
+  font-weight: 600;
+}

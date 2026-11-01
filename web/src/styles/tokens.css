@@ -18,6 +18,7 @@
   --header-line: #393939;
   --header-mark-day: #f5a742;
   --header-mark-night: #8fc3f0;
+  --header-accent: #78a9ff;
   --mark-day: #bd7724;
   --mark-night: #11273f;
   --nav-active: #e8e8e8;
@@ -27,6 +28,8 @@
   --st-caution: #8e6a00;
   --st-serious: #ba4e00;
   --st-critical: #da1e28;
+  --map-region: #8d8d8d;
+  --map-image: #393939;
 
   --radius-panel: 10px;
   --radius-control: 7px;
@@ -64,6 +67,7 @@
     --header-line: #393939;
     --header-mark-day: #f5a742;
     --header-mark-night: #8fc3f0;
+    --header-accent: #78a9ff;
     --mark-day: #f5a742;
     --mark-night: #8fc3f0;
     --nav-active: #393939;
@@ -73,5 +77,7 @@
     --st-caution: #f1c21b;
     --st-serious: #ff832b;
     --st-critical: #fa4d56;
+    --map-region: #6f6f6f;
+    --map-image: #e0e0e0;
   }
 }
