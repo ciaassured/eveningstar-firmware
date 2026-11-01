@@ -1,6 +1,7 @@
 //! Storage on the internal flash: the partition layout, the formats on the
-//! flash (the partition table and ESP images), and, later, the checks of the
-//! board's table and bootloader and the handles to the partitions.
+//! flash (the partition table, ESP images and the otadata), and, later, the
+//! checks of the board's table and bootloader and the handles to the
+//! partitions.
 //!
 //! The crate is `no_std`, allocation-free, and also builds on the host. Every
 //! parser reads through [`Source`], with buffers of at most 256 bytes on the
@@ -11,6 +12,7 @@
 mod future;
 pub mod image;
 pub mod layout;
+pub mod otadata;
 mod source;
 pub mod table;
 #[cfg(test)]
@@ -52,6 +54,47 @@ impl Entry {
     #[must_use]
     pub const fn end(&self) -> u32 {
         self.offset + self.size
+    }
+}
+
+/// One of the two app slots.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Slot {
+    /// [`layout::OTA_0`].
+    Ota0,
+    /// [`layout::OTA_1`].
+    Ota1,
+}
+
+impl Slot {
+    /// Both slots, in order.
+    pub const ALL: [Self; 2] = [Self::Ota0, Self::Ota1];
+
+    /// The slot's number: 0 for `ota_0`, 1 for `ota_1`.
+    #[must_use]
+    pub const fn number(self) -> u32 {
+        match self {
+            Self::Ota0 => 0,
+            Self::Ota1 => 1,
+        }
+    }
+
+    /// The other slot.
+    #[must_use]
+    pub const fn other(self) -> Self {
+        match self {
+            Self::Ota0 => Self::Ota1,
+            Self::Ota1 => Self::Ota0,
+        }
+    }
+
+    /// The slot's partition.
+    #[must_use]
+    pub const fn partition(self) -> Entry {
+        match self {
+            Self::Ota0 => layout::OTA_0,
+            Self::Ota1 => layout::OTA_1,
+        }
     }
 }
 
@@ -127,6 +170,17 @@ mod tests {
         assert_eq!(OTA_0.kind, TYPE_APP);
         assert_eq!(OTA_1.kind, TYPE_APP);
         assert_eq!(OTADATA.kind, TYPE_DATA);
+    }
+
+    #[test]
+    fn slots_name_the_app_partitions() {
+        assert_eq!(Slot::Ota0.partition(), OTA_0);
+        assert_eq!(Slot::Ota1.partition(), OTA_1);
+        assert_eq!(Slot::ALL.map(Slot::number), [0, 1]);
+        for slot in Slot::ALL {
+            assert_ne!(slot.other(), slot);
+            assert_eq!(slot.other().other(), slot);
+        }
     }
 
     #[test]
