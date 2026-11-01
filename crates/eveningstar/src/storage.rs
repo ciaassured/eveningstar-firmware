@@ -23,7 +23,7 @@ use esp_hal::peripherals::{FLASH, SPI0};
 use esp_storage::{FlashStorage, FlashStorageError};
 use eveningstar_storage::otadata::{self, Sector, State, Validity};
 use eveningstar_storage::partitions::{Partition, PartitionTable};
-use eveningstar_storage::table::{self, Fields, Match};
+use eveningstar_storage::table::{self, Fields, Found, Match};
 use eveningstar_storage::{
     DeviceError, Entry, Flash, Limit, Report, SECTOR_SIZE, Slot, Storage, Text, Tier, layout, split,
 };
@@ -229,7 +229,9 @@ fn log(storage: &Storage<'_>, capacity: u32) {
         );
     } else {
         log_comparison(report);
-        log_found_table(report.found_table, storage.boot.table);
+    }
+    if let Some(found) = report.found_table {
+        log_found_table(report, found, storage.boot.table);
     }
     log_bootloader(report);
     log_app(report);
@@ -265,12 +267,27 @@ fn log_comparison(report: &Report) {
     }
 }
 
-/// Logs the entries of the table found on the board, at `offset`.
-fn log_found_table(offset: Option<u32>, table: Option<Partition<'_, PartitionTable>>) {
-    let (Some(offset), Some(table)) = (offset, table) else {
-        warn!("No partition table found with an app at the booted offset");
-        return;
+/// Logs what the search for the board's table found, and the entries of the
+/// table when it found one other than the layout's.
+fn log_found_table(report: &Report, found: Found, table: Option<Partition<'_, PartitionTable>>) {
+    let (offset, table) = match (found, table) {
+        (Found::One(offset), Some(table)) => (offset, table),
+        (Found::Several(first, second), _) => {
+            warn!(
+                "Partition tables at {=u32:#x} and {=u32:#x} both have an app at the booted offset; the layout is unknown",
+                first, second
+            );
+            return;
+        }
+        _ => {
+            warn!("No partition table found with an app at the booted offset");
+            return;
+        }
     };
+    if report.table.matches() && offset == layout::TABLE_OFFSET {
+        info!("No other partition table found with an app at the booted offset");
+        return;
+    }
     info!("Partition table found at {=u32:#x}:", offset);
     for entry in table::entries(&table, 0).map_while(Result::ok) {
         info!(
@@ -459,6 +476,10 @@ impl Format for LimitReason {
                 layout::FLASH_SIZE
             ),
             Limit::NotASlot => defmt::write!(f, "the app didn't boot from ota_0 or ota_1"),
+            Limit::OtherTable => defmt::write!(
+                f,
+                "the bootloader isn't known and another partition table could be the one it reads"
+            ),
             Limit::BootloaderInvalid => defmt::write!(f, "the bootloader doesn't verify"),
             Limit::BootloaderUnknown => {
                 defmt::write!(f, "the bootloader isn't known to support rollback");
