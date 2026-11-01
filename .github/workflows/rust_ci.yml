@@ -8,6 +8,10 @@ on:
       - "**/README.md"
   pull_request:
   workflow_dispatch:
+  # Weekly, so advisories published against unchanged lockfiles still show up,
+  # as a failed run, without blocking changes that don't touch npm.
+  schedule:
+    - cron: "17 3 * * 1"
 
 permissions:
   contents: read
@@ -19,6 +23,8 @@ jobs:
   # The groups of `nix run .#checks`, one job each, so they run side by side.
   checks:
     name: ${{ matrix.name }}
+    # The scheduled run is for the npm audit alone.
+    if: ${{ github.event_name != 'schedule' }}
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -76,7 +82,7 @@ jobs:
   nix-checks:
     name: Nix checks
     needs: checks
-    if: ${{ always() }}
+    if: ${{ always() && github.event_name != 'schedule' }}
     runs-on: ubuntu-24.04
     steps:
       - name: Require every check job to have passed
@@ -87,6 +93,11 @@ jobs:
   # Checks the packages of both lockfiles against the registry's advisories and
   # signatures. It installs them, with install scripts off, in a job that has no
   # secrets.
+  #
+  # A new advisory against a package nobody changed can have no fix yet, so a
+  # pull request or push audits only when it changes a manifest, a lockfile or
+  # an `.npmrc`; the weekly and manual runs always audit. The job itself always
+  # runs, as `npm audit` is a required check.
   npm-audit:
     name: npm audit
     runs-on: ubuntu-24.04
@@ -95,11 +106,49 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # A pull request is checked out as its merge commit, whose first
+          # parent is the base branch.
+          fetch-depth: 2
+
+      - name: Decide whether to audit
+        id: scope
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          audit() {
+            echo "audit=$1" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+
+          case "$EVENT" in
+            pull_request)
+              base=HEAD^1
+              ;;
+            push)
+              base=$BEFORE
+              # Anything unexpected, such as a commit that can't be fetched,
+              # audits.
+              git fetch --no-tags --depth=1 origin "$base" || audit true
+              ;;
+            *)
+              audit true
+              ;;
+          esac
+
+          changed=$(git diff --name-only "$base" HEAD) || audit true
+          if grep -Eq '^(web|tools/openapi-typescript)/(package\.json|package-lock\.json|\.npmrc)$' <<< "$changed"; then
+            audit true
+          fi
+          echo "No npm manifest, lockfile or .npmrc changed, so the audit was skipped." >> "$GITHUB_STEP_SUMMARY"
+          audit false
 
       - name: Install Nix
+        if: ${{ steps.scope.outputs.audit == 'true' }}
         uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
 
       - name: Audit the lockfiles
+        if: ${{ steps.scope.outputs.audit == 'true' }}
         run: |
           audit() {
             nix shell .#nodejs --command npm --prefix "$1" ci --ignore-scripts
