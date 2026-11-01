@@ -420,8 +420,10 @@ pub struct BootState {
     /// The slot the app booted from.
     pub running: SlotName,
     /// The slot the otadata selects; `null` when no entry is valid, as on a
-    /// first boot. A selected slot other than the running one means the
-    /// bootloader fell back, as the selected one failed to load.
+    /// first boot. A selected slot other than the running one is either an
+    /// update activated for the next boot, whose entry is
+    /// [`OtaState::New`](OtaState::New), or a fallback: the bootloader
+    /// started the running slot as the selected one failed to load.
     pub selected: Option<SlotName>,
     /// The running app's state; `null` when no entry selects it.
     pub state: Option<OtaState>,
