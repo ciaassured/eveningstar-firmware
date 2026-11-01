@@ -9,6 +9,7 @@
 
 extern crate alloc;
 
+use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::task::Wake;
 use core::pin::pin;
@@ -555,6 +556,31 @@ impl RamFlash {
         }
         ops.push(op);
         Ok(())
+    }
+}
+
+/// A [`RamFlash`] lent to [`crate::split`], which takes its flash mutably, while
+/// the test keeps reading it: the box is leaked, so the borrow lasts as long as
+/// `flash` does.
+pub(crate) fn lend(flash: &RamFlash) -> &mut dyn crate::Flash {
+    Box::leak(Box::new(Lent(flash)))
+}
+
+/// A shared [`RamFlash`] as a [`crate::Flash`], for [`lend`].
+struct Lent<'a>(&'a RamFlash);
+
+impl crate::Flash for Lent<'_> {
+    fn capacity(&self) -> u32 {
+        crate::Flash::capacity(self.0)
+    }
+    fn read(&self, address: u32, buf: &mut [u8]) -> Result<(), crate::DeviceError> {
+        crate::Flash::read(self.0, address, buf)
+    }
+    fn erase_sector(&self, address: u32) -> Result<(), crate::DeviceError> {
+        crate::Flash::erase_sector(self.0, address)
+    }
+    fn program(&self, address: u32, bytes: &[u8]) -> Result<(), crate::DeviceError> {
+        crate::Flash::program(self.0, address, bytes)
     }
 }
 
