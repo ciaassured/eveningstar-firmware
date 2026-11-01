@@ -16,7 +16,8 @@ Real binaries the storage crate's tests read with `include_bytes!`.
 `partition-table.bin` and `bootloader.bin` have to equal what Nix builds:
 the `build` check group fails when they don't, and the `storage-testdata`
 dev-shell command rewrites them. The tests also hold the bootloader's
-SHA-256 digest, which changes with it, and a new bootloader needs its entry
+SHA-256 digests (the one the image stores, and the `sha256sum` of the file),
+which change with it, and a new bootloader needs its entry
 in `src/known.rs`, which the `build` group prints.
 
 ## Snapshots

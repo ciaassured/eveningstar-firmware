@@ -147,9 +147,10 @@ fn check_bootloader(checks: &mut Checks, path: &Path, bytes: &[u8]) {
         .descriptor()
         .and_then(|descriptor| descriptor.idf_version().to_str().map(str::to_owned));
     checks.pass(format!(
-        "verified: {} bytes, ESP-IDF {}",
+        "verified: {} bytes, ESP-IDF {}, file SHA-256 {}",
         bootloader.size(),
-        idf.as_deref().unwrap_or("unknown")
+        idf.as_deref().unwrap_or("unknown"),
+        known::Hex(bootloader.file_sha256())
     ));
     let digest = bootloader.digest();
     checks.check(
@@ -178,9 +179,10 @@ fn check_app(checks: &mut Checks, path: &Path, bytes: &[u8]) {
         Err(error) => return checks.fail(format!("doesn't verify: {error:?}")),
     };
     checks.pass(format!(
-        "verified for chip {:#06x}: digest {}",
+        "verified for chip {:#06x}: digest {}, file SHA-256 {}",
         app.header().chip_id,
-        known::Hex(app.digest())
+        known::Hex(app.digest()),
+        known::Hex(app.file_sha256())
     ));
     match image::app_descriptor(bytes) {
         Ok(descriptor) => {
