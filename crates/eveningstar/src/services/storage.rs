@@ -54,7 +54,8 @@ mod download;
 mod regions;
 
 pub(crate) use download::{
-    Content, ContentError, ContentReadError, Part, WATCHDOG_TIMEOUT as DOWNLOAD_WATCHDOG_TIMEOUT,
+    Buffer, Content, ContentError, ContentReadError, Part,
+    WATCHDOG_TIMEOUT as DOWNLOAD_WATCHDOG_TIMEOUT,
 };
 pub(crate) use regions::{AppSlot, Contents, Region, RegionName};
 

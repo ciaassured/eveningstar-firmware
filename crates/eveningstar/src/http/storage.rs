@@ -20,10 +20,10 @@ use eveningstar_storage::{Limit, ReadError, Slot, Text, Tier, layout};
 use picoserve::extract::FromRef;
 
 use super::AppState;
-use super::api::{Shared, SharedBody, Source};
+use super::api::{Download, Shared, SharedBody, Source};
 use crate::services::storage::{
-    AppRole, AppSlot, Content, ContentError, ContentReadError, Contents, Image, Part, Progress,
-    Region, RegionName, StorageView,
+    AppRole, AppSlot, Buffer, Content, ContentError, ContentReadError, Contents, Image, Part,
+    Progress, Region, RegionName, StorageView,
 };
 use crate::services::system::{NAME_MAX_LEN, System};
 
@@ -511,13 +511,13 @@ impl FromRef<AppState> for Downloads {
     }
 }
 
-/// [`v1::GetRegionContent`]: the region's content, holding the download lock
-/// until the response is written or abandoned.
+/// [`v1::GetRegionContent`]: the region's content, with the buffer that holds
+/// the download lock until the response is written or abandoned.
 pub(super) async fn get_region_content(
     downloads: Downloads,
     region: v1::Region,
     (): (),
-) -> Result<RegionContent, v1::RegionContentError> {
+) -> Result<Download<RegionContent, Buffer>, v1::RegionContentError> {
     region_content(downloads, region)
 }
 
@@ -525,21 +525,30 @@ pub(super) async fn get_region_content(
 fn region_content(
     downloads: Downloads,
     region: v1::Region,
-) -> Result<RegionContent, v1::RegionContentError> {
+) -> Result<Download<RegionContent, Buffer>, v1::RegionContentError> {
     // A region this version doesn't know never reaches a handler; were it to,
     // it is treated as one whose contents never leave the device.
     let name = region_name(region).ok_or(v1::RegionContentError::Sensitive)?;
-    let content = downloads.storage.content(name).map_err(|err| match err {
+    let download = downloads.storage.download(name).map_err(|err| match err {
         ContentError::Sensitive => v1::RegionContentError::Sensitive,
         ContentError::Unavailable => v1::RegionContentError::Unavailable,
         ContentError::Busy => v1::RegionContentError::Busy,
     })?;
-    let tag = tag(content.boot(), content.generation());
-    Ok(RegionContent {
-        content,
-        device: downloads.system.name(),
-        tag,
+    Ok(Download {
+        source: region_source(download.content, downloads.system),
+        buffer: download.buffer,
     })
+}
+
+/// The body's source: `content`, tagged, and named for the device.
+#[inline(never)]
+fn region_source(content: Content, system: &System) -> RegionContent {
+    let tag = tag(content.boot(), content.generation());
+    RegionContent {
+        content,
+        device: system.name(),
+        tag,
+    }
 }
 
 /// Longest entity tag of a region's content.
