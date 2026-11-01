@@ -11,6 +11,7 @@
 
 mod future;
 pub mod image;
+pub mod known;
 pub mod layout;
 pub mod otadata;
 mod source;
