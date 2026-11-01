@@ -9,10 +9,12 @@
 //! The check task verifies each app slot the firmware holds a handle for, one
 //! after the other: the running app ([`AppRole::Current`]), and in the data
 //! and full tiers the other slot ([`AppRole::Alternate`]). A check is
-//! [`verify_app`]: the checksum and the digest the image stores, from one pass
-//! that also gives the SHA-256 of the whole image, yielding every 1 KiB
-//! hashed. Its result is valid with both digests, empty (no image header) or
-//! invalid with the error, and is logged.
+//! [`verify_app_with`](image::verify_app_with): the checksum and the digest
+//! the image stores, from one pass that also gives the SHA-256 of the whole
+//! image. Its result is valid with both digests, empty (no image header) or
+//! invalid with the error, and is logged. A check runs as a background job:
+//! after every 1 KiB hashed it pauses for [`PAUSE`], so the rest of the
+//! system keeps its pace while a slot is checked.
 //!
 //! A result is stored with the write generation of the slot noted before the
 //! check, and only when the generation is unchanged after it. It is current
@@ -25,6 +27,7 @@
 //! system runs is caught. The handle is paused while the task waits for writes.
 
 use core::cell::RefCell;
+use core::future::Future;
 
 use defmt::{Debug2Format, info, warn};
 use embassy_executor::Spawner;
@@ -33,8 +36,10 @@ use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_time::{Duration, Instant, Timer};
 use eveningstar_storage::image::{self, App, HEADER_LEN, ImageError, MAGIC};
+use eveningstar_storage::pace::Pace;
 use eveningstar_storage::partitions::{Read, SensitiveRead};
 use eveningstar_storage::{ReadError, Report, Slot, Source};
+use sha2::Sha256;
 use static_cell::StaticCell;
 
 use crate::storage::{Generations, Hex, Public, Started, Writes};
@@ -49,6 +54,12 @@ pub(crate) const WATCHDOG_TIMEOUT: Duration = Duration::from_secs(10);
 /// slots the writes made stale, so that an update written over a minute
 /// costs one check, not hundreds.
 pub(crate) const QUIET: Duration = Duration::from_secs(3);
+
+/// How long a check pauses after each step of
+/// [`YIELD_INTERVAL`](image::YIELD_INTERVAL) bytes hashed, so the tasks that
+/// yield often, such as the Ethernet controller's after each SPI transaction,
+/// get the executor to themselves for a while.
+pub(crate) const PAUSE: Duration = Duration::from_millis(1);
 
 /// The byte an erased flash reads as.
 const ERASED: u8 = 0xFF;
@@ -352,7 +363,7 @@ impl Service {
 /// Verifies the app image in `source`. A source whose header is erased is
 /// empty rather than invalid.
 async fn verify<S: Source>(source: &S) -> Image {
-    match image::verify_app(source).await {
+    match image::verify_app_with(source, Sha256::default(), &mut Background).await {
         Ok(app) => Image::Valid(app),
         Err(ImageError::Magic(ERASED)) if erased_header(source) => Image::Empty,
         Err(err) => Image::Invalid(err),
@@ -365,6 +376,16 @@ fn erased_header<S: Source>(source: &S) -> bool {
     const { assert!(MAGIC != ERASED) };
     let mut header = [0; HEADER_LEN as usize];
     source.read(0, &mut header).is_ok() && header.iter().all(|&byte| byte == ERASED)
+}
+
+/// Paces a check as a background job: a [`PAUSE`] after each step. The pause
+/// doesn't feed the watchdog; only a check's reads do.
+struct Background;
+
+impl Pace for Background {
+    fn pause(&mut self) -> impl Future<Output = ()> {
+        Timer::after(PAUSE)
+    }
 }
 
 /// A public handle whose reads feed the check task's watchdog: each read is
