@@ -1,4 +1,5 @@
-//! Request and response bodies of the Eveningstar HTTP API, serialised as JSON.
+//! Request and response bodies of the Eveningstar HTTP API, serialised as JSON
+//! or sent as bytes.
 //!
 //! The crate is `no_std` and allocation-free. The `schema` feature adds JSON
 //! Schemas of the types and the OpenAPI document, which need `alloc`.

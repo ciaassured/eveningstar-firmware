@@ -116,7 +116,7 @@ async fn dispatch<R: Read, W: ResponseWriter<Error = R::Error>>(
 /// Serves a request for `E` whose path holds `params`: reads its body, passes
 /// both to `handler` with the part of `state` the handler takes, and writes the
 /// handler's reply with `E`'s status code, or its error.
-async fn serve<E, S, H, Rep, R, W>(
+async fn serve<E, S, H, V, Rep, R, W>(
     _endpoint: E,
     params: E::Params,
     state: &AppState,
@@ -125,10 +125,10 @@ async fn serve<E, S, H, Rep, R, W>(
     handler: H,
 ) -> Result<ResponseSent, W::Error>
 where
-    E: Endpoint<Request: ReadBody, Response: WriteBody>,
+    E: Endpoint<Request: ReadBody, Response: WriteBody<V>>,
     S: FromRef<AppState>,
     H: AsyncFnOnce(S, E::Params, <E::Request as v1::RequestBody>::Value) -> Result<Rep, E::Error>,
-    Rep: Reply<<E::Response as v1::ResponseBody>::Value>,
+    Rep: Reply<V>,
     R: Read,
     W: ResponseWriter<Error = R::Error>,
 {
@@ -211,11 +211,11 @@ impl<T: DeserializeOwned> ReadBody for v1::Json<T> {
     }
 }
 
-/// A response body the server writes.
-trait WriteBody: v1::ResponseBody {
+/// A response body the server writes from a `V`.
+trait WriteBody<V>: v1::ResponseBody {
     /// Writes a response with `status`, `headers` and a body holding `value`.
     async fn write<R: Read, W: ResponseWriter<Error = R::Error>>(
-        value: Self::Value,
+        value: V,
         status: StatusCode,
         headers: impl HeadersIter,
         connection: Connection<'_, R>,
@@ -223,7 +223,7 @@ trait WriteBody: v1::ResponseBody {
     ) -> Result<ResponseSent, W::Error>;
 }
 
-impl WriteBody for v1::Empty {
+impl WriteBody<()> for v1::Empty {
     async fn write<R: Read, W: ResponseWriter<Error = R::Error>>(
         (): (),
         status: StatusCode,
@@ -241,7 +241,7 @@ impl WriteBody for v1::Empty {
     }
 }
 
-impl<T: Serialize> WriteBody for v1::Json<T> {
+impl<T: Serialize> WriteBody<T> for v1::Json<T> {
     async fn write<R: Read, W: ResponseWriter<Error = R::Error>>(
         value: T,
         status: StatusCode,
@@ -268,7 +268,7 @@ pub(super) trait Reply<B> {
     fn into_parts(self) -> (B, impl FnOnce());
 }
 
-impl<B: Serialize> Reply<B> for B {
+impl<B> Reply<B> for B {
     const CLOSES: bool = false;
 
     fn into_parts(self) -> (B, impl FnOnce()) {
