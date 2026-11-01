@@ -436,19 +436,27 @@ checks the numeric type, subtype and flag values against `gen_esp32part`.
 reaches, with a `Report` of what it found. It never fails: the worst outcome is
 the untrusted tier, so storage never stops the device from booting.
 
-| Tier      | Reached when                                                                                   | Handles                                    |
-|-----------|------------------------------------------------------------------------------------------------|--------------------------------------------|
-| Untrusted | the table at 0x8000 isn't the layout, the flash is smaller, or the app didn't boot from a slot | the boot chain, read only                  |
-| Data      | otherwise                                                                                      | + config, diag, otadata and the other slot |
-| Full      | + the bootloader is known and the running app's descriptor can be read                         | + `Ota`                                    |
+| Tier      | Reached when                                                                                                                                                          | Handles                                    |
+|-----------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------|
+| Untrusted | the table at 0x8000 isn't the layout, the flash is smaller, the app didn't boot from a slot, or the bootloader isn't known and another table could be the one it read | the boot chain, read only                  |
+| Data      | otherwise                                                                                                                                                             | + config, diag, otadata and the other slot |
+| Full      | + the bootloader is known and the running app's descriptor can be read                                                                                                | + `Ota`                                    |
 
 The table is compared entry by entry with the layout. It is slightly more
 lenient than the bootloader, which also requires the entry after the MD5 entry
 to be erased, and the MD5 isn't checked. When the table at 0x8000 isn't the
 layout, `split` looks for the one the bootloader used, so the boot-chain
-handles describe what is on the board. The running slot comes from the flash
-MMU, which says which page the CPU runs, not from the otadata, which says only
-what was selected.
+handles describe what is on the board: a well-formed table below the running
+app with an app entry at the booted offset. A table left over from an earlier
+layout looks the same, so when two qualify the board's table is unknown and
+there is no table handle. The same leftover can make 0x8000 look right while
+the bootloader reads another table, so with a bootloader that isn't known,
+`split` also searches, and any table besides the one at 0x8000 drops the board
+to the untrusted tier. A known bootloader reads 0x8000, so with one nothing
+more is searched. In the untrusted tier the running app's handle is its image,
+cut to its entry in the table, so a wrong table can't widen it. The running
+slot comes from the flash MMU, which says which page the CPU runs, not from the
+otadata, which says only what was selected.
 
 The full tier needs a bootloader in `known.rs`, identified by the SHA-256 its
 image stores. Only a bootloader known to support rollback is trusted with the
