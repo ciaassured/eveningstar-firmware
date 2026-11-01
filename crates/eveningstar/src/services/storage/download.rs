@@ -1,33 +1,39 @@
 //! Downloads of the public regions: one at a time, supervised, and cut short
 //! when the region is written.
 //!
-//! [`StorageView::content`] decides whether a region's bytes may leave the
+//! [`StorageView::download`] decides whether a region's bytes may leave the
 //! device from its name alone, before any handle is looked up: only a
 //! [`Contents::Public`] region does. It then takes the region's handle, a
-//! public one, and the download lock. A [`Content`] reads through
-//! [`Handle`], whose variants are the public handles and whose every read
-//! goes through a function that takes `impl Read` only, so a handle to a
-//! configuration or diagnostics can't be added to it.
+//! public one, and the download lock, which is a static buffer of
+//! [`CHUNK_LEN`] bytes ([`Buffer`]) that a download reads its chunks into, so
+//! no chunk is on the stack. A [`Content`] reads through [`Handle`], whose
+//! variants are the public handles and whose every read goes through a
+//! function that takes `impl Read` only, so a handle to a configuration or
+//! diagnostics can't be added to it.
 //!
 //! The lock holds the download watchdog handle, as there is one download at a
 //! time. Taking the lock feeds it, each chunk read feeds it (a response reads
 //! a chunk once the previous one is written, so the feed also marks that
-//! write), and releasing the lock, when the [`Content`] is dropped, sets it
-//! idle. It feeds on progress,
-//! never on a timer, so a download that hangs while the rest of the system
-//! runs is caught.
+//! write), and releasing the lock, when the [`Buffer`] is dropped, sets it
+//! idle. It feeds on progress, never on a timer, so a download that hangs
+//! while the rest of the system runs is caught.
 //!
 //! A content notes its region's write generation when it is made, and each
 //! read checks it after reading: a read after a write to the region fails,
 //! so no read returns bytes of two contents.
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::cell::Cell;
+use core::ops::{Deref, DerefMut};
+
+use embassy_sync::blocking_mutex::Mutex;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 
 use embassy_time::Duration;
 use eveningstar_storage::partitions::{
     Bootloader, Otadata, OtherApp, Partition, PartitionTable, Read, RunningApp,
 };
 use eveningstar_storage::{ReadError, Slot};
+use static_cell::ConstStaticCell;
 
 use super::regions::{Contents, RegionName};
 use super::{AppRole, Image, Service, StorageView};
@@ -39,51 +45,87 @@ use crate::wd;
 /// write timeout well within it, so only a hang in the firmware misses it.
 pub(crate) const WATCHDOG_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The download lock, with the watchdog handle that supervises the download
-/// holding it.
+/// The most bytes a download reads at once: one TCP buffer.
+pub(crate) const CHUNK_LEN: usize = 1024;
+
+/// The download lock: the buffer a download reads its chunks into, which a
+/// download takes for its length, and the watchdog handle that supervises the
+/// download holding it.
 pub(super) struct Lock {
-    taken: AtomicBool,
+    /// The buffer while no download holds it.
+    buffer: Mutex<CriticalSectionRawMutex, Cell<Option<&'static mut [u8; CHUNK_LEN]>>>,
     wd: WatchdogHandle<wd::StorageDownload>,
 }
 
 impl core::fmt::Debug for Lock {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Lock")
-            .field("taken", &self.taken)
-            .finish_non_exhaustive()
+        f.debug_struct("Lock").finish_non_exhaustive()
     }
 }
 
 impl Lock {
     /// The lock, free, with its watchdog handle idle until a download takes
     /// it.
+    ///
+    /// # Panics
+    ///
+    /// If called more than once, as there is one buffer.
     pub(super) fn new(wd: WatchdogHandle<wd::StorageDownload>) -> Self {
+        static BUFFER: ConstStaticCell<[u8; CHUNK_LEN]> = ConstStaticCell::new([0; CHUNK_LEN]);
+
         wd.idle();
         Self {
-            taken: AtomicBool::new(false),
+            buffer: Mutex::new(Cell::new(Some(BUFFER.take()))),
             wd,
         }
     }
 
-    /// Takes the lock and feeds its watchdog handle, or `None` while another
-    /// download holds it.
-    fn take(&'static self) -> Option<Held> {
-        if self.taken.swap(true, Ordering::Acquire) {
-            return None;
-        }
+    /// Takes the lock and its buffer and feeds its watchdog handle, or `None`
+    /// while another download holds them.
+    fn take(&'static self) -> Option<Buffer> {
+        let bytes = self.buffer.lock(Cell::take)?;
         self.wd.feed();
-        Some(Held(self))
+        Some(Buffer {
+            lock: self,
+            bytes: Some(bytes),
+        })
     }
 }
 
-/// The download lock, held until dropped.
-#[derive(Debug)]
-struct Held(&'static Lock);
+/// The download lock, held until dropped, and the buffer a download reads its
+/// chunks into, [`CHUNK_LEN`] bytes. Dropping it releases the lock and sets
+/// the download's watchdog handle idle.
+pub(crate) struct Buffer {
+    lock: &'static Lock,
+    /// Always `Some` until dropped, when the buffer goes back to the lock.
+    bytes: Option<&'static mut [u8; CHUNK_LEN]>,
+}
 
-impl Drop for Held {
+impl core::fmt::Debug for Buffer {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Buffer").finish_non_exhaustive()
+    }
+}
+
+impl Deref for Buffer {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        self.bytes.as_deref().map_or(&[], |bytes| bytes)
+    }
+}
+
+impl DerefMut for Buffer {
+    fn deref_mut(&mut self) -> &mut [u8] {
+        self.bytes.as_deref_mut().map_or(&mut [], |bytes| bytes)
+    }
+}
+
+impl Drop for Buffer {
     fn drop(&mut self) {
-        self.0.wd.idle();
-        self.0.taken.store(false, Ordering::Release);
+        self.lock.wd.idle();
+        let bytes = self.bytes.take();
+        self.lock.buffer.lock(|buffer| buffer.set(bytes));
     }
 }
 
@@ -189,9 +231,9 @@ async fn read<P: Read>(handle: &P, offset: u32, buf: &mut [u8]) -> Result<(), Re
     handle.read(offset, buf).await
 }
 
-/// The content of a public region, for one download: its handle, its write
-/// generation and what it holds when the download started, and the download
-/// lock, held until it is dropped.
+/// The content of a public region, for one download: its handle, and its
+/// write generation and what it holds when the download started. It comes
+/// with the download's [`Buffer`], which holds the lock.
 #[derive(Debug)]
 pub(crate) struct Content {
     view: StorageView,
@@ -201,12 +243,21 @@ pub(crate) struct Content {
     /// The length and SHA-256 of the image in the region, when the firmware
     /// has a current digest of it.
     image: Option<(u32, [u8; 32])>,
-    _held: Held,
+}
+
+/// A download: the content of a public region, and the [`Buffer`] its chunks
+/// are read into, which holds the download lock until it is dropped.
+#[derive(Debug)]
+pub(crate) struct Download {
+    /// The region's content.
+    pub(crate) content: Content,
+    /// The buffer, holding the lock.
+    pub(crate) buffer: Buffer,
 }
 
 impl StorageView {
-    /// The content of the region `name`, for a download, holding the
-    /// download lock until it is dropped.
+    /// A download of the region `name`: its content, and the buffer holding
+    /// the download lock.
     ///
     /// # Errors
     ///
@@ -214,14 +265,31 @@ impl StorageView {
     /// its name before anything else; [`ContentError::Unavailable`] when the
     /// firmware holds no handle for it this boot; [`ContentError::Busy`] when
     /// another download holds the lock.
-    pub(crate) fn content(self, name: RegionName) -> Result<Content, ContentError> {
+    pub(crate) fn download(self, name: RegionName) -> Result<Download, ContentError> {
         if name.contents() != Contents::Public {
             return Err(ContentError::Sensitive);
         }
         let handle = self.0.handle(name).ok_or(ContentError::Unavailable)?;
-        let held = self.0.download.take().ok_or(ContentError::Busy)?;
+        let buffer = self.0.download.take().ok_or(ContentError::Busy)?;
         let generation = self.generations().of(handle.offset(), handle.len());
-        let image = match name {
+        let image = self.image_of(name, generation);
+        let content = Content {
+            view: self,
+            name,
+            handle,
+            generation,
+            image,
+        };
+        Ok(Download { content, buffer })
+    }
+}
+
+impl StorageView {
+    /// The length and SHA-256 of the image in the region `name`, when the
+    /// firmware has a digest of it taken at write generation `generation`.
+    #[inline(never)]
+    fn image_of(self, name: RegionName, generation: u32) -> Option<(u32, [u8; 32])> {
+        match name {
             RegionName::Bootloader => self
                 .report()
                 .bootloader
@@ -235,15 +303,7 @@ impl StorageView {
                     Image::Empty | Image::Invalid(_) => None,
                 }),
             _ => None,
-        };
-        Ok(Content {
-            view: self,
-            name,
-            handle,
-            generation,
-            image,
-            _held: held,
-        })
+        }
     }
 }
 
