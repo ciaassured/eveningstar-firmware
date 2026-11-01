@@ -8,6 +8,8 @@
 
 #![cfg_attr(not(test), no_std)]
 
+mod future;
+pub mod image;
 pub mod layout;
 mod source;
 pub mod table;

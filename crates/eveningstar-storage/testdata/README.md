@@ -30,6 +30,7 @@ tail -c +32769 merged.bin | head -c 3072 > espflash-partition-table.bin
 espflash save-image --chip esp32c6 --flash-size 8mb "$elf" app.bin
 ```
 
-They stand for what `cargo run` (probe-rs, with espflash's bootloader and
-table) and an app build put on a board, and nothing checks them against
-newer builds.
+They are what espflash 4.6.0 writes. `cargo run` flashes through probe-rs,
+which writes espflash's bootloader and table through the espflash library it
+links, of a version that may differ. Nothing checks them against newer
+builds.
