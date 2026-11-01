@@ -1,7 +1,10 @@
 //! Storage on the internal flash: the partition layout, the formats on the
-//! flash (the partition table, ESP images and the otadata), and, later, the
-//! checks of the board's table and bootloader and the handles to the
-//! partitions.
+//! flash (the partition table, ESP images and the otadata), the checks of the
+//! board's table and bootloader, and the typed handles to the partitions.
+//!
+//! [`split`] reads the board through a [`Flash`] once per boot and hands out
+//! the handles of the trust tier it reaches ([`Storage`]); the
+//! [`partitions`] module documents the handles.
 //!
 //! The crate is `no_std`, allocation-free, and also builds on the host. Every
 //! parser reads through [`Source`], with buffers of at most 256 bytes on the
@@ -9,18 +12,25 @@
 
 #![cfg_attr(not(test), no_std)]
 
+mod flash;
 mod future;
 pub mod image;
 pub mod known;
 pub mod layout;
 pub mod otadata;
+pub mod partitions;
+mod region;
 mod source;
+mod split;
 pub mod table;
 #[cfg(test)]
 mod test_support;
 mod text;
 
+pub use flash::{DeviceError, Flash, SECTOR_SIZE, WORD_SIZE};
+pub use region::AccessError;
 pub use source::{ReadError, Source};
+pub use split::{AppId, BootChain, BootloaderId, Data, Limit, Ota, Report, Storage, Tier, split};
 pub use text::Text;
 
 /// Partition type of an application image.
@@ -95,6 +105,15 @@ impl Slot {
         match self {
             Self::Ota0 => layout::OTA_0,
             Self::Ota1 => layout::OTA_1,
+        }
+    }
+
+    /// The configuration partition paired with the slot.
+    #[must_use]
+    pub const fn config(self) -> Entry {
+        match self {
+            Self::Ota0 => layout::CONFIG_0,
+            Self::Ota1 => layout::CONFIG_1,
         }
     }
 }
@@ -177,6 +196,8 @@ mod tests {
     fn slots_name_the_app_partitions() {
         assert_eq!(Slot::Ota0.partition(), OTA_0);
         assert_eq!(Slot::Ota1.partition(), OTA_1);
+        assert_eq!(Slot::Ota0.config(), CONFIG_0);
+        assert_eq!(Slot::Ota1.config(), CONFIG_1);
         assert_eq!(Slot::ALL.map(Slot::number), [0, 1]);
         for slot in Slot::ALL {
             assert_ne!(slot.other(), slot);
