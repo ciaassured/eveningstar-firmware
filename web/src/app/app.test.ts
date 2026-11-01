@@ -4,7 +4,7 @@ import type { Result } from "../api/client.ts";
 import type { FailureContext } from "../api/failure.ts";
 import { FakeClock, settle } from "../testing/fakes.ts";
 import { createLoadController } from "./load-controller.ts";
-import { createRouter, parseRoute } from "./router.ts";
+import { NAVIGATION, createRouter, parseRoute } from "./router.ts";
 import type { RouterEnvironment } from "./router.ts";
 
 test("parseRoute names the routes and tolerates a trailing slash and a query", () => {
@@ -15,6 +15,8 @@ test("parseRoute names the routes and tolerates a trailing slash and a query", (
   assert.deepEqual(parseRoute("#/system/"), { name: "system" });
   assert.deepEqual(parseRoute("#/system?tab=1"), { name: "system" });
   assert.deepEqual(parseRoute("#/login"), { name: "login" });
+  assert.deepEqual(parseRoute("#/storage"), { name: "storage" });
+  assert.deepEqual(NAVIGATION.map((item) => item.label), ["Dashboard", "System", "Storage"]);
   assert.deepEqual(parseRoute("#/nope"), { name: "not-found", path: "/nope" });
 });
 

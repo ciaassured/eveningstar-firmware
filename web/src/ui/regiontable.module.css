@@ -1,0 +1,160 @@
+.wrap {
+  container-type: inline-size;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.table th,
+.table td {
+  padding: var(--space-2) var(--space-3);
+  text-align: start;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--border);
+}
+
+.table thead th {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.row th {
+  font-weight: 400;
+}
+
+.row:focus {
+  outline: none;
+}
+
+.row:focus-visible {
+  outline: 2px solid var(--accent);
+}
+
+.current th:first-child {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.gap td,
+.gap th {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.name {
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+.mono {
+  font-family: var(--font-mono);
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0;
+  border: 0;
+  background: none;
+  text-align: start;
+  cursor: pointer;
+}
+
+.chevron {
+  width: 10px;
+  height: 10px;
+  flex: none;
+  color: var(--accent);
+  transition: transform 120ms ease;
+}
+
+.toggle[aria-expanded="true"] .chevron {
+  transform: rotate(90deg);
+}
+
+.action {
+  white-space: nowrap;
+}
+
+.details td {
+  background: var(--surface-2);
+  padding: var(--space-3) var(--space-4);
+}
+
+@container (max-width: 680px) {
+  .table thead {
+    display: none;
+  }
+
+  .table,
+  .table tbody,
+  .table tr,
+  .table th,
+  .table td {
+    display: block;
+  }
+
+  .row {
+    margin-bottom: var(--space-3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-control);
+    overflow: hidden;
+  }
+
+  .row > tr:first-child {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .table th,
+  .table td {
+    border-bottom: 0;
+    padding: var(--space-1) var(--space-3);
+  }
+
+  .row th:first-child {
+    grid-column: 1 / -1;
+    padding-top: var(--space-2);
+    font-weight: 600;
+  }
+
+  .row td::before {
+    content: attr(data-label);
+    display: block;
+    font-size: 0.75rem;
+    color: var(--muted);
+    font-style: normal;
+  }
+
+  .row .action {
+    grid-column: 1 / -1;
+    white-space: normal;
+    padding-bottom: var(--space-2);
+  }
+
+  .row .action::before {
+    display: none;
+  }
+
+  /* A card has room for the reason a region is locked. */
+  .row .action [data-lock-reason] {
+    position: static;
+    width: auto;
+    height: auto;
+    margin: 0;
+    overflow: visible;
+    clip-path: none;
+    white-space: normal;
+    font-size: 0.85rem;
+  }
+
+  .details td {
+    padding: var(--space-3);
+  }
+}

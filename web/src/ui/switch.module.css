@@ -1,0 +1,24 @@
+.switch {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  overflow: hidden;
+}
+
+.option {
+  min-height: 30px;
+  padding: 0 var(--space-3);
+  border: 0;
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.option + .option {
+  border-inline-start: 1px solid var(--border);
+}
+
+.option[aria-pressed="true"] {
+  background: var(--nav-active);
+  box-shadow: inset 0 -3px 0 var(--accent);
+  font-weight: 600;
+}

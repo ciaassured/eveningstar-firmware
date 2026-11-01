@@ -5,6 +5,7 @@ import { Button } from "../ui/Button.tsx";
 import { Mark, Wordmark } from "../ui/Brand.tsx";
 import { ConnectionIndicator } from "../ui/ConnectionIndicator.tsx";
 import { useServices } from "./context.ts";
+import { DownloadTray } from "./downloads-view.tsx";
 import { NAVIGATION, pathOf } from "./router.ts";
 import styles from "./shell.module.css";
 
@@ -58,6 +59,7 @@ export function Shell({ children }: { children: ComponentChildren }) {
         </a>
         <span class={styles["device"]}>{name ?? ""}</span>
         <div class={styles["end"]}>
+          <DownloadTray />
           <ConnectionIndicator state={connection.state.value} />
           <span class={styles["badge"]}>Operational</span>
         </div>
