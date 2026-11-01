@@ -1114,6 +1114,7 @@ dependencies = [
 name = "eveningstar-storage"
 version = "0.1.0"
 dependencies = [
+ "embedded-storage-async",
  "sha2",
 ]
 

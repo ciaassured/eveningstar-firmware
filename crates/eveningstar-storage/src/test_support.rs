@@ -17,6 +17,8 @@ use core::task::{Context, Poll, Waker};
 
 use sha2::{Digest as _, Sha256};
 
+use std::sync::Mutex;
+
 use crate::Entry;
 use crate::table::ENTRY_LEN;
 
@@ -455,4 +457,183 @@ pub(crate) fn boot(otadata: &mut [u8], loadable: [bool; 2]) -> Option<crate::Slo
         }
     }
     None
+}
+
+/// Size of the board's flash in bytes.
+pub(crate) const FLASH_LEN: usize = crate::layout::FLASH_SIZE as usize;
+
+/// A flash in RAM with NOR semantics: an erase sets a sector to `0xFF`, a
+/// program ANDs the bytes in. A call that breaks the [`Flash`] contract
+/// (misaligned, past the end, more than a sector programmed at once) panics,
+/// as it is a bug in the crate. Every erase and program is logged, and they
+/// can be made to fail after a number of them.
+///
+/// [`Flash`]: crate::Flash
+#[derive(Debug)]
+pub(crate) struct RamFlash {
+    bytes: Mutex<Vec<u8>>,
+    /// Erases and programs that succeeded, as (address, length, is erase).
+    ops: Mutex<Vec<Op>>,
+    /// The number of erases and programs that succeed before every later one
+    /// fails.
+    fail_after: Mutex<Option<usize>>,
+    /// Reads that touch this range fail.
+    fail_reads: Mutex<Option<core::ops::Range<u32>>>,
+}
+
+/// An erase or program a [`RamFlash`] carried out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Op {
+    Erase(u32),
+    Program(u32, u32),
+}
+
+impl RamFlash {
+    /// A flash holding `bytes`.
+    pub(crate) fn new(bytes: Vec<u8>) -> Self {
+        assert!(u32::try_from(bytes.len()).is_ok());
+        Self {
+            bytes: Mutex::new(bytes),
+            ops: Mutex::default(),
+            fail_after: Mutex::default(),
+            fail_reads: Mutex::default(),
+        }
+    }
+
+    /// An erased flash of `len` bytes with `parts` written at their offsets.
+    pub(crate) fn with(len: usize, parts: &[(u32, &[u8])]) -> Self {
+        Self::new(flash_with(len, parts))
+    }
+
+    /// Makes every erase and program fail once `n` more have succeeded.
+    pub(crate) fn fail_after(&self, n: usize) {
+        let done = self.ops.lock().unwrap().len();
+        *self.fail_after.lock().unwrap() = Some(done + n);
+    }
+
+    /// Makes every read that touches `range` fail.
+    pub(crate) fn fail_reads(&self, range: core::ops::Range<u32>) {
+        *self.fail_reads.lock().unwrap() = Some(range);
+    }
+
+    /// The erases and programs carried out so far.
+    pub(crate) fn ops(&self) -> Vec<Op> {
+        self.ops.lock().unwrap().clone()
+    }
+
+    /// A copy of the bytes.
+    pub(crate) fn bytes(&self) -> Vec<u8> {
+        self.bytes.lock().unwrap().clone()
+    }
+
+    /// A copy of the `len` bytes at `address`.
+    pub(crate) fn at(&self, address: u32, len: usize) -> Vec<u8> {
+        let at = address as usize;
+        self.bytes.lock().unwrap()[at..at + len].to_vec()
+    }
+
+    fn range(&self, address: u32, len: usize) -> core::ops::Range<usize> {
+        let start = address as usize;
+        let end = start.checked_add(len).expect("range overflows");
+        assert!(
+            end <= self.bytes.lock().unwrap().len(),
+            "{start:#x}..{end:#x} is past the end of the flash"
+        );
+        start..end
+    }
+
+    /// Logs `op`, or fails it when the failure point has been reached.
+    fn record(&self, op: Op) -> Result<(), crate::DeviceError> {
+        let mut ops = self.ops.lock().unwrap();
+        if self
+            .fail_after
+            .lock()
+            .unwrap()
+            .is_some_and(|n| ops.len() >= n)
+        {
+            return Err(crate::DeviceError);
+        }
+        ops.push(op);
+        Ok(())
+    }
+}
+
+impl crate::Flash for RamFlash {
+    fn capacity(&self) -> u32 {
+        self.bytes.lock().unwrap().len() as u32
+    }
+
+    fn read(&self, address: u32, buf: &mut [u8]) -> Result<(), crate::DeviceError> {
+        let range = self.range(address, buf.len());
+        let fails = self.fail_reads.lock().unwrap().clone();
+        if let Some(fails) = fails
+            && (range.start as u32) < fails.end
+            && fails.start < range.end as u32
+        {
+            return Err(crate::DeviceError);
+        }
+        buf.copy_from_slice(&self.bytes.lock().unwrap()[range]);
+        Ok(())
+    }
+
+    fn erase_sector(&self, address: u32) -> Result<(), crate::DeviceError> {
+        assert!(
+            address.is_multiple_of(crate::SECTOR_SIZE),
+            "erase at {address:#x}"
+        );
+        let range = self.range(address, crate::SECTOR_SIZE as usize);
+        self.record(Op::Erase(address))?;
+        self.bytes.lock().unwrap()[range].fill(0xFF);
+        Ok(())
+    }
+
+    fn program(&self, address: u32, bytes: &[u8]) -> Result<(), crate::DeviceError> {
+        assert!(
+            address.is_multiple_of(crate::WORD_SIZE) && bytes.len().is_multiple_of(4),
+            "program of {} bytes at {address:#x}",
+            bytes.len()
+        );
+        assert!(
+            bytes.len() <= crate::SECTOR_SIZE as usize,
+            "program of {} bytes at once",
+            bytes.len()
+        );
+        let range = self.range(address, bytes.len());
+        self.record(Op::Program(address, bytes.len() as u32))?;
+        let mut flash = self.bytes.lock().unwrap();
+        for (old, new) in flash[range].iter_mut().zip(bytes) {
+            *old &= new;
+        }
+        Ok(())
+    }
+}
+
+/// The otadata partition's offset.
+pub(crate) const OTADATA_AT: u32 = crate::layout::OTADATA.offset;
+
+/// A board flashed by `flash-all`: the Nix bootloader and table, the otadata
+/// the bootloader writes on its first boot, and the app in `ota_0`.
+pub(crate) fn nix_board() -> RamFlash {
+    RamFlash::with(
+        FLASH_LEN,
+        &[
+            (0, BOOTLOADER),
+            (crate::layout::TABLE_OFFSET, TABLE),
+            (OTADATA_AT, OTADATA_FIRST_BOOT),
+            (crate::layout::OTA_0.offset, APP),
+        ],
+    )
+}
+
+/// A board flashed by `cargo run`: espflash's bootloader and default table,
+/// and the app in its `factory` partition at 0x10000.
+pub(crate) fn espflash_board() -> RamFlash {
+    RamFlash::with(
+        FLASH_LEN,
+        &[
+            (0, ESPFLASH_BOOTLOADER),
+            (0x8000, ESPFLASH_TABLE),
+            (0x1_0000, APP),
+        ],
+    )
 }
