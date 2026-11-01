@@ -164,6 +164,7 @@ impl Board {
             cfg_button: CfgButton::new(peripherals.GPIO21.into(), Level::Low, Pull::Up),
             ethernet,
             internal_flash: peripherals.FLASH,
+            flash_cache: peripherals.SPI0,
             external_flash,
             timg0: peripherals.TIMG0,
             rtc_timer: peripherals.RTC_TIMER,
