@@ -192,8 +192,11 @@ fn a_board_running_from_ota_1_hands_out_the_other_slot_s_partitions() {
 fn the_bootloader_is_hashed_with_yields() {
     let flash = nix_board();
     let done = block_on(split(lend(&flash), OTA_0.offset));
-    // 22 KiB hashed, a yield every 4 KiB.
-    assert_eq!(done.wakes, BOOTLOADER.len() / 4096);
+    // 22 KiB hashed, a yield every 1 KiB.
+    assert_eq!(
+        done.wakes,
+        (BOOTLOADER.len() - 32) / image::YIELD_INTERVAL as usize
+    );
     assert_eq!(done.output.report.tier(), Tier::Full);
 }
 

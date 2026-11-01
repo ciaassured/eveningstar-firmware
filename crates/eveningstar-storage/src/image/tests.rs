@@ -188,13 +188,13 @@ fn a_bootloader_isnt_an_app_but_an_app_passes_as_a_bootloader() {
 }
 
 #[test]
-fn the_verification_yields_every_4_kib_hashed() {
+fn the_verification_yields_every_1_kib_hashed() {
     let hashed = APP.len() - 32;
     let verify = block_on(verify_app(APP));
     assert_eq!(hex(verify.output.unwrap().digest()), APP_DIGEST);
     assert_eq!(verify.wakes, hashed / YIELD_INTERVAL as usize);
     assert_eq!(verify.polls, verify.wakes + 1);
-    assert_eq!(verify.wakes, 53);
+    assert_eq!(verify.wakes, 212);
 
     let verify = block_on(verify_bootloader(BOOTLOADER));
     assert!(verify.output.is_ok());
