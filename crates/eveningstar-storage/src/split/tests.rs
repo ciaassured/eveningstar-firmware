@@ -131,6 +131,7 @@ fn a_board_flashed_by_nix_reaches_the_full_tier() {
             selected: Some(Slot::Ota0),
             state: Some(State::Valid),
             rollback_target: false,
+            needs_confirmation: false,
         })
     );
     assert!(!report.cannot_confirm());
@@ -171,6 +172,7 @@ fn a_board_running_from_ota_1_hands_out_the_other_slot_s_partitions() {
             selected: Some(Slot::Ota1),
             state: Some(State::Valid),
             rollback_target: false,
+            needs_confirmation: false,
         }
     );
     assert_eq!(span(&storage.boot.running_app.unwrap()), entry_span(OTA_1));

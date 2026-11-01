@@ -334,6 +334,17 @@ pub struct BootState {
     /// slot. Marking the running image [`Invalid`](State::Invalid) then makes
     /// the bootloader select the other slot.
     pub rollback_target: bool,
+    /// Whether the running image needs a confirmation: it isn't confirmed
+    /// `Valid`. It is confirmed when the active entry selects the running
+    /// slot with state [`Valid`](State::Valid), or when the running slot's
+    /// own entry is valid with state `Valid` and the active entry is an
+    /// activation of the other slot not booted yet, with state
+    /// [`New`](State::New). Every other image needs one: one booted
+    /// [`PendingVerify`](State::PendingVerify), one whose entry is
+    /// [`Undefined`](State::Undefined) or unknown, one the bootloader fell
+    /// back to from the selected slot, one booted with no valid entry.
+    /// Until it is confirmed, no update begins and nothing is activated.
+    pub needs_confirmation: bool,
 }
 
 /// Why a write can't be planned.
@@ -342,9 +353,9 @@ pub enum PlanError {
     /// Every sequence number above the active entry's that selects the slot
     /// is [`BLANK_SEQ`] or past it.
     SeqExhausted,
-    /// The active entry is [`State::PendingVerify`]: the image it selects
-    /// hasn't been confirmed.
-    PendingVerify,
+    /// The running image isn't confirmed `Valid`
+    /// ([`BootState::needs_confirmation`]).
+    Unconfirmed,
     /// The active entry doesn't select the running slot, or there is none.
     NotSelected,
     /// The other slot isn't a rollback target.
@@ -510,7 +521,23 @@ impl Otadata {
             selected,
             state,
             rollback_target,
+            needs_confirmation: !self.confirmed(running),
         }
+    }
+
+    /// Whether the image running from `running` is confirmed, as
+    /// [`BootState::needs_confirmation`] describes.
+    fn confirmed(&self, running: Slot) -> bool {
+        let (Some(sector), Some(active)) = (self.active(), self.active_entry()) else {
+            return false;
+        };
+        if active.slot() == running {
+            return active.state == State::Valid;
+        }
+        active.state == State::New
+            && self
+                .valid(sector.other())
+                .is_some_and(|own| own.slot() == running && own.state == State::Valid)
     }
 
     /// The state of the highest entry other than the active one that isn't
@@ -542,57 +569,55 @@ impl Otadata {
     /// and select `running`, the slot that booted. Making each write planned
     /// and planning again reaches `None` after at most two writes.
     ///
-    /// When the active entry selects the other slot and the other entry
-    /// selects `running`, the active entry is rewritten in place with state
-    /// [`State::Invalid`], which cancels an activation not yet booted. A
-    /// power cut leaves it erased or partial, so the entry for `running` is
-    /// selected, as after the write.
+    /// The running image has to be confirmed `Valid`
+    /// ([`BootState::needs_confirmation`]), and every write keeps it so: no
+    /// plan here gives an image the state `Valid` it didn't have.
     ///
-    /// Otherwise the write is an entry selecting `running` with state
-    /// [`State::Valid`], in the sector that isn't active (the first when no
-    /// entry is valid), with the smallest sequence number above the active
-    /// entry's that selects `running`, or `running`'s number plus 1 when no
-    /// entry is valid. When the active entry already selects `running`, that
-    /// is its sequence number plus 2, where ESP-IDF's `esp_rewrite_ota_data`
-    /// would write an equal one, which loses the tie from the second sector.
-    /// It replaces what that sector held: an entry for the other slot, which
-    /// is about to stop holding the image it named, a second entry for
-    /// `running`, or nothing valid. A power cut leaves the
-    /// sector erased or partial, which isn't valid, so the active entry is the
-    /// one before the write and the bootloader does what it would have done
-    /// without it. No write replaces the only valid entry for `running` while
-    /// the other slot's entry is the active one, as a cut would then leave
-    /// nothing to roll back to.
+    /// When the active entry selects the other slot, it is an activation not
+    /// booted yet, and the running slot's own entry is `Valid`. The active
+    /// entry is rewritten in place with state [`State::Invalid`], which
+    /// cancels the activation. A power cut leaves it erased or partial, so
+    /// the entry for `running` is selected, as after the write.
+    ///
+    /// Otherwise the active entry selects `running` with state `Valid`, and
+    /// the write is a second entry selecting `running` with state `Valid`, in
+    /// the sector that isn't active, with the active entry's sequence number
+    /// plus 2, where ESP-IDF's `esp_rewrite_ota_data` would write an equal
+    /// one, which loses the tie from the second sector. It replaces what that
+    /// sector held: an entry for the other slot, which is about to stop
+    /// holding the image it named, or nothing valid. A power cut leaves the
+    /// sector erased or partial, which isn't valid, so the active entry is
+    /// the one before the write and the bootloader does what it would have
+    /// done without it.
     ///
     /// Once settled, no valid entry names the other slot, so neither the
     /// bootloader nor [`plan_roll_back`](Self::plan_roll_back) can select it
     /// while it is rewritten, and a cut in-place rewrite of either entry
-    /// leaves the other one selecting `running`. With no valid entry at all,
-    /// the bootloader would try `ota_0` first, whichever slot is running.
+    /// leaves the other one selecting `running`.
     ///
     /// # Errors
     ///
-    /// [`PlanError::PendingVerify`] when the active entry selects `running`
-    /// and hasn't been confirmed, as ESP-IDF's `esp_ota_begin` refuses then
-    /// too, [`PlanError::SeqExhausted`] when the active entry's sequence
-    /// number is too high, and [`PlanError::Read`] when no entry is valid and
-    /// the second sector, which then stays, couldn't be read.
+    /// [`PlanError::Unconfirmed`] when the running image isn't confirmed,
+    /// which ESP-IDF's `esp_ota_begin` refuses for a `PendingVerify` one too,
+    /// and [`PlanError::SeqExhausted`] when the active entry's sequence
+    /// number is too high.
     pub fn plan_begin_update(&self, running: Slot) -> Result<Option<Write>, PlanError> {
+        if !self.confirmed(running) {
+            return Err(PlanError::Unconfirmed);
+        }
         let (Some(sector), Some(active)) = (self.active(), self.active_entry()) else {
-            return self.plan_select(running, State::Valid).map(Some);
+            return Err(PlanError::Unconfirmed);
         };
+        if active.slot() != running {
+            // Confirmed with the other slot selected: an activation not
+            // booted yet, with the running slot's own entry `Valid`.
+            return Ok(Some(Write::new(sector, active.with_state(State::Invalid))));
+        }
         let other_runs = self
             .valid(sector.other())
             .is_some_and(|other| other.slot() == running);
-        if active.slot() == running {
-            if active.state == State::PendingVerify {
-                return Err(PlanError::PendingVerify);
-            }
-            if other_runs {
-                return Ok(None);
-            }
-        } else if other_runs {
-            return Ok(Some(Write::new(sector, active.with_state(State::Invalid))));
+        if other_runs {
+            return Ok(None);
         }
         self.plan_select(running, State::Valid).map(Some)
     }
@@ -601,8 +626,9 @@ impl Otadata {
     /// it with state [`State::New`], so the bootloader boots it once as
     /// [`State::PendingVerify`] and rolls back unless it is confirmed.
     ///
-    /// The active entry has to select `running`. The new entry goes to the
-    /// sector that isn't active, with the active entry's sequence number plus
+    /// The active entry has to select `running` with state
+    /// [`State::Valid`]: an unconfirmed image activates nothing. The new
+    /// entry goes to the sector that isn't active, with the active entry's sequence number plus
     /// 1, and replaces the entry there, which isn't needed while the active
     /// one stays. The state is programmed before the sequence number, which
     /// makes the entry valid, so the entry is never valid with a state other
@@ -615,45 +641,68 @@ impl Otadata {
     /// # Errors
     ///
     /// [`PlanError::NotSelected`] when the active entry doesn't select
-    /// `running` or no entry is valid, [`PlanError::PendingVerify`] when the
-    /// running image hasn't been confirmed, as ESP-IDF's `esp_ota_begin`
-    /// refuses then too, and [`PlanError::SeqExhausted`] when the active
-    /// entry's sequence number is too high.
+    /// `running` or no entry is valid, [`PlanError::Unconfirmed`] when the
+    /// running image isn't confirmed `Valid`, and [`PlanError::SeqExhausted`]
+    /// when the active entry's sequence number is too high.
     pub fn plan_activate(&self, running: Slot) -> Result<Write, PlanError> {
         let active = self.active_entry().ok_or(PlanError::NotSelected)?;
         if active.slot() != running {
             return Err(PlanError::NotSelected);
         }
-        if active.state == State::PendingVerify {
-            return Err(PlanError::PendingVerify);
+        if active.state != State::Valid {
+            return Err(PlanError::Unconfirmed);
         }
         self.plan_select(running.other(), State::New)
     }
 
-    /// Plans marking the running image [`State::Valid`], which cancels its
-    /// rollback; `None` when it already is.
+    /// Plans confirming the running image: afterwards the active entry
+    /// selects `running` with state [`State::Valid`], which cancels a
+    /// rollback. `None` when the image is confirmed already
+    /// ([`BootState::needs_confirmation`]), during an activation not booted
+    /// yet included, which this doesn't cancel.
     ///
-    /// The active entry has to select `running`. It is rewritten in place,
+    /// When the active entry selects `running`, it is rewritten in place,
     /// as ESP-IDF does, with its sequence number and label kept: the other
-    /// entry, the rollback target, stays.
+    /// entry, the rollback target, stays. A power cut leaves the active
+    /// sector erased or holding a partial entry, which isn't valid. The
+    /// other entry then decides: for a [`State::PendingVerify`] image, as it
+    /// would at the next boot without the write, since the bootloader aborts
+    /// the image there; otherwise it rolls back to the other entry's slot or,
+    /// with no valid other entry, the bootloader tries `ota_0` first.
     ///
-    /// A power cut leaves the active sector erased or holding a partial entry,
-    /// which isn't valid. The other entry then decides: for a
-    /// [`State::PendingVerify`] image, as it would at the next boot without
-    /// the write, since the bootloader aborts the image there; otherwise it
-    /// rolls back.
+    /// When the active entry selects the other slot, the bootloader fell
+    /// back from it, or an activation not booted yet stands while the
+    /// running image isn't confirmed. The write is an entry selecting
+    /// `running` with state `Valid` in the sector that isn't active, with the
+    /// smallest sequence number above the active entry's that selects
+    /// `running`. It replaces the running slot's own entry there, if any. A
+    /// power cut leaves that sector erased or partial, which isn't valid, so
+    /// the active entry is as before and the bootloader does what it did:
+    /// tries the other slot, then falls back to `running`.
+    ///
+    /// With no valid entry, the write is the one the bootloader makes on
+    /// blank otadata: an entry selecting `running` with sequence number
+    /// `running`'s number plus 1, state `Valid`, in the first sector. As the
+    /// bootloader makes it whenever both sectors are blank or corrupt, this
+    /// is the case when they hold `Invalid` or `Aborted` entries. A power cut
+    /// leaves no valid entry, as before, and the bootloader tries `ota_0`
+    /// first, then `ota_1`, as before.
     ///
     /// # Errors
     ///
-    /// [`PlanError::NotSelected`] when the active entry doesn't select
-    /// `running` or no entry is valid, and [`PlanError::Read`] when the other
-    /// sector couldn't be read.
-    pub fn plan_mark_valid(&self, running: Slot) -> Result<Option<Write>, PlanError> {
-        let (sector, active) = self.running_entry(running)?;
-        if active.state == State::Valid {
+    /// [`PlanError::Read`] when the sector a write leaves alone couldn't be
+    /// read: the other sector of an in-place rewrite, the second with no
+    /// valid entry; [`PlanError::SeqExhausted`] when the active entry's
+    /// sequence number is too high.
+    pub fn plan_confirm(&self, running: Slot) -> Result<Option<Write>, PlanError> {
+        if self.confirmed(running) {
             return Ok(None);
         }
-        Ok(Some(Write::new(sector, active.with_state(State::Valid))))
+        if self.selected() == Some(running) {
+            let (sector, active) = self.running_entry(running)?;
+            return Ok(Some(Write::new(sector, active.with_state(State::Valid))));
+        }
+        self.plan_select(running, State::Valid).map(Some)
     }
 
     /// Plans marking the running image [`State::Invalid`], so the bootloader

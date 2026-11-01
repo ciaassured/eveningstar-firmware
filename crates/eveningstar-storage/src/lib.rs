@@ -11,10 +11,12 @@
 //! An update is written and verified ([`Ota::begin_update`],
 //! [`Update::write`], [`Update::finish`]), the [`VerifiedImage`] it gives is
 //! selected for the next boot ([`Ota::activate`]), and the image that boots
-//! is confirmed ([`Ota::mark_valid`]) or rolled back ([`Ota::roll_back`]). A
-//! power cut at any step leaves a selection that starts a whole image: the
-//! one running, or an activated one with its rollback armed. Nothing in the
-//! crate reboots.
+//! is confirmed ([`Ota::confirm`]) or rolled back ([`Ota::roll_back`]). Any
+//! booted image that isn't `Valid` needs a confirmation
+//! ([`otadata::BootState::needs_confirmation`]), and updates begin only from
+//! a `Valid` one. A power cut at any step leaves a selection that starts a
+//! whole image: the one running, or an activated one with its rollback
+//! armed. Nothing in the crate reboots.
 //!
 //! The crate is `no_std`, allocation-free, and also builds on the host. Every
 //! parser reads through [`Source`], with buffers of at most 256 bytes on the
