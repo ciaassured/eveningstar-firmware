@@ -6,8 +6,8 @@
 use super::*;
 use crate::Slot::{Ota0, Ota1};
 use crate::test_support::{
-    IdfEntry, OTADATA_FIRST_BOOT, OTADATA_LEN, Rng, apply, apply_cut, boot, idf_active, idf_slot,
-    otadata_of,
+    Cut, IdfEntry, OTADATA_FIRST_BOOT, OTADATA_LEN, Rng, Tear, apply, apply_cut, boot, every_cut,
+    idf_active, idf_slot, otadata_of, random_cut,
 };
 
 // Entries from the tests of esp-bootloader-esp-idf 0.6.0 (`src/ota.rs`),
@@ -584,7 +584,7 @@ fn activation_writes_new_to_the_sector_that_isnt_active() {
     let write = otadata.plan_activate(Ota0).unwrap();
     assert_eq!(write.sector(), Sector::Second);
     assert_eq!(write.offset(), 0x1000);
-    assert_eq!(*write.entry(), SelectEntry::new(2, State::New));
+    assert_eq!(write.entry(), SelectEntry::new(2, State::New));
     // The entry esp-bootloader-esp-idf reaches in two writes, in one.
     assert_eq!(write.bytes(), SLOT_COUNT_2_NEW);
 
@@ -592,7 +592,7 @@ fn activation_writes_new_to_the_sector_that_isnt_active() {
     let otadata = pair(&entry(4, State::Valid), &entry(3, State::Valid));
     let write = otadata.plan_activate(Ota1).unwrap();
     assert_eq!(write.sector(), Sector::Second);
-    assert_eq!(*write.entry(), SelectEntry::new(5, State::New));
+    assert_eq!(write.entry(), SelectEntry::new(5, State::New));
 }
 
 #[test]
@@ -621,7 +621,7 @@ fn beginning_an_update_settles_both_entries_on_the_running_slot() {
     let otadata = read(OTADATA_FIRST_BOOT);
     let write = otadata.plan_begin_update(Ota0).unwrap().unwrap();
     assert_eq!(write.sector(), Sector::Second);
-    assert_eq!(*write.entry(), SelectEntry::new(3, State::Valid));
+    assert_eq!(write.entry(), SelectEntry::new(3, State::Valid));
     let mut flash = OTADATA_FIRST_BOOT.to_vec();
     apply(&mut flash, &write);
     assert_eq!(read(&flash[..]).plan_begin_update(Ota0), Ok(None));
@@ -630,18 +630,18 @@ fn beginning_an_update_settles_both_entries_on_the_running_slot() {
     let otadata = pair(&SLOT_COUNT_1_VALID, &entry(2, State::Valid));
     let write = otadata.plan_begin_update(Ota1).unwrap().unwrap();
     assert_eq!(write.sector(), Sector::First);
-    assert_eq!(*write.entry(), SelectEntry::new(4, State::Valid));
+    assert_eq!(write.entry(), SelectEntry::new(4, State::Valid));
 
     // An activation not yet booted is cancelled in place, then replaced.
     let mut flash = otadata_of(&SLOT_COUNT_1_VALID, &SLOT_COUNT_2_NEW);
     let first = read(&flash[..]).plan_begin_update(Ota0).unwrap().unwrap();
     assert_eq!(first.sector(), Sector::Second);
-    assert_eq!(*first.entry(), SelectEntry::new(2, State::Invalid));
+    assert_eq!(first.entry(), SelectEntry::new(2, State::Invalid));
     apply(&mut flash, &first);
     assert_eq!(read(&flash[..]).selected(), Some(Ota0));
     let second = read(&flash[..]).plan_begin_update(Ota0).unwrap().unwrap();
     assert_eq!(second.sector(), Sector::Second);
-    assert_eq!(*second.entry(), SelectEntry::new(3, State::Valid));
+    assert_eq!(second.entry(), SelectEntry::new(3, State::Valid));
     apply(&mut flash, &second);
     assert_eq!(read(&flash[..]).plan_begin_update(Ota0), Ok(None));
 
@@ -649,7 +649,7 @@ fn beginning_an_update_settles_both_entries_on_the_running_slot() {
     let none = pair(&entry(1, State::Aborted), &entry(2, State::Aborted));
     let write = none.plan_begin_update(Ota1).unwrap().unwrap();
     assert_eq!(write.sector(), Sector::First);
-    assert_eq!(*write.entry(), SelectEntry::new(2, State::Valid));
+    assert_eq!(write.entry(), SelectEntry::new(2, State::Valid));
 }
 
 #[test]
@@ -662,12 +662,12 @@ fn beginning_an_update_refuses_while_the_running_image_is_unconfirmed() {
     // A pending image the bootloader fell back from is cancelled.
     let write = pending.plan_begin_update(Ota0).unwrap().unwrap();
     assert_eq!(write.sector(), Sector::Second);
-    assert_eq!(*write.entry(), SelectEntry::new(2, State::Invalid));
+    assert_eq!(write.entry(), SelectEntry::new(2, State::Invalid));
     // Without an entry for the running slot, one is written beside it.
     let alone = pair(&ERASED, &entry(2, State::PendingVerify));
     let write = alone.plan_begin_update(Ota0).unwrap().unwrap();
     assert_eq!(write.sector(), Sector::First);
-    assert_eq!(*write.entry(), SelectEntry::new(3, State::Valid));
+    assert_eq!(write.entry(), SelectEntry::new(3, State::Valid));
 }
 
 #[test]
@@ -706,7 +706,7 @@ fn rolling_back_marks_the_running_image_invalid_in_place() {
     let otadata = pair(&SLOT_COUNT_1_VALID, &entry(2, State::PendingVerify));
     let write = otadata.plan_roll_back(Ota1).unwrap();
     assert_eq!(write.sector(), Sector::Second);
-    assert_eq!(*write.entry(), SelectEntry::new(2, State::Invalid));
+    assert_eq!(write.entry(), SelectEntry::new(2, State::Invalid));
     let mut flash = otadata_of(&SLOT_COUNT_1_VALID, &entry(2, State::PendingVerify));
     apply(&mut flash, &write);
     assert_eq!(read(&flash[..]).selected(), Some(Ota0));
@@ -847,18 +847,18 @@ fn fault_3_activation_writes_new_with_the_seq() {
     let write = read(&flash[..]).plan_activate(Ota0).unwrap();
     // One write holds sequence number, state and CRC.
     assert_eq!(write.entry().state, State::New);
-    // Every prefix of it is either not valid or the whole entry, so the
-    // bootloader never sees the new sequence number with another state.
-    for cut in 0..=ENTRY_LEN {
+    // Every cut of it leaves no valid entry, so the bootloader never sees
+    // the new sequence number with another state.
+    for cut in every_cut(&write).into_iter().map(Some).chain([None]) {
         let mut flash = flash.clone();
         apply_cut(&mut flash, &write, cut);
         let otadata = read(&flash[..]);
         match otadata.valid(Sector::Second) {
-            Some(entry) => assert_eq!((cut, entry), (ENTRY_LEN, *write.entry())),
-            None => assert!(cut < ENTRY_LEN),
+            Some(entry) => assert_eq!((cut, entry), (None, write.entry())),
+            None => assert!(cut.is_some()),
         }
         let booted = boot(&mut flash, [true, true]);
-        if cut < ENTRY_LEN {
+        if cut.is_some() {
             assert_eq!(booted, Some(Ota0));
         } else {
             assert_eq!(booted, Some(Ota1));
@@ -1041,12 +1041,12 @@ fn without_a_valid_entry_an_update_first_selects_the_running_slot() {
     let otadata = read(&flash[..]);
     assert_eq!(otadata.plan_activate(Ota1), Err(PlanError::NotSelected));
     let begin = otadata.plan_begin_update(Ota1).unwrap().unwrap();
-    assert_eq!(*begin.entry(), SelectEntry::new(2, State::Valid));
+    assert_eq!(begin.entry(), SelectEntry::new(2, State::Valid));
 
     // Cut short, the begin write leaves the bootloader trying ota_0 first, as
     // before it; ota_0 still holds the image it tried then.
     let mut cut = flash.clone();
-    apply_cut(&mut cut, &begin, 0);
+    apply_cut(&mut cut, &begin, Some(JUST_ERASED));
     assert_eq!(boot(&mut cut, [true, true]), Some(Ota0));
     let mut before = flash.clone();
     assert_eq!(boot(&mut before, [true, true]), Some(Ota0));
@@ -1056,10 +1056,10 @@ fn without_a_valid_entry_an_update_first_selects_the_running_slot() {
     assert_eq!(read(&flash[..]).plan_begin_update(Ota1), Ok(None));
     // While ota_0 is rewritten, nothing selects it, cut or not.
     let activation = read(&flash[..]).plan_activate(Ota1).unwrap();
-    for programmed in 0..ENTRY_LEN {
-        let mut cut = flash.clone();
-        apply_cut(&mut cut, &activation, programmed);
-        assert_eq!(boot(&mut cut, [true, true]), Some(Ota1));
+    for cut in every_cut(&activation) {
+        let mut torn = flash.clone();
+        apply_cut(&mut torn, &activation, Some(cut));
+        assert_eq!(boot(&mut torn, [true, true]), Some(Ota1), "{cut:?}");
     }
     apply(&mut flash, &activation);
     assert_eq!(boot(&mut flash, [true, true]), Some(Ota0));
@@ -1081,25 +1081,38 @@ fn boot_twice(flash: &[u8], loadable: [bool; 2]) -> ([Option<Slot>; 2], Vec<u8>)
     ([first, second], after_first)
 }
 
-/// Cuts `write` on `flash` after the erase and after every prefix of the
-/// entry, and boots each result twice. Each has to boot what `flash` would
-/// have, or what `flash` with the write would. A write over the active entry
-/// may also boot what its erased sector leaves, which is the other entry's
-/// slot when that is valid and loads: a rollback. Returns each cut's boots,
-/// with the otadata the first boot leaves.
-fn cuts(
-    flash: &[u8],
-    write: &Write,
-    loadable: [bool; 2],
-    case: &str,
-) -> Vec<([Option<Slot>; 2], Vec<u8>)> {
+/// What a cut write boots.
+struct CutBoots {
+    /// The cut, `None` for the whole write.
+    cut: Option<Cut>,
+    /// Whether it landed the whole entry.
+    whole: bool,
+    /// The slots the two boots start.
+    boots: [Option<Slot>; 2],
+    /// The otadata the first boot leaves.
+    left: Vec<u8>,
+}
+
+/// The cut that leaves the written sector erased.
+const JUST_ERASED: Cut = Cut {
+    done: 0,
+    tear: Tear::Prefix(0),
+};
+
+/// Cuts `write` on `flash` in each way [`every_cut`] gives, and boots each
+/// result twice, and the whole write too. Each has to boot what `flash`
+/// would have, or what `flash` with the write would. A write over the active
+/// entry may also boot what its erased sector leaves, which is the other
+/// entry's slot when that is valid and loads: a rollback. Returns what each
+/// cut and the whole write boot.
+fn cuts(flash: &[u8], write: &Write, loadable: [bool; 2], case: &str) -> Vec<CutBoots> {
     let in_place = read(flash).active() == Some(write.sector());
     let (before, _) = boot_twice(flash, loadable);
     let mut done = flash.to_vec();
     apply(&mut done, write);
     let (after, _) = boot_twice(&done, loadable);
     let mut erased = flash.to_vec();
-    apply_cut(&mut erased, write, 0);
+    apply_cut(&mut erased, write, Some(JUST_ERASED));
     let (erased_boots, _) = boot_twice(&erased, loadable);
 
     if in_place {
@@ -1109,22 +1122,28 @@ fn cuts(
         }
     }
 
-    (0..=ENTRY_LEN)
-        .map(|programmed| {
-            let mut cut = flash.to_vec();
-            apply_cut(&mut cut, write, programmed);
-            let (boots, left) = boot_twice(&cut, loadable);
-            assert!(
-                boots.iter().all(Option::is_some),
-                "{case}, {programmed} bytes"
-            );
+    every_cut(write)
+        .into_iter()
+        .map(Some)
+        .chain([None])
+        .map(|cut| {
+            let mut torn = flash.to_vec();
+            apply_cut(&mut torn, write, cut);
+            let whole = torn == done;
+            let (boots, left) = boot_twice(&torn, loadable);
+            assert!(boots.iter().all(Option::is_some), "{case}, {cut:?}");
             let allowed = boots == before || boots == after || (in_place && boots == erased_boots);
             assert!(
                 allowed,
-                "{case}, {programmed} bytes: booted {boots:?}, before {before:?}, \
+                "{case}, {cut:?}: booted {boots:?}, before {before:?}, \
                  after {after:?}, erased {erased_boots:?}"
             );
-            (boots, left)
+            CutBoots {
+                cut,
+                whole,
+                boots,
+                left,
+            }
         })
         .collect()
 }
@@ -1244,14 +1263,20 @@ fn a_cut_activation_never_boots_the_new_image_without_rollback() {
             let mut loadable = loadable;
             loadable[running.other().number() as usize] = new_image;
             let boots = cuts(&flash, &write, loadable, &case);
-            for (programmed, ([booted, _], left)) in boots.into_iter().enumerate() {
+            for CutBoots {
+                cut,
+                whole,
+                boots: [booted, _],
+                left,
+            } in boots
+            {
                 if booted == Some(running.other()) {
                     // Only the whole entry starts it, and only once.
-                    assert_eq!(programmed, ENTRY_LEN, "{case}");
+                    assert!(whole, "{case}, {cut:?}");
                     let state = read(&left[..]).boot_state(running.other()).state;
                     assert_eq!(state, Some(State::PendingVerify), "{case}");
                 } else {
-                    assert_eq!(booted, Some(running), "{case}, {programmed}");
+                    assert_eq!(booted, Some(running), "{case}, {cut:?}");
                 }
             }
         }
@@ -1284,59 +1309,157 @@ fn a_cut_roll_back_boots_the_target_or_the_running_image() {
             continue;
         };
         planned += 1;
-        let boots = cuts(&flash, &write, loadable, &case);
-        let seq = write.entry().seq;
-        for (programmed, ([booted, _], _)) in boots.into_iter().enumerate() {
-            // The target, unless a torn state leaves a seq-0 entry valid.
-            if booted != Some(running.other()) {
-                assert_eq!(booted, Some(running), "{case}, {programmed}");
-                assert_eq!(seq, 0, "{case}, {programmed}");
-                assert!(programmed < ENTRY_LEN, "{case}");
-            }
+        // The erase alone already leaves the target selected, whatever the
+        // sequence number.
+        for CutBoots {
+            cut,
+            boots: [booted, _],
+            ..
+        } in cuts(&flash, &write, loadable, &case)
+        {
+            assert_eq!(booted, Some(running.other()), "{case}, {cut:?}");
         }
     }
     assert!(planned > 100, "{planned}");
 }
 
 #[test]
-fn an_entry_cut_short_is_valid_only_whole_or_with_seq_0() {
+fn an_entry_cut_anywhere_is_valid_only_whole() {
     let mut rng = Rng::new(0xC07);
-    let seqs = [1, 2, 3, 0x8000_0000, BLANK_SEQ - 1]
+    let seqs = [0, 1, 2, 3, 0x8000_0000, BLANK_SEQ - 1]
         .into_iter()
-        .chain((0..200).map(|_| rng.next_u32() | 1));
-    for seq in seqs {
+        .chain((0..60).map(|_| rng.next_u32()));
+    let mut cuts = 0;
+    for seq in seqs.filter(|&seq| seq != BLANK_SEQ) {
         for state in [
             State::New,
             State::Valid,
             State::Invalid,
             State::PendingVerify,
         ] {
-            let write = Write {
-                sector: Sector::First,
-                entry: SelectEntry::new(seq, state),
-            };
-            for programmed in 0..ENTRY_LEN {
+            let write = Write::new(Sector::First, SelectEntry::new(seq, state));
+            for cut in every_cut(&write) {
                 let mut flash = vec![0xFF; OTADATA_LEN];
-                apply_cut(&mut flash, &write, programmed);
+                apply_cut(&mut flash, &write, Some(cut));
                 let entry = read(&flash[..]).entry(Sector::First).unwrap();
-                let whole = SelectEntry::from_bytes(&write.bytes()) == entry;
+                // A cut can land all of a program whose last bytes are 0xFF.
                 assert!(
-                    !entry.is_valid() || whole,
-                    "{seq:#x} {state:?} {programmed}"
+                    !entry.is_valid() || entry == write.entry(),
+                    "{seq:#x} {state:?} {cut:?}: {entry:?}"
                 );
+                cuts += 1;
             }
         }
     }
-    // Sequence number 0 is valid with any state cut short.
-    let write = Write {
-        sector: Sector::First,
-        entry: SelectEntry::new(0, State::Invalid),
+    assert!(cuts > 20_000, "{cuts}");
+}
+
+#[test]
+fn a_torn_sequence_number_never_matches_the_crc_stored() {
+    // Every sequence number with one bit fewer cleared than planned, the
+    // tear closest to whole, for a sample of planned ones.
+    let mut rng = Rng::new(0x5E9);
+    for seq in [0, 1, 2, 4, 0xFFFF_FFFE]
+        .into_iter()
+        .chain((0..2000).map(|_| rng.next_u32()))
+    {
+        for bit in (0..32).filter(|bit| seq & (1 << bit) == 0) {
+            assert_ne!(crc(seq | 1 << bit), crc(seq), "{seq:#x} bit {bit}");
+        }
+    }
+}
+
+#[test]
+fn the_crc_is_one_to_one() {
+    // `!crc` is linear over GF(2): the CRC is one to one when the images of
+    // the 32 unit vectors are independent.
+    assert_eq!(!crc(0), 0);
+    let mut rows: Vec<u32> = (0..32).map(|bit| !crc(1 << bit)).collect();
+    for (a, b) in [(0x1234_5678_u32, 0x0F0F_00FF_u32), (u32::MAX, 7)] {
+        assert_eq!(!crc(a ^ b), !crc(a) ^ !crc(b));
+    }
+    let mut rank = 0;
+    for bit in (0..32).rev() {
+        let Some(pivot) = (rank..32).find(|&row| rows[row] & (1 << bit) != 0) else {
+            continue;
+        };
+        rows.swap(rank, pivot);
+        let pivot = rows[rank];
+        for row in rows.iter_mut().skip(rank + 1) {
+            if *row & (1 << bit) != 0 {
+                *row ^= pivot;
+            }
+        }
+        rank += 1;
+    }
+    assert_eq!(rank, 32);
+}
+
+#[test]
+fn one_program_of_the_whole_entry_can_tear_into_an_activation_without_rollback() {
+    // The activation of ota_1 after the first boot.
+    let start = OTADATA_FIRST_BOOT.to_vec();
+    let write = read(&start[..]).plan_activate(Ota0).unwrap();
+    let at = write.offset() as usize;
+    let bytes = write.bytes();
+    let clears: usize = bytes.iter().map(|b| b.count_zeros() as usize).sum();
+
+    // Programmed in one go, as ESP-IDF does, every bit landing but one.
+    let mut unarmed = Vec::new();
+    for kept in 0..clears {
+        let mut flash = start.clone();
+        flash[at..at + SECTOR_SIZE as usize].fill(0xFF);
+        Tear::AllBut(kept).land(&mut flash[at..at + ENTRY_LEN], &bytes);
+        if boot(&mut flash, [true, true]) == Some(Ota1) {
+            let state = read(&flash[..]).boot_state(Ota1).state;
+            if state != Some(State::PendingVerify) {
+                unarmed.push(state);
+            }
+        }
+    }
+    // The state's bits but one: Valid, or an unknown state, which ESP-IDF
+    // boots without ever arming a rollback.
+    assert!(unarmed.contains(&Some(State::Valid)), "{unarmed:?}");
+    assert!(unarmed.len() > 20, "{unarmed:?}");
+
+    // In its three programs, no cut starts it.
+    for cut in every_cut(&write) {
+        let mut flash = start.clone();
+        apply_cut(&mut flash, &write, Some(cut));
+        assert_eq!(boot(&mut flash, [true, true]), Some(Ota0), "{cut:?}");
+    }
+}
+
+#[test]
+fn the_tears_land_part_of_a_program() {
+    let new = [0x00, 0x0F, 0xFF, 0x12];
+    let clears: u32 = new.iter().map(|b: &u8| b.count_zeros()).sum();
+    let landed = |tear: Tear| {
+        let mut old = [0xFF; 4];
+        tear.land(&mut old, &new);
+        // Only bits the program clears, and never all of them.
+        for (old, new) in old.iter().zip(&new) {
+            assert_eq!(old & new, *new, "{tear:?}");
+        }
+        old.iter().map(|b| b.count_zeros()).sum::<u32>()
     };
-    let mut flash = vec![0xFF; OTADATA_LEN];
-    apply_cut(&mut flash, &write, 25);
-    let entry = read(&flash[..]).entry(Sector::First).unwrap();
-    assert_eq!(entry.state, State::Unknown(0xFFFF_FF03));
-    assert!(entry.is_valid());
+    assert_eq!(landed(Tear::Prefix(0)), 0);
+    assert_eq!(landed(Tear::Prefix(2)), 12);
+    for n in 0..40 {
+        assert_eq!(landed(Tear::AllBut(n)), clears - 1);
+    }
+    let mut counts = Vec::new();
+    for seed in 0..60 {
+        let count = landed(Tear::Bits(seed));
+        assert!(count < clears, "{seed}");
+        counts.push(count);
+    }
+    assert!(counts.iter().any(|&count| count < clears / 2));
+    assert!(counts.iter().any(|&count| count == clears - 1));
+    // Programming over cleared bits lands nothing more.
+    let mut old = [0x00; 4];
+    Tear::Bits(1).land(&mut old, &new);
+    assert_eq!(old, [0; 4]);
 }
 
 // A long run of random operations.
@@ -1400,9 +1523,9 @@ impl Board {
         self.log
             .push(format!("  write {:?} {:?}", write.sector(), write.entry()));
         if self.rng.below(5) == 0 {
-            let programmed = self.rng.below(ENTRY_LEN);
-            self.log.push(format!("  cut after {programmed} bytes"));
-            apply_cut(&mut self.flash, write, programmed);
+            let cut = random_cut(&mut self.rng, write);
+            self.log.push(format!("  cut {cut:?}"));
+            apply_cut(&mut self.flash, write, Some(cut));
             self.stats.cuts += 1;
             self.reboot();
             false

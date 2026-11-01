@@ -11,8 +11,8 @@ use crate::layout::{OTA_0, OTA_1, OTADATA, TABLE_OFFSET};
 use crate::otadata::{Otadata, Sector, State};
 use crate::test_support::{
     APP, BOOTLOADER, FLASH_LEN, ImageBuilder, OTADATA_AT, OTADATA_FIRST_BOOT, OTADATA_LEN, Op,
-    RamFlash, Rng, TABLE, app_descriptor_bytes, block_on, boot_flash, data, idf_loads, lend, run,
-    segment_at,
+    RamFlash, Rng, TABLE, Tear, app_descriptor_bytes, block_on, boot_flash, data, idf_loads, lend,
+    run, segment_at,
 };
 use crate::{DeviceError, Entry, Flash, ReadError, Tier, split};
 
@@ -233,6 +233,17 @@ fn confined(flash: &RamFlash, from: usize, running: Slot) {
             "{op:?} while running from {running:?}"
         );
     }
+}
+
+/// The operations of one otadata write to the sector at `at`: the erase,
+/// then the label and state, the CRC and the sequence number.
+fn entry_ops(at: u32) -> [Op; 4] {
+    [
+        Op::Erase(at),
+        Op::Program(at + 4, 24),
+        Op::Program(at + 28, 4),
+        Op::Program(at, 4),
+    ]
 }
 
 // A whole update.
@@ -858,13 +869,13 @@ fn an_image_is_activated_once() {
     let entry = otadata.active_entry().unwrap();
     assert_eq!((entry.slot(), entry.state), (Ota1, State::New));
     let at = OTADATA_AT + inactive.offset();
-    assert_eq!(flash.ops()[ops..], [Op::Erase(at), Op::Program(at, 32)]);
+    assert_eq!(flash.ops()[ops..], entry_ops(at));
     // Selecting it again isn't selecting the running slot's image away.
     assert_eq!(
         run(ota.activate(again)),
         Err(OtaError::Plan(PlanError::NotSelected))
     );
-    assert_eq!(flash.ops().len(), ops + 2);
+    assert_eq!(flash.ops().len(), ops + 4);
 }
 
 #[test]
@@ -918,12 +929,11 @@ fn beginning_an_update_cancels_an_activation_not_yet_booted() {
     assert_eq!(
         flash.ops()[ops..],
         [
-            Op::Erase(at),
-            Op::Program(at, 32),
-            Op::Erase(at),
-            Op::Program(at, 32),
-            Op::Erase(OTA_1.offset),
+            &entry_ops(at)[..],
+            &entry_ops(at),
+            &[Op::Erase(OTA_1.offset)]
         ]
+        .concat()
     );
     let otadata = otadata_of(&flash);
     for sector in Sector::ALL {
@@ -1082,10 +1092,10 @@ fn marking_valid_confirms_the_running_image_once() {
     run(ota.mark_valid()).unwrap();
     // The active entry, rewritten in place.
     let at = OTADATA_AT + active.offset();
-    assert_eq!(flash.ops()[ops..], [Op::Erase(at), Op::Program(at, 32)]);
+    assert_eq!(flash.ops()[ops..], entry_ops(at));
     assert_eq!(otadata_of(&flash).active(), Some(active));
     run(ota.mark_valid()).unwrap();
-    assert_eq!(flash.ops().len(), ops + 2);
+    assert_eq!(flash.ops().len(), ops + 4);
     assert_eq!(reboot(&flash), Ota1);
     assert_eq!(state_of(&flash, Ota1).state, Some(State::Valid));
 }
@@ -1154,7 +1164,7 @@ fn rolling_back_starts_the_other_slot_at_the_next_boot() {
         let active = otadata_of(&flash).active().unwrap();
         run(ota.roll_back()).unwrap();
         let at = OTADATA_AT + active.offset();
-        assert_eq!(flash.ops()[ops..], [Op::Erase(at), Op::Program(at, 32)]);
+        assert_eq!(flash.ops()[ops..], entry_ops(at));
         assert_eq!(
             otadata_of(&flash).entry(active).unwrap().state,
             State::Invalid
@@ -1307,10 +1317,10 @@ fn long_operations_yield_to_the_executor() {
     assert_eq!(verifying, new.len() / 4096);
 
     let image = run(async {
-        // One otadata write, an erase and a program, and the slot's first
-        // sector.
+        // One otadata write, an erase and three programs, and the slot's
+        // first sector.
         let begin = block_on(ota.begin_update());
-        assert_eq!(begin.wakes, 3);
+        assert_eq!(begin.wakes, 5);
         let mut update = begin.output.unwrap();
         // 16 sectors: 15 erased, as the first is, and 16 programmed.
         assert_eq!(block_on(update.write(&new[..0x1_0000])).wakes, 31);
@@ -1329,34 +1339,42 @@ fn long_operations_yield_to_the_executor() {
     // Hashed again, then one otadata write.
     let activate = block_on(ota.activate(image));
     assert_eq!(activate.output, Ok(()));
-    assert_eq!(activate.wakes, verifying + 2);
+    assert_eq!(activate.wakes, verifying + 4);
     assert_eq!(block_on(ota.verify_other()).wakes, verifying);
 
     assert_eq!(reboot(&flash), Ota1);
     let mut ota = ota_on(&flash, Ota1);
-    assert_eq!(block_on(ota.mark_valid()).wakes, 2);
+    assert_eq!(block_on(ota.mark_valid()).wakes, 4);
     let verifying = block_on(image::verify_app(APP)).wakes;
     let roll_back = block_on(ota.roll_back());
     assert_eq!(roll_back.output, Ok(()));
-    assert_eq!(roll_back.wakes, verifying + 2);
+    assert_eq!(roll_back.wakes, verifying + 4);
 }
 
 // Power cuts.
 
-/// The ways a cut leaves an erase or program: how many of a program's leading
-/// bytes still land. Every prefix of an otadata entry, a few of a slot's
-/// program; an erase lands whole or not at all.
-fn tears(op: Op) -> Vec<usize> {
+/// The ways a cut leaves an erase or program. An otadata program: every
+/// prefix (every word of the label and state), a few bits short of whole and
+/// random subsets of its bits. A slot's program: nothing, half, one bit short
+/// and a random subset. An erase lands whole or not at all.
+fn tears(op: Op) -> Vec<Tear> {
+    let bits = |seeds: u64| (0..seeds).map(|seed| Tear::Bits(0xB175 + seed));
     match op {
-        Op::Erase(_) => vec![0],
-        Op::Program(address, len) if address < OTA_0.offset => (0..len as usize).collect(),
-        Op::Program(_, len) => {
-            let len = len as usize;
-            let mut tears = vec![0, 4, len / 2 / 4 * 4, len - 4];
-            tears.retain(|&torn| torn < len);
-            tears.dedup();
-            tears
+        Op::Erase(_) => vec![Tear::Prefix(0)],
+        Op::Program(address, len) if address < OTA_0.offset => {
+            let step = if len > 4 { 4 } else { 1 };
+            (0..len as usize)
+                .step_by(step)
+                .map(Tear::Prefix)
+                .chain([0, 7, 30].map(Tear::AllBut))
+                .chain(bits(6))
+                .collect()
         }
+        Op::Program(_, len) => [Tear::Prefix(0), Tear::Prefix(len as usize / 2 / 4 * 4)]
+            .into_iter()
+            .chain([Tear::AllBut(0)])
+            .chain(bits(1))
+            .collect(),
     }
 }
 
@@ -1376,10 +1394,10 @@ fn sweep(
     check(&whole, "whole");
     let mut cuts = 0;
     for (index, op) in ops.into_iter().enumerate() {
-        for torn in tears(op) {
+        for tear in tears(op) {
             let flash = RamFlash::new(start.to_vec());
-            flash.cut_after(index, torn);
-            let case = format!("cut at {index}, {op:?}, {torn} bytes landing");
+            flash.cut_after(index, tear);
+            let case = format!("cut at {index}, {op:?}, {tear:?}");
             assert_eq!(
                 flow(&mut ota_on(&flash, running)),
                 Err(OtaError::Access(AccessError::Device)),
@@ -1568,9 +1586,9 @@ fn a_cut_confirmation_boots_the_new_image_confirmed_or_the_old_one() {
             recovers(flash, first, &next, case);
         },
     );
-    assert_eq!(cuts, 33);
+    assert!(cuts > 30, "{cuts}");
     // Only the whole entry confirms.
-    assert_eq!(outcomes, [33, 1]);
+    assert_eq!(outcomes, [cuts, 1]);
 }
 
 #[test]
@@ -1595,9 +1613,9 @@ fn a_cut_roll_back_boots_one_of_the_two_images() {
             recovers(flash, first, &next, case);
         },
     );
-    assert_eq!(cuts, 33);
+    assert!(cuts > 30, "{cuts}");
     // The erase alone already rolls back; only a cut before it doesn't.
-    assert_eq!(outcomes, [33, 1]);
+    assert_eq!(outcomes, [cuts, 1]);
 }
 
 // A long run of random operations.
@@ -1682,8 +1700,12 @@ impl<'a> Board<'a> {
     fn maybe_cut(&mut self) {
         if self.rng.below(4) == 0 {
             let at = self.rng.below(24);
-            let torn = self.rng.below(32);
-            self.flash.cut_after(at, torn);
+            let tear = match self.rng.below(3) {
+                0 => Tear::Prefix(self.rng.below(32)),
+                1 => Tear::Bits(self.rng.next_u64()),
+                _ => Tear::AllBut(self.rng.below(256)),
+            };
+            self.flash.cut_after(at, tear);
         }
     }
 
