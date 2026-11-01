@@ -121,10 +121,6 @@ impl<T: WatchdogType> WatchdogHandle<T> {
 
     /// Stops the deadline until the next [`feed`](Self::feed), while the task
     /// waits for an outside event.
-    #[expect(
-        dead_code,
-        reason = "no supervised task waits for an outside event yet"
-    )]
     pub(crate) fn pause(&self) {
         self.mailbox.signal(Message::Pause);
     }
