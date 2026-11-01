@@ -8,15 +8,17 @@
     {
       # Every repository check, with a combined result, so the Git hooks and CI
       # share one entry point. Arguments select check groups: `lint` (rustfmt
-      # and clippy, and the web UI's lint and type check), `build` (a release
-      # build, which also links, with the web UI bundled) and `test` (the tests
-      # of the crates that also build on the host, and the web UI's). With no
-      # arguments, every group runs. `lint` and `test` are each two finer
-      # groups, `rust-lint` and `web-lint`, `rust-test` and `web-test`, which
-      # CI runs as separate jobs.
+      # and clippy, that the generated storage layout is current, and the web
+      # UI's lint and type check), `build` (a release build, which also links,
+      # with the web UI bundled, and the partition table ESP-IDF builds checked
+      # against the storage layout) and `test` (the tests of the crates that
+      # also build on the host, and the web UI's). With no arguments, every
+      # group runs. `lint` and `test` are each two finer groups, `rust-lint`
+      # and `web-lint`, `rust-test` and `web-test`, which CI runs as separate
+      # jobs.
       packages.checks = pkgs.writeShellApplication {
         name = "eveningstar-checks";
-        runtimeInputs = [ toolchain pkgs.stdenv.cc ];
+        runtimeInputs = [ toolchain pkgs.stdenv.cc pkgs.diffutils pkgs.jq ];
         text = ''
           status=0
 
@@ -36,6 +38,33 @@
             fi
           }
 
+          # The storage crate's layout module is generated from nix/board.nix, and
+          # the committed file has to equal what the board generates.
+          # shellcheck disable=SC2329 # run through run_check
+          check_storage_layout() {
+            local generated
+            generated="$(nix build --no-link --print-out-paths .#storage-layout)" || return 1
+            diff -u crates/eveningstar-storage/src/layout.rs "$generated" || {
+              echo "crates/eveningstar-storage/src/layout.rs does not match nix/board.nix: run storage-layout" >&2
+              return 1
+            }
+          }
+
+          # The table ESP-IDF builds from nix/board.nix has to resolve to the
+          # partitions, offsets, sizes, types, subtypes and flags that the
+          # generated layout lists, in the same order.
+          # shellcheck disable=SC2329 # run through run_check
+          check_partition_table() {
+            local table expected
+            table="$(nix build --no-link --print-out-paths .#partition-table)" || return 1
+            expected="$(nix build --no-link --print-out-paths .#storage-layout-table)" || return 1
+            diff -u <(jq -S . "$expected") \
+              <(jq -S '[to_entries[] | {name: .key} + .value]' "$table/partitions.json") || {
+              echo "the partition table ESP-IDF builds differs from the storage layout" >&2
+              return 1
+            }
+          }
+
           # A separate target directory, so these checks and builds with another
           # cargo don't keep invalidating each other's artifacts.
           export CARGO_TARGET_DIR="''${CARGO_TARGET_DIR:-target/checks}"
@@ -48,7 +77,7 @@
           # The crates that also build on the host, and the host's target.
           # Their features stay out of the firmware's lint, as `--all-features`
           # would otherwise enable them in the firmware's dependency on them.
-          host_crates=(eveningstar-api)
+          host_crates=(eveningstar-api eveningstar-storage)
           host_target="$(rustc --print host-tuple)"
 
           expanded=()
@@ -64,6 +93,7 @@
             case "$group" in
               rust-lint)
                 run_check "rustfmt" cargo fmt --all -- --check
+                run_check "storage layout" check_storage_layout
                 run_check "clippy" cargo clippy --all-features --workspace \
                   "''${host_crates[@]/#/--exclude=}" -- -D warnings
                 run_check "clippy (host crates, chip target)" cargo clippy --all-features \
@@ -86,6 +116,7 @@
                   echo "::error::web UI bundle failed"
                   status=1
                 fi
+                run_check "partition table" check_partition_table
                 ;;
               rust-test)
                 run_check "host tests" cargo test --all-features \

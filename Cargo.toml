@@ -11,8 +11,9 @@ publish      = false
 
 [workspace.dependencies]
 # Workspace crates.
-eveningstar-api   = { path = "crates/eveningstar-api" }
-eveningstar-board = { path = "crates/eveningstar-board" }
+eveningstar-api     = { path = "crates/eveningstar-api" }
+eveningstar-board   = { path = "crates/eveningstar-board" }
+eveningstar-storage = { path = "crates/eveningstar-storage" }
 
 # Chip and logging features are project-wide, so they are set once here.
 defmt                  = "1.0.1"
