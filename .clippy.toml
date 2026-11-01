@@ -4,8 +4,11 @@ stack-size-threshold = 1024
 doc-valid-idents = ["OpenAPI", ".."]
 
 # Resetting the chip is reserved for the reboot service, the task watchdog
-# supervisor and the panic handler, which each expect this lint.
+# supervisor and the panic handler, which each expect this lint. The internal
+# flash is reached only through `eveningstar::storage`, which expects it at its
+# one `FlashStorage::new`.
 disallowed-methods = [
     { path = "esp_hal::system::software_reset", reason = "reboots go through the reboot service" },
     { path = "esp_hal::system::software_reset_cpu", reason = "reboots go through the reboot service" },
+    { path = "esp_storage::FlashStorage::new", reason = "the internal flash is reached through the storage handles" },
 ]

@@ -23,9 +23,11 @@ embassy-net-wiznet.workspace = true
 embedded-hal-async.workspace = true
 eveningstar-api.workspace = true
 eveningstar-board = { workspace = true, features = ["v2"] }
+eveningstar-storage.workspace = true
 esp-bootloader-esp-idf.workspace = true
 esp-hal.workspace = true
 esp-rtos.workspace = true
+esp-storage.workspace = true
 heapless.workspace = true
 picoserve.workspace = true
 rtt-target.workspace = true
