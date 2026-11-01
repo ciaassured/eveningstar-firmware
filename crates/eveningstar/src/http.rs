@@ -7,6 +7,7 @@
 //! [`ui`] serves the web UI at `/`.
 
 mod api;
+mod storage;
 mod system;
 mod ui;
 
@@ -20,6 +21,7 @@ use picoserve::{Router, Timeouts};
 use static_cell::ConstStaticCell;
 
 use crate::services::reboot::Reboot;
+use crate::services::storage::StorageView;
 use crate::services::system::System;
 
 const PORT: u16 = 80;
@@ -54,6 +56,7 @@ struct Buffers {
 pub(crate) struct AppState {
     pub(crate) system: &'static System,
     pub(crate) reboot: Reboot,
+    pub(crate) storage: StorageView,
 }
 
 impl FromRef<AppState> for &'static System {
@@ -65,6 +68,12 @@ impl FromRef<AppState> for &'static System {
 impl FromRef<AppState> for Reboot {
     fn from_ref(state: &AppState) -> Self {
         state.reboot
+    }
+}
+
+impl FromRef<AppState> for StorageView {
+    fn from_ref(state: &AppState) -> Self {
+        state.storage
     }
 }
 

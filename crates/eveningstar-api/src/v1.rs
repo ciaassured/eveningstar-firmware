@@ -159,6 +159,11 @@ operations!(
     GetSystem,
     GetRebootStatus,
     Reboot,
+    GetStorage,
+    GetInternalFlash,
+    GetRegions,
+    GetPartitionTable,
+    GetRegionContent,
     #[cfg(test)]
     GetTestContent,
 );
@@ -507,6 +512,59 @@ mod tests {
     }
 
     #[test]
+    fn finds_the_storage_operations() {
+        assert_eq!(
+            Operation::find("GET", "/storage"),
+            Ok(Call::GetStorage(GetStorage, ()))
+        );
+        assert_eq!(
+            Operation::find("GET", "/storage/internal"),
+            Ok(Call::GetInternalFlash(GetInternalFlash, ()))
+        );
+        assert_eq!(
+            Operation::find("GET", "/storage/internal/regions"),
+            Ok(Call::GetRegions(GetRegions, ()))
+        );
+        assert_eq!(
+            Operation::find("GET", "/storage/internal/table"),
+            Ok(Call::GetPartitionTable(GetPartitionTable, ()))
+        );
+        assert_eq!(
+            Operation::find("GET", "/storage/internal/regions/app_current/content"),
+            Ok(Call::GetRegionContent(GetRegionContent, Region::AppCurrent))
+        );
+        assert_eq!(
+            Operation::find("GET", "/storage/internal/regions/config_alternate/content"),
+            Ok(Call::GetRegionContent(
+                GetRegionContent,
+                Region::ConfigAlternate
+            ))
+        );
+        assert_eq!(
+            Operation::find("POST", "/storage/internal/regions/app_current/content"),
+            Err(RouteError::MethodNotAllowed)
+        );
+        assert_eq!(
+            Operation::find("POST", "/storage"),
+            Err(RouteError::MethodNotAllowed)
+        );
+        for path in [
+            "/storage/internal/regions/unknown/content",
+            "/storage/internal/regions/ota_0/content",
+            "/storage/internal/regions/app_current",
+            "/storage/internal/regions/app_current/content/",
+            "/storage/external",
+            "/storage/internal/table/entries",
+        ] {
+            assert_eq!(
+                Operation::find("GET", path),
+                Err(RouteError::NotFound),
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
     fn parameters_that_do_not_parse_are_not_found() {
         for path in [
             "/test/third/content",
@@ -583,6 +641,11 @@ mod tests {
                 ("GetSystem", Scope::Read),
                 ("GetRebootStatus", Scope::Read),
                 ("Reboot", Scope::Operate),
+                ("GetStorage", Scope::Read),
+                ("GetInternalFlash", Scope::Read),
+                ("GetRegions", Scope::Read),
+                ("GetPartitionTable", Scope::Read),
+                ("GetRegionContent", Scope::Read),
                 ("GetTestContent", Scope::Read),
             ]
         );

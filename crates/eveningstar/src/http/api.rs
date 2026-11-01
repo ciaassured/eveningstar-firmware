@@ -8,8 +8,11 @@
 
 use core::convert::Infallible;
 use core::fmt;
+use core::ops::{Deref, DerefMut};
 
 use defmt::warn;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::mutex::{Mutex, MutexGuard};
 use eveningstar_api::v1::{self, Call, Endpoint, Errors, Operation};
 use picoserve::ResponseSent;
 use picoserve::extract::{FromRef, FromRequest, JsonRejection};
@@ -23,7 +26,7 @@ use picoserve::routing::{MethodHandlerService, PathRouterService};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use super::{AppState, TCP_BUFFER_LEN, system};
+use super::{AppState, TCP_BUFFER_LEN, storage, system};
 
 /// The headers of every answer the API gives, including its errors. The answers
 /// are data: the browser mustn't read them as anything else, keep them, let
@@ -90,6 +93,11 @@ impl MethodHandlerService<AppState> for Api {
 
 /// Serves a request with `path`, relative to [`v1::PATH`], with its
 /// operation's handler.
+///
+/// The operations are served in groups, each by a function of its own, as
+/// every arm of a `match` adds the request and the writer to the frame
+/// again. Each group's `match` names the other groups' operations too, so
+/// an operation added to the table without a handler fails to build.
 async fn dispatch<R: Read, W: ResponseWriter<Error = R::Error>>(
     state: &AppState,
     path: &str,
@@ -97,28 +105,105 @@ async fn dispatch<R: Read, W: ResponseWriter<Error = R::Error>>(
     writer: W,
 ) -> Result<ResponseSent, W::Error> {
     match Operation::find(request.parts.method(), path) {
-        Ok(Call::GetSystem(endpoint, params)) => {
+        Ok(call @ (Call::GetSystem(..) | Call::GetRebootStatus(..) | Call::Reboot(..))) => {
+            dispatch_system(call, state, request, writer).await
+        }
+        Ok(
+            call @ (Call::GetStorage(..)
+            | Call::GetInternalFlash(..)
+            | Call::GetRegions(..)
+            | Call::GetPartitionTable(..)
+            | Call::GetRegionContent(..)),
+        ) => dispatch_storage(call, state, request, writer).await,
+        Err(error) => {
+            let connection = request.body_connection.finalize().await?;
+            write_error(error.code(), connection, writer).await
+        }
+    }
+}
+
+/// Serves a call of the `/system` operations.
+async fn dispatch_system<R: Read, W: ResponseWriter<Error = R::Error>>(
+    call: Call,
+    state: &AppState,
+    request: Request<'_, R>,
+    writer: W,
+) -> Result<ResponseSent, W::Error> {
+    match call {
+        Call::GetSystem(endpoint, params) => {
             serve(endpoint, params, state, request, writer, system::get_system).await
         }
-        Ok(Call::GetRebootStatus(endpoint, params)) => {
+        Call::GetRebootStatus(endpoint, params) => {
             serve(endpoint, params, state, request, writer, system::get_reboot).await
         }
-        Ok(Call::Reboot(endpoint, params)) => {
+        Call::Reboot(endpoint, params) => {
+            let handler = system::post_reboot;
+            serve(endpoint, params, state, request, writer, handler).await
+        }
+        Call::GetStorage(..)
+        | Call::GetInternalFlash(..)
+        | Call::GetRegions(..)
+        | Call::GetPartitionTable(..)
+        | Call::GetRegionContent(..) => misrouted(request, writer).await,
+    }
+}
+
+/// Serves a call of the `/storage` operations.
+async fn dispatch_storage<R: Read, W: ResponseWriter<Error = R::Error>>(
+    call: Call,
+    state: &AppState,
+    request: Request<'_, R>,
+    writer: W,
+) -> Result<ResponseSent, W::Error> {
+    match call {
+        Call::GetStorage(endpoint, params) => {
             serve(
                 endpoint,
                 params,
                 state,
                 request,
                 writer,
-                system::post_reboot,
+                storage::get_storage,
             )
             .await
         }
-        Err(error) => {
-            let connection = request.body_connection.finalize().await?;
-            write_error(error.code(), connection, writer).await
+        Call::GetInternalFlash(endpoint, params) => {
+            let handler = storage::get_internal_flash;
+            serve(endpoint, params, state, request, writer, handler).await
+        }
+        Call::GetRegions(endpoint, params) => {
+            serve(
+                endpoint,
+                params,
+                state,
+                request,
+                writer,
+                storage::get_regions,
+            )
+            .await
+        }
+        Call::GetPartitionTable(endpoint, params) => {
+            let handler = storage::get_partition_table;
+            serve(endpoint, params, state, request, writer, handler).await
+        }
+        Call::GetRegionContent(endpoint, params) => {
+            let handler = storage::get_region_content;
+            serve(endpoint, params, state, request, writer, handler).await
+        }
+        Call::GetSystem(..) | Call::GetRebootStatus(..) | Call::Reboot(..) => {
+            misrouted(request, writer).await
         }
     }
+}
+
+/// Answers a call handed to another group's function, which [`dispatch`]
+/// never does, as not found.
+async fn misrouted<R: Read, W: ResponseWriter<Error = R::Error>>(
+    request: Request<'_, R>,
+    writer: W,
+) -> Result<ResponseSent, W::Error> {
+    let connection = request.body_connection.finalize().await?;
+    write_error(v1::RouteError::NotFound.code(), connection, writer).await
 }
 
 /// Serves a request for `E` whose path holds `params`: reads its body, passes
@@ -174,8 +259,8 @@ pub(super) async fn write_error<R: Read, W: ResponseWriter<Error = R::Error>>(
 
 /// Seconds a client is told to wait, in `Retry-After`, before asking again
 /// after [`v1::ErrorCode::Busy`]. The device serves one download at a time,
-/// and a whole app slot takes several seconds on a local network, so asking
-/// sooner mostly finds it still busy.
+/// and the largest, a whole app slot, is 3 MiB, so asking much sooner mostly
+/// finds it still busy.
 const BUSY_RETRY_AFTER_S: &str = "5";
 
 /// A response with `code`. One with [`v1::ErrorCode::Busy`] says when to ask
@@ -283,6 +368,55 @@ impl<T: Serialize> WriteBody<T> for v1::Json<T> {
             .with_headers(HEADERS)
             .with_headers(closes.then_some(("Connection", "close")));
         writer.write_response(connection, response).await
+    }
+}
+
+/// A JSON body kept in a static, for a response too large for a stack frame:
+/// a handler builds it in place and the response serialises it by
+/// reference. One request at a time holds it, from building it until its
+/// response is written; another waits.
+pub(super) struct Shared<T: 'static>(Mutex<CriticalSectionRawMutex, T>);
+
+impl<T> Shared<T> {
+    /// A body holding `value` until a handler builds it.
+    pub(super) const fn new(value: T) -> Self {
+        Self(Mutex::new(value))
+    }
+
+    /// Waits for the body to be free, and holds it.
+    pub(super) async fn lock(&'static self) -> SharedBody<T> {
+        SharedBody(self.0.lock().await)
+    }
+}
+
+/// A [`Shared`] body, held until dropped.
+pub(super) struct SharedBody<T: 'static>(MutexGuard<'static, CriticalSectionRawMutex, T>);
+
+impl<T> Deref for SharedBody<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T> DerefMut for SharedBody<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.0
+    }
+}
+
+impl<T: Serialize> WriteBody<SharedBody<T>> for v1::Json<T> {
+    async fn write<R: Read, W: ResponseWriter<Error = R::Error>>(
+        value: SharedBody<T>,
+        status: StatusCode,
+        closes: bool,
+        request: RequestParts<'_>,
+        connection: Connection<'_, R>,
+        writer: W,
+    ) -> Result<ResponseSent, W::Error> {
+        <v1::Json<&T> as WriteBody<&T>>::write(&value, status, closes, request, connection, writer)
+            .await
     }
 }
 
