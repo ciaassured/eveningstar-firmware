@@ -42,12 +42,12 @@ what hasn't been verified.
     comes up.
   - Today only the storage glue acts on an unconfirmed image, and only a
     `PendingVerify` one below the full tier (`Report::cannot_confirm`).
-- **API and web UI views** of the layout, the report (tier, limit, table
-  comparison, bootloader, running slot) and the boot state, and of the reason
-  for a reboot. `Reason::CannotConfirm` is already in the API.
+- **The web UI's view of the reason for a reboot.** `Reason::CannotConfirm`
+  is in the API. The layout, the report and the boot state have their API and
+  web UI view under `/storage` (`specs/storage-ui.md`).
 - **T6, the untrusted tier's reporting.** The firmware runs on default
   configuration that it doesn't save (Ethernet with DHCP) and logs why. The API
-  and the status LED don't say so yet.
+  (`/storage/internal`) and the web UI say so; the status LED doesn't yet.
 - **A sanitized flash dump**, if it is wanted: each store owns an allowlist
   sanitizer for its partition and fails closed, so a sensitive partition never
   leaves as raw bytes, and the endpoint needs authentication.

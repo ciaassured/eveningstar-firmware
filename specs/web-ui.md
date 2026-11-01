@@ -35,7 +35,9 @@ Recorded so the client's seams line up with them:
 - Session endpoints returning the user and scopes.
 - Configuration lock, check, commit, confirm and rollback endpoints with
   revisions, which the `ConfigService` interface in `web/src/config/service.ts`
-  is shaped for.
+  is shaped for. The lock's conflict should be `423`: the client reads a `409`
+  with an error code, such as the storage API's `unavailable`, as an API
+  error.
 - The OpenAPI document's enums are closed unions, though the API's docs say
   later versions may add values. The client reads unknown values as they came;
   an `unknown` member in the schemas would let the compiler check that.

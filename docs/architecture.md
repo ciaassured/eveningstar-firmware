@@ -94,23 +94,41 @@ The shape of the API is declared once, in `eveningstar-api`. The firmware and
 the OpenAPI document both read it from there, so they can't disagree.
 
 - Each endpoint is a type implementing `v1::Endpoint`. It declares the method,
-  path, success status, summary and description, request and response bodies
-  (`Empty` or `Json<T>`), and the errors the operation itself can answer with.
+  path, success status, summary and description, the parameters of its path,
+  request and response bodies (`Empty`, `Json<T>`, or `Bytes` for a response),
+  and the errors the operation itself can answer with.
+- A path segment written `{name}` is a path parameter. The endpoint's `Params`
+  type parses it, usually a closed enum deserialised from the segment as sent;
+  a segment that doesn't parse, or that names a value the crate doesn't know
+  (an enum's `Unknown`), is a `404`. Endpoints without parameters have `()`.
 - Error sets are types too: `Infallible` for none, or an enum made by the
   `errors!` macro, each of whose variants is an `ErrorCode`. A `Json` request
   body adds `BodyError` (400, 413 and 415) on its own.
 - The `operations!` table in `v1.rs` lists every endpoint and builds
-  `v1::Operation`, an enum with one variant per endpoint.
-  `Operation::find(method, path)` gives the operation a request is for, or a
+  `v1::Operation`, an enum with one variant per endpoint, and `v1::Call`,
+  which holds each endpoint with its parsed path parameters.
+  `Operation::find(method, path)` gives the call a request is for, or a
   `RouteError` (404 or 405).
 
 ### Serving the API
 
 The firmware serves everything under `/api/v1` with one service, `http/api.rs`.
-It calls `Operation::find`, then hands the operation to its handler in an
+It calls `Operation::find`, then hands the call to its handler in an
 exhaustive `match`. The generic `serve` function reads the request body, calls
-the handler, and writes the response with the endpoint's status code, or a
-JSON `v1::Error`.
+the handler with the path's parameters and the body, and writes the response
+with the endpoint's status code, or a JSON `v1::Error`.
+
+The `match` is split by group (`dispatch_system`, `dispatch_storage`), as every
+arm puts the request and the writer in the frame again, and one `match` over
+every operation would exceed the stack frame limit. Each group's `match` still
+names every operation, the other groups' as one arm, so an endpoint added to
+the table without a handler fails to build.
+
+A response too large for a frame, such as `/storage/internal`, is built in a
+static behind an async mutex (`Shared<T>`), filled in place and serialised by
+reference. The mutex is held while the response is written, so a client that
+stops reading delays the next request for the same endpoint until the server's
+write timeout ends the connection.
 
 The compiler enforces the contract:
 
@@ -148,15 +166,36 @@ the headers that only concern pages that load and run things are left to the pag
 API's `404` in JSON, with the same headers, not the router's own plain text,
 which repeats the path it was asked for.
 
+### Binary bodies
+
+A `Bytes` response is written from a `Source`: a length, an optional strong
+entity tag, the filename it is saved under, and a read at an offset. The
+handler returns the source and a buffer (`Download`), and the body is written a
+buffer at a time, each chunk followed by a yield, so the headers can borrow
+the source while the body streams. A read that fails ends the body before its
+length and closes the connection, so the client sees a short body rather than
+wrong bytes.
+
+`Range` and `If-Range` are handled once, in `v1::Selection` (RFC 9110, pure
+and tested on the host), and `http/api.rs` answers `200`, `206` or `416` for
+every binary endpoint from it. One range is served; several, or one past the
+end, is `416`; an `If-Range` that isn't the source's current strong tag gets
+the whole body. Every binary answer carries `Accept-Ranges`, `Content-Length`,
+the tag, and `Content-Disposition` with the filename limited to ASCII letters,
+digits, `.`, `-` and `_`, so it can't end the header. A binary answer closes
+its connection once written: a body cut short leaves nothing on the
+connection that could be read as the rest of it.
+
 ### Adding an endpoint
 
-1. Add its request and response types to `v1.rs`, deriving `JsonSchema` under
-   the `schema` feature. Their doc comments become the schema descriptions.
+1. Add its request and response types to `v1.rs`, or to the module of its
+   group such as `v1/storage.rs`, deriving `JsonSchema` under the `schema`
+   feature. Their doc comments become the schema descriptions.
 2. Add a unit struct for the endpoint and implement `Endpoint` for it, including
-   the `SCOPE` a session needs to call it.
+   the `SCOPE` a session needs to call it and its path's `Params`.
 3. Add the struct to the `operations!` table.
 4. Write the handler in the module for its group, and add its arm to the
-   `match` in `http/api.rs`. The firmware doesn't build until you do.
+   group's `match` in `http/api.rs`. The firmware doesn't build until you do.
 
 ### The OpenAPI document
 
@@ -253,8 +292,8 @@ script can't write HTML.
 ### The client
 
 The client lives in `web/src`. Dependencies point one way: `pages` use
-`device`, `session`, `config` and `live`, which use `api`, which uses its
-`transport`. `ui` holds presentational components and imports only `lib` and
+`device`, `session`, `config`, `live`, `storage` and `downloads`, which use
+`api`, which uses its `transport`. `ui` holds presentational components and imports only `lib` and
 itself. Side effects, fetching and timers, live in services and stores, never in
 components, so nearly everything is plain TypeScript tested without a DOM, with
 the clock, `fetch` and the browser injected.
@@ -280,6 +319,11 @@ workers and eight sockets in all:
    reading state.
 6. Leaving a page aborts its queued and running view loads.
 7. Every result is a value, never a thrown error.
+8. A download of a binary body runs in a lane of its own beside the queue, one
+   at a time, so polls keep flowing while it runs. It has a stall timeout (no
+   bytes for 10 s) instead of a total one, is never retried by the transport,
+   and streams its chunks to the caller. A body shorter than its
+   `Content-Length` is a failure.
 
 Failures are one union (`api/failure.ts`). A single function maps each kind to a
 title, a likely cause and the actions that apply, and the details of the request
@@ -298,6 +342,30 @@ means the device restarted, and the values are fetched again.
 A reboot is a state machine: the request, the pending reboot with its holds,
 the device going away, and the first answer with an uptime lower than before. It
 gives up after two minutes.
+
+### Downloads
+
+Downloads belong to an app-wide service (`downloads/`), not to the page that
+started them, so they carry on across routes; the header's tray shows them.
+The page fetches each download into memory and hands it to the browser when it
+is complete, through an object URL and a `download` link. A plain link would
+be simpler, but it can't carry credentials held in memory, and the page
+couldn't check the bytes before saving them. The largest region is 3 MiB.
+
+- The queue runs one download at a time, in order. A `503 busy`, which means
+  another client holds the device's one download, waits for its `Retry-After`
+  for as long as the entry stays queued, and is never a failure.
+- A broken download resumes with `Range` and `If-Range` a few times, with
+  backoff. A `200` in answer means the region changed, and the download starts
+  again from a fresh plan. Each download is planned when it starts, from a
+  fresh read of the storage view, as the regions' names follow the running
+  slot.
+- In a secure context the page hashes a download with `crypto.subtle` against
+  the device's digest before saving it, and keeps a mismatch from being saved
+  as good. Over plain HTTP, which isn't a secure context, it shows the digest
+  to check by hand. The page has no SHA-256 of its own.
+- Closing the tab loses the queue, so the page asks before unloading while it
+  isn't empty.
 
 ### Sessions, permissions and configuration
 
@@ -503,6 +571,60 @@ operations yield between them. `.clippy.toml` disallows `FlashStorage::new`
 everywhere but `storage.rs`, so the internal flash has no route around the
 handles.
 
+### Checks and the storage service
+
+`services/storage.rs` holds what `split` found and the public handles, those
+that implement `Read`; the sensitive handles never reach it. Its handle,
+`StorageView`, is what the storage endpoints get.
+
+After `split`, a task of its own verifies each app slot the firmware holds a
+handle for (`verify_app_with`): the checksum and the digest the image stores,
+and from the same pass the SHA-256 of the whole image, the one `sha256sum`
+prints. The second digest costs nothing: the hasher is cloned before it
+finishes, and the clone is fed the stored digest. Whole slots and other
+regions aren't hashed. A slot that fails its check is the first sign of flash
+going bad or of an aborted write.
+
+- The check is a background job. It hashes with the chip's SHA accelerator and
+  pauses for 4 ms after every 1 KiB, through the `Pace` the storage crate takes
+  between steps. The Ethernet controller's driver yields after every SPI
+  transaction, so a job that holds the executor for milliseconds at a time
+  takes it from the network: checks in 4 KiB software steps made HTTP requests
+  take about 650 ms instead of 10 ms; with the pause and the accelerator they
+  take about 12 ms, and a slot takes about 1.2 s.
+- The SHA accelerator (`sha.rs`) is shared through esp-hal's backend: each
+  hash keeps its own context, and the backend runs one operation at a time.
+  `split`'s bootloader verification stays in software; it runs once, over
+  22 KiB.
+- `InternalFlash` counts writes: a generation per partition, bumped before
+  every erase and program. No writer has to say what it changed, and there is
+  no other route to the flash. A check stores its result only if the slot's
+  generation didn't move while it ran, and a result is current while its
+  generation is the live one. After a write, the task checks the stale slots
+  again once the flash has had no write for 3 s.
+- The task has its own watchdog handle, fed on every read of a check, never on
+  a timer, and idle while it waits for writes.
+
+### Downloads of public regions
+
+A public region leaves the device through the content endpoint, whole or by
+range. Whether it may is decided from the region's name before any handle is
+looked up: configuration, diagnostics and factory data never leave, as bytes or
+as a digest, and an unknown region fails closed. The body reads through an enum
+of the public handles whose every access takes `impl Read`, so a sensitive
+handle can't be added to it.
+
+- One download at a time. The lock holds the only download buffer (1 KiB, one
+  TCP buffer) and the download's watchdog handle: taking it feeds the handle,
+  every chunk feeds it, and releasing it, also when the client goes away, sets
+  it idle. A client that stops reading is ended by the server's write timeout,
+  well within the watchdog's. A whole 3 MiB slot takes about 9 s.
+- Each chunk checks the region's generation. A write while it streams cuts the
+  body short.
+- The entity tag is a random value drawn at boot and the region's generation,
+  so it changes whenever the bytes may have, and on every boot, as the regions'
+  names then follow the other slot.
+
 ### Updates and rollback
 
 `Ota`, in the full tier, is the only code that writes the other app slot and
@@ -565,7 +687,8 @@ whichever image comes up.
 
 At boot, `storage.rs` reads the booted offset, wraps `esp_storage::FlashStorage`
 behind a critical-section mutex as the `Flash`, and logs the tier, the table,
-the bootloader, the running slot and the boot state.
+the bootloader, the running slot and the boot state. The API reports the same
+under `/storage/internal`.
 
 ## Faults and reboots
 
@@ -587,6 +710,15 @@ supervisor and the panic handler. Clippy's `disallowed_methods`, configured in
 The watchdogs come in three layers, each a backstop for the one above it: a
 software supervisor over tasks, then the chip's main and RTC watchdogs. See
 `watchdog.rs` for what each layer catches.
+
+A supervised task feeds its handle on progress, never on a timer, so a task
+that hangs while the rest of the system runs is still caught. A task that
+waits for work for a long time, such as the storage checks between writes or
+a download between requests, pauses its handle: its deadline isn't checked
+until its next feed. A task that waits for a known time longer than its
+timeout sleeps for that time instead, which replaces its timeout until its
+next feed. The HTTP workers aren't supervised; their connections are
+left to the server's timeouts.
 
 ## Planned crates
 
