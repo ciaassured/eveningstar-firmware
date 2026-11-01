@@ -45,7 +45,7 @@ pub const SEGMENT_HEADER_LEN: u32 = 8;
 pub const DIGEST_LEN: u32 = 32;
 
 /// The number of bytes hashed between two yields to the executor.
-pub const YIELD_INTERVAL: u32 = 4096;
+pub const YIELD_INTERVAL: u32 = 1024;
 
 /// The flash MMU's page size: a segment mapped from flash has to lie at the
 /// same offset within a page in the flash as in the address space.

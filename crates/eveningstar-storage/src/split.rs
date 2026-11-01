@@ -210,13 +210,13 @@ pub struct Storage<'f> {
 /// doesn't match, the board's table is the well-formed one below `booted`
 /// with an app entry at `booted` ([`table::find`]), and unknown when there is
 /// none or several. The bootloader is verified up to that table, yielding
-/// every 4 KiB hashed, and looked up in [`known::BOOTLOADERS`]. When the table
-/// matches but the bootloader isn't known, the board is searched the same way,
-/// and any table found besides the compiled one leaves the layout unknown. In
-/// the data and full tiers `booted` has to be a slot's offset; in the
-/// untrusted tier the running app's span is its image's length, cut to its
-/// entry in the board's table. The boot state is read in the data and full
-/// tiers.
+/// every [`image::YIELD_INTERVAL`] bytes hashed, and looked up in
+/// [`known::BOOTLOADERS`]. When the table matches but the bootloader isn't
+/// known, the board is searched the same way, and any table found besides the
+/// compiled one leaves the layout unknown. In the data and full tiers
+/// `booted` has to be a slot's offset; in the untrusted tier the running
+/// app's span is its image's length, cut to its entry in the board's table.
+/// The boot state is read in the data and full tiers.
 ///
 /// Every handle lies inside the flash, and the data and full tiers' are the
 /// layout's partitions. `flash` is borrowed mutably for as long as any handle
