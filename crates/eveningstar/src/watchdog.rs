@@ -16,8 +16,11 @@
 //! handles were fed, resets the chip if any task has gone longer than its
 //! timeout, and otherwise feeds both hardware watchdogs.
 //!
-//! A task can instead [retire](WatchdogHandle::retire) its handle, which ends
-//! its supervision for the rest of the boot.
+//! A task that waits for an outside event, for any length of time, can mark
+//! its handle [idle](WatchdogHandle::idle): its deadline isn't checked until
+//! its next feed, so a hang while idle isn't caught. A task can instead
+//! [retire](WatchdogHandle::retire) its handle, which ends its supervision for
+//! the rest of the boot.
 //!
 //! # Usage
 //!
@@ -66,6 +69,9 @@ const RTC_WD_TIMEOUT: esp_hal::time::Duration =
 pub(crate) enum Message {
     /// The task is still making progress.
     Fed,
+    /// The task is waiting for an outside event; its deadline isn't checked
+    /// until it feeds again.
+    Idle,
     /// The task is no longer supervised.
     Retired,
 }
@@ -73,16 +79,19 @@ pub(crate) enum Message {
 /// Carries a task's latest [`Message`] to the [`Supervisor`].
 ///
 /// A [`Signal`] only keeps the latest message since the last poll, not how
-/// many were sent, which is all the supervisor needs. A retire sent after a
-/// feed replaces it.
+/// many were sent, which is all the supervisor needs. A later message replaces
+/// an earlier one: an idle sent after a feed leaves the task idle, a feed sent
+/// after an idle supervises it again from that poll, and a retire replaces
+/// either.
 pub(crate) type Mailbox = Signal<CriticalSectionRawMutex, Message>;
 
 /// Marker for a supervised task. [`watchdog!`] generates one type per task, so
 /// each task's handle has a distinct type and can't be passed to another task.
 pub(crate) trait WatchdogType {}
 
-/// A task's connection to the supervisor. The task must call [`feed`](Self::feed)
-/// at least once per its timeout, or the chip resets.
+/// A task's connection to the supervisor. Unless the handle is idle or
+/// retired, the task must call [`feed`](Self::feed) at least once per its
+/// timeout, or the chip resets.
 ///
 /// Not `Clone` or `Copy`: each task owns exactly one handle.
 pub(crate) struct WatchdogHandle<T: WatchdogType> {
@@ -98,8 +107,20 @@ impl<T: WatchdogType> WatchdogHandle<T> {
         }
     }
 
+    /// Tells the supervisor the task is making progress, and ends an idle
+    /// state: the deadline runs again from here.
     pub(crate) fn feed(&self) {
         self.mailbox.signal(Message::Fed);
+    }
+
+    /// Stops the deadline until the next [`feed`](Self::feed), while the task
+    /// waits for an outside event.
+    #[expect(
+        dead_code,
+        reason = "no supervised task waits for an outside event yet"
+    )]
+    pub(crate) fn idle(&self) {
+        self.mailbox.signal(Message::Idle);
     }
 
     /// Ends supervision of this task for the rest of the boot. The handle is
@@ -118,12 +139,32 @@ pub(crate) struct WatchdogInfo {
     /// When the supervisor last saw a feed. Detection is per poll, so this can
     /// lag the real feed by up to one [`POLL_INTERVAL`].
     pub last_fed: Instant,
+    /// Set while the task is idle, from its idle until its next feed; its
+    /// deadline isn't checked meanwhile.
+    pub idle: bool,
     /// Set once the task retires its handle; its deadline is no longer checked.
     pub retired: bool,
     pub mailbox: &'static Mailbox,
 }
 
 impl WatchdogInfo {
+    /// Applies the task's latest message, seen at `now`.
+    fn receive(&mut self, message: Message, now: Instant) {
+        match message {
+            Message::Fed => {
+                self.last_fed = now;
+                self.idle = false;
+            }
+            Message::Idle => self.idle = true,
+            Message::Retired => self.retire(),
+        }
+    }
+
+    /// Whether the task's deadline has passed at `now`.
+    fn missed(&self, now: Instant) -> bool {
+        !self.retired && !self.idle && now.duration_since(self.last_fed) > self.timeout
+    }
+
     fn retire(&mut self) {
         if !self.retired {
             self.retired = true;
@@ -168,12 +209,13 @@ impl<const N: usize> Supervisor<N> {
 
     /// Polls forever and monitors each task for feed timeouts.
     pub(crate) async fn run(mut self) -> ! {
-        // Reset all task watchdog timers to the start of the supervisor. Feeds
-        // sent before now are dropped; a retire is kept.
+        // Reset all task watchdog timers to the start of the supervisor. An
+        // idle or a retire sent before now is kept, and a feed counts from
+        // the start.
         let start = Instant::now();
         for wd in &mut self.task_watchdogs {
-            if let Some(Message::Retired) = wd.mailbox.try_take() {
-                wd.retire();
+            if let Some(message) = wd.mailbox.try_take() {
+                wd.receive(message, start);
             }
             wd.last_fed = start;
         }
@@ -189,14 +231,11 @@ impl<const N: usize> Supervisor<N> {
 
             let now = Instant::now();
             for wd in &mut self.task_watchdogs {
-                match wd.mailbox.try_take() {
-                    Some(Message::Fed) => wd.last_fed = now,
-                    Some(Message::Retired) => wd.retire(),
-                    None => {}
+                if let Some(message) = wd.mailbox.try_take() {
+                    wd.receive(message, now);
                 }
 
-                // Check the timeout hasn't elapsed.
-                if !wd.retired && now.duration_since(wd.last_fed) > wd.timeout {
+                if wd.missed(now) {
                     error!("Task watchdog `{}` missed its deadline", wd.name);
                     #[expect(
                         clippy::disallowed_methods,
@@ -262,6 +301,7 @@ macro_rules! watchdog {
                             name: stringify!($field),
                             timeout: $timeout,
                             last_fed: Instant::MIN,
+                            idle: false,
                             retired: false,
                             mailbox: &MAILBOXES[Index::$Kind as usize],
                         },
