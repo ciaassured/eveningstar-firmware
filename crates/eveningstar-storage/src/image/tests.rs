@@ -3,6 +3,11 @@
     reason = "test offsets and lengths are small"
 )]
 
+use sha2::Digest as _;
+
+use crate::hash::Sha256Hasher;
+use crate::pace::{Pace, Yield};
+
 use super::*;
 use crate::test_support::{
     APP, BOOTLOADER, ESPFLASH_BOOTLOADER, ImageBuilder, Rng, app_descriptor_bytes, app_image,
@@ -212,6 +217,75 @@ fn a_failed_verification_stops_without_further_yields() {
     let verify = block_on(verify_app(&image[..]));
     assert_eq!(verify.output, Err(ImageError::Magic(0)));
     assert_eq!(verify.polls, 1);
+}
+
+// Other hashers and paces.
+
+/// SHA-256 in software, fed one byte at a time: an implementation that
+/// buffers its input differently from one fed whole chunks, as a hardware
+/// accelerator does.
+#[derive(Clone, Default)]
+struct Bytewise(Sha256);
+
+impl Sha256Hasher for Bytewise {
+    fn update(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            Sha256Hasher::update(&mut self.0, core::slice::from_ref(byte));
+        }
+    }
+
+    fn finalize(self) -> [u8; 32] {
+        Sha256Hasher::finalize(self.0)
+    }
+}
+
+/// Counts its pauses, and pauses without handing control back.
+struct Counting(usize);
+
+impl Pace for Counting {
+    fn pause(&mut self) -> impl Future<Output = ()> {
+        self.0 += 1;
+        core::future::ready(())
+    }
+}
+
+/// Verifying `image` with [`Bytewise`] finds what [`verify_app`] does.
+fn same_with_another_hasher(image: &[u8]) {
+    let other = run(verify_app_with(image, Bytewise::default(), &mut Yield));
+    assert_eq!(other, app(image));
+}
+
+#[test]
+fn a_verification_hashes_with_the_hasher_and_pauses_with_the_pace_given() {
+    let mut pace = Counting(0);
+    let verify = block_on(verify_app_with(APP, Bytewise::default(), &mut pace));
+    let verified = verify.output.unwrap();
+    assert_eq!(hex(verified.digest()), APP_DIGEST);
+    assert_eq!(hex(verified.file_sha256()), APP_FILE_SHA256);
+    // A pause after every step, and the pace never yielded.
+    assert_eq!(pace.0, (APP.len() - 32) / YIELD_INTERVAL as usize);
+    assert_eq!((verify.polls, verify.wakes), (1, 0));
+}
+
+#[test]
+fn every_hasher_finds_the_same() {
+    same_with_another_hasher(APP);
+    same_with_another_hasher(&in_partition(APP, APP.len() + 4096));
+    same_with_another_hasher(BOOTLOADER);
+    same_with_another_hasher(&app_image().build());
+    for len in (0..64).step_by(4) {
+        let mut builder = app_image();
+        builder.segments[2].1 = vec![0x5A; len];
+        same_with_another_hasher(&builder.build());
+    }
+    let mut rng = Rng::new(0x5A5);
+    let mut image = APP.to_vec();
+    for _ in 0..20 {
+        let at = rng.below(APP.len());
+        image[at] = rng.byte();
+        same_with_another_hasher(&image);
+        image[at] = APP[at];
+    }
 }
 
 // Built images.
