@@ -5,6 +5,10 @@ import { rebootHolderLabel, rebootModeLabel, rebootReasonLabel } from "./labels.
 test("known reasons, holders and modes read as words", () => {
   assert.equal(rebootReasonLabel("link_down"), "The Ethernet link stayed down");
   assert.equal(rebootReasonLabel("api"), "Requested over the API");
+  assert.equal(
+    rebootReasonLabel("cannot_confirm"),
+    "An update couldn't be confirmed, so the previous firmware returns",
+  );
   assert.equal(rebootHolderLabel("http"), "A web request in progress");
   assert.equal(rebootModeLabel("graceful"), "Wait for work in progress to finish");
   assert.equal(rebootModeLabel("immediate"), "Restart now");

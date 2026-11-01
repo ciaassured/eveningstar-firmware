@@ -10,6 +10,8 @@ export function rebootReasonLabel(reason: RebootReason | (string & {})): string 
       return "The Ethernet link stayed down";
     case "api":
       return "Requested over the API";
+    case "cannot_confirm":
+      return "An update couldn't be confirmed, so the previous firmware returns";
     default:
       return `Reason "${reason}"`;
   }

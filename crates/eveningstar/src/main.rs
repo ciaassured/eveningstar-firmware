@@ -8,6 +8,7 @@ mod ethernet;
 mod http;
 mod services;
 mod shared_spi;
+mod storage;
 mod watchdog;
 
 use defmt::{error, info};
@@ -109,6 +110,16 @@ async fn main(spawner: Spawner) {
         board.cfg_button,
         wd_handles.blinky
     )));
+
+    // Nothing takes a storage handle yet, so the handles are dropped when
+    // `main` returns. They can't be made again: the flash is split once per
+    // boot.
+    let _storage = storage::start(
+        board.internal_flash,
+        board.flash_cache,
+        reboot.graceful_only(),
+    )
+    .await;
 
     let seed = random_seed(board.rng.reborrow(), board.adc1.reborrow());
     match ethernet::start(
