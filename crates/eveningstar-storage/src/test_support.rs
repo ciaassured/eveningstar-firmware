@@ -467,7 +467,8 @@ pub(crate) const FLASH_LEN: usize = crate::layout::FLASH_SIZE as usize;
 /// program ANDs the bytes in. A call that breaks the [`Flash`] contract
 /// (misaligned, past the end, more than a sector programmed at once) panics,
 /// as it is a bug in the crate. Every erase and program is logged, and they
-/// can be made to fail after a number of them.
+/// can be made to fail after a number of them, the first that fails landing
+/// in part as a power cut leaves it.
 ///
 /// [`Flash`]: crate::Flash
 #[derive(Debug)]
@@ -478,6 +479,9 @@ pub(crate) struct RamFlash {
     /// The number of erases and programs that succeed before every later one
     /// fails.
     fail_after: Mutex<Option<usize>>,
+    /// How many leading bytes of the first program that fails are still
+    /// programmed.
+    torn: Mutex<usize>,
     /// Reads that touch this range fail.
     fail_reads: Mutex<Option<core::ops::Range<u32>>>,
 }
@@ -497,6 +501,7 @@ impl RamFlash {
             bytes: Mutex::new(bytes),
             ops: Mutex::default(),
             fail_after: Mutex::default(),
+            torn: Mutex::default(),
             fail_reads: Mutex::default(),
         }
     }
@@ -512,6 +517,14 @@ impl RamFlash {
         *self.fail_after.lock().unwrap() = Some(done + n);
     }
 
+    /// Cuts the power once `n` more erases and programs have succeeded: every
+    /// later one fails, and when the first to fail is a program, its first
+    /// `torn` bytes are programmed all the same.
+    pub(crate) fn cut_after(&self, n: usize, torn: usize) {
+        self.fail_after(n);
+        *self.torn.lock().unwrap() = torn;
+    }
+
     /// Makes every read that touches `range` fail.
     pub(crate) fn fail_reads(&self, range: core::ops::Range<u32>) {
         *self.fail_reads.lock().unwrap() = Some(range);
@@ -520,6 +533,7 @@ impl RamFlash {
     /// Lets every erase, program and read succeed again.
     pub(crate) fn heal(&self) {
         *self.fail_after.lock().unwrap() = None;
+        *self.torn.lock().unwrap() = 0;
         *self.fail_reads.lock().unwrap() = None;
     }
 
@@ -626,7 +640,11 @@ impl crate::Flash for RamFlash {
             "erase at {address:#x}"
         );
         let range = self.range(address, crate::SECTOR_SIZE as usize);
-        self.record(Op::Erase(address))?;
+        if let Err(error) = self.record(Op::Erase(address)) {
+            // A cut erase lands whole or not at all here.
+            *self.torn.lock().unwrap() = 0;
+            return Err(error);
+        }
         self.bytes.lock().unwrap()[range].fill(0xFF);
         Ok(())
     }
@@ -643,10 +661,16 @@ impl crate::Flash for RamFlash {
             bytes.len()
         );
         let range = self.range(address, bytes.len());
-        self.record(Op::Program(address, bytes.len() as u32))?;
+        let landed = match self.record(Op::Program(address, bytes.len() as u32)) {
+            Ok(()) => bytes.len(),
+            Err(_) => core::mem::take(&mut *self.torn.lock().unwrap()).min(bytes.len()),
+        };
         let mut flash = self.bytes.lock().unwrap();
-        for (old, new) in flash[range].iter_mut().zip(bytes) {
+        for (old, new) in flash[range].iter_mut().zip(&bytes[..landed]) {
             *old &= new;
+        }
+        if landed < bytes.len() {
+            return Err(crate::DeviceError);
         }
         Ok(())
     }
