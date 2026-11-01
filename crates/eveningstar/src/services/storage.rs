@@ -12,7 +12,8 @@
 //! [`verify_app_with`](image::verify_app_with): the checksum and the digest
 //! the image stores, from one pass that also gives the SHA-256 of the whole
 //! image. Its result is valid with both digests, empty (no image header) or
-//! invalid with the error, and is logged. A check runs as a background job:
+//! invalid with the error, and is logged. It hashes with the SHA accelerator
+//! ([`crate::sha`]). A check runs as a background job:
 //! after every 1 KiB hashed it pauses for [`PAUSE`], so the rest of the
 //! system keeps its pace while a slot is checked.
 //!
@@ -39,9 +40,9 @@ use eveningstar_storage::image::{self, App, HEADER_LEN, ImageError, MAGIC};
 use eveningstar_storage::pace::Pace;
 use eveningstar_storage::partitions::{Read, SensitiveRead};
 use eveningstar_storage::{ReadError, Report, Slot, Source};
-use sha2::Sha256;
 use static_cell::StaticCell;
 
+use crate::sha::Sha;
 use crate::storage::{Generations, Hex, Public, Started, Writes};
 use crate::watchdog::WatchdogHandle;
 use crate::wd;
@@ -128,6 +129,7 @@ struct Service {
     public: Public,
     generations: Generations,
     boot: u64,
+    sha: Sha,
 }
 
 /// The latest result per [`AppRole`], indexed by the role's value.
@@ -136,8 +138,9 @@ static CHECKS: Mutex<CriticalSectionRawMutex, RefCell<[Option<Check>; AppRole::A
 
 /// Spawns the check task and returns the handle to the service.
 ///
-/// `boot` is a random value drawn once per boot. Takes the check task's
-/// watchdog handle, of which there is one, so there is one call.
+/// `boot` is a random value drawn once per boot, and the checks hash with
+/// `sha`. Takes the check task's watchdog handle, of which there is one, so
+/// there is one call.
 ///
 /// # Panics
 ///
@@ -150,6 +153,7 @@ pub(crate) fn start(
     spawner: Spawner,
     started: Started,
     boot: u64,
+    sha: Sha,
     wd: WatchdogHandle<wd::StorageCheck>,
 ) -> StorageView {
     static SERVICE: StaticCell<Service> = StaticCell::new();
@@ -165,6 +169,7 @@ pub(crate) fn start(
         public,
         generations,
         boot,
+        sha,
     });
     spawner.spawn(defmt::unwrap!(check_task(service, writes, wd)));
     StorageView(service)
@@ -307,7 +312,7 @@ impl Service {
     ) {
         let generation = self.generations.of(app.offset(), app.len());
         let started = Instant::now();
-        let image = verify(&Fed { app, wd }).await;
+        let image = verify(&Fed { app, wd }, self.sha).await;
         let finished = Instant::now();
         let check = Check {
             image,
@@ -360,10 +365,10 @@ impl Service {
     }
 }
 
-/// Verifies the app image in `source`. A source whose header is erased is
-/// empty rather than invalid.
-async fn verify<S: Source>(source: &S) -> Image {
-    match image::verify_app_with(source, Sha256::default(), &mut Background).await {
+/// Verifies the app image in `source`, hashing with `sha`. A source whose
+/// header is erased is empty rather than invalid.
+async fn verify<S: Source>(source: &S, sha: Sha) -> Image {
+    match image::verify_app_with(source, sha.sha256(), &mut Background).await {
         Ok(app) => Image::Valid(app),
         Err(ImageError::Magic(ERASED)) if erased_header(source) => Image::Empty,
         Err(err) => Image::Invalid(err),
