@@ -1340,3 +1340,663 @@ fn long_operations_yield_to_the_executor() {
     assert_eq!(roll_back.output, Ok(()));
     assert_eq!(roll_back.wakes, verifying + 2);
 }
+
+// Power cuts.
+
+/// The ways a cut leaves an erase or program: how many of a program's leading
+/// bytes still land. Every prefix of an otadata entry, a few of a slot's
+/// program; an erase lands whole or not at all.
+fn tears(op: Op) -> Vec<usize> {
+    match op {
+        Op::Erase(_) => vec![0],
+        Op::Program(address, len) if address < OTA_0.offset => (0..len as usize).collect(),
+        Op::Program(_, len) => {
+            let len = len as usize;
+            let mut tears = vec![0, 4, len / 2 / 4 * 4, len - 4];
+            tears.retain(|&torn| torn < len);
+            tears.dedup();
+            tears
+        }
+    }
+}
+
+/// Runs `flow` on a copy of the board `start`, running from `running`,
+/// whole, then cut at each of its erases and programs in each way [`tears`]
+/// gives, the power coming back after the cut. Hands `check` each board,
+/// with a description of the cut, and returns the number of cuts.
+fn sweep(
+    start: &[u8],
+    running: Slot,
+    flow: impl Fn(&mut Ota<'_>) -> Result<(), OtaError>,
+    mut check: impl FnMut(&RamFlash, &str),
+) -> usize {
+    let whole = RamFlash::new(start.to_vec());
+    flow(&mut ota_on(&whole, running)).unwrap();
+    let ops = whole.ops();
+    check(&whole, "whole");
+    let mut cuts = 0;
+    for (index, op) in ops.into_iter().enumerate() {
+        for torn in tears(op) {
+            let flash = RamFlash::new(start.to_vec());
+            flash.cut_after(index, torn);
+            let case = format!("cut at {index}, {op:?}, {torn} bytes landing");
+            assert_eq!(
+                flow(&mut ota_on(&flash, running)),
+                Err(OtaError::Access(AccessError::Device)),
+                "{case}"
+            );
+            flash.heal();
+            check(&flash, &case);
+            cuts += 1;
+        }
+    }
+    cuts
+}
+
+/// Boots the board twice, confirming nothing. The first boot starts `old`
+/// from `running`, or a whole image of `pending` from the other slot as
+/// `PendingVerify`; the second starts `old`. Returns the first boot's slot.
+fn boots_back(flash: &RamFlash, running: Slot, old: &[u8], pending: &[&[u8]], case: &str) -> Slot {
+    let first = boot_flash(flash).unwrap_or_else(|| panic!("{case}: nothing boots"));
+    if first == running {
+        assert!(holds(flash, running, old), "{case}");
+    } else {
+        assert!(
+            pending.iter().any(|image| holds(flash, first, image)),
+            "{case}: a broken image boots"
+        );
+        assert_eq!(
+            state_of(flash, first).state,
+            Some(State::PendingVerify),
+            "{case}"
+        );
+    }
+    assert_eq!(boot_flash(flash), Some(running), "{case}");
+    assert!(holds(flash, running, old), "{case}");
+    first
+}
+
+/// The next attempt on the board running from `running`: an update to
+/// `image`, activated, booted once and confirmed.
+fn recovers(flash: &RamFlash, running: Slot, image: &[u8], case: &str) {
+    let mut ota = ota_on(flash, running);
+    let verified = run(update(&mut ota, image, &mut Rng::new(9), 3000))
+        .unwrap_or_else(|error| panic!("{case}: {error:?}"));
+    run(ota.activate(verified)).unwrap();
+    assert_eq!(boot_flash(flash), Some(running.other()), "{case}");
+    let mut ota = ota_on(flash, running.other());
+    assert_eq!(ota.boot_state().state, Some(State::PendingVerify), "{case}");
+    run(ota.mark_valid()).unwrap();
+    assert_eq!(boot_flash(flash), Some(running.other()), "{case}");
+    assert!(holds(flash, running.other(), image), "{case}");
+}
+
+/// An update to `image` in parts of up to `max` bytes, from a fixed seed,
+/// activated.
+fn update_flow(image: &[u8], max: usize) -> impl Fn(&mut Ota<'_>) -> Result<(), OtaError> + '_ {
+    move |ota| {
+        run(async {
+            let verified = update(ota, image, &mut Rng::new(0xC07), max).await?;
+            ota.activate(verified).await
+        })
+    }
+}
+
+/// A board an update starts from.
+struct Start {
+    name: &'static str,
+    flash: Vec<u8>,
+    /// The slot it runs `old` from.
+    running: Slot,
+    /// An image that may boot pending before the update takes the other
+    /// slot out of the selection.
+    activated: Option<Vec<u8>>,
+}
+
+/// The boards an update starts from, running `old`, with `other` in the
+/// other slot in some of them.
+fn update_starts(old: &[u8], other: &[u8]) -> [Start; 4] {
+    // An activation of `other` not yet booted.
+    let activated = flashed(old);
+    let mut ota = ota_on(&activated, Ota0);
+    let image = finish_with(&mut ota, other).unwrap();
+    run(ota.activate(image)).unwrap();
+    // A fallback from `other`, which broke after its activation.
+    let fallback = RamFlash::new(activated.bytes());
+    fallback.poke(OTA_1.offset + 0x40, &[!other[0x40]]);
+    assert_eq!(reboot(&fallback), Ota0);
+    [
+        Start {
+            name: "first boot",
+            flash: flashed(old).bytes(),
+            running: Ota0,
+            activated: None,
+        },
+        Start {
+            name: "rollback target",
+            flash: updated(other, old).bytes(),
+            running: Ota1,
+            activated: None,
+        },
+        Start {
+            name: "activated",
+            flash: activated.bytes(),
+            running: Ota0,
+            activated: Some(other.to_vec()),
+        },
+        Start {
+            name: "fallback",
+            flash: fallback.bytes(),
+            running: Ota0,
+            activated: None,
+        },
+    ]
+}
+
+#[test]
+fn a_cut_update_boots_the_old_image_or_the_new_one_once() {
+    let old = small_app("1.0.0", 0);
+    let other = small_app("1.5.0", 700);
+    let new = small_app("2.0.0", 1500);
+    let next = small_app("3.0.0", 100);
+    let mut cuts = 0;
+    let mut booted_new = 0;
+    let mut booted_other = 0;
+    for start in update_starts(&old, &other) {
+        let running = start.running;
+        let mut pending: Vec<&[u8]> = start.activated.iter().map(Vec::as_slice).collect();
+        pending.push(&new);
+        cuts += sweep(
+            &start.flash,
+            running,
+            update_flow(&new, 3000),
+            |flash, case| {
+                let case = format!("{}, {case}", start.name);
+                confined(flash, 0, running);
+                let first = boots_back(flash, running, &old, &pending, &case);
+                if first != running && holds(flash, first, &new) {
+                    booted_new += 1;
+                }
+                if first != running && holds(flash, first, &other) {
+                    booted_other += 1;
+                }
+                recovers(flash, running, &next, &case);
+            },
+        );
+    }
+    assert!(cuts > 400, "{cuts}");
+    // Only the whole flow, once per start, boots the new image.
+    assert_eq!(booted_new, 4);
+    // The activation not yet booted boots only when nothing of its
+    // cancellation lands: the cut at its erase.
+    assert_eq!(booted_other, 1);
+}
+
+#[test]
+fn a_cut_update_of_the_firmware_image_boots_the_old_image_or_the_new_one_once() {
+    let new = app_version("0.2.0");
+    let next = small_app("3.0.0", 0);
+    let start = flashed(APP).bytes();
+    let cuts = sweep(&start, Ota0, update_flow(&new, 0x1_0000), |flash, case| {
+        confined(flash, 0, Ota0);
+        boots_back(flash, Ota0, APP, &[&new], case);
+        recovers(flash, Ota0, &next, case);
+    });
+    assert!(cuts > 200, "{cuts}");
+}
+
+#[test]
+fn a_cut_confirmation_boots_the_new_image_confirmed_or_the_old_one() {
+    let old = small_app("1.0.0", 0);
+    let new = small_app("2.0.0", 900);
+    let next = small_app("3.0.0", 100);
+    let start = flashed(&old);
+    update_and_boot(&start, Ota0, &new, &mut Rng::new(10));
+    let mut outcomes = [0; 2];
+    let cuts = sweep(
+        &start.bytes(),
+        Ota1,
+        |ota| run(ota.mark_valid()),
+        |flash, case| {
+            confined(flash, 0, Ota1);
+            let first = reboot(flash);
+            let image = if first == Ota1 { &new } else { &old };
+            assert!(holds(flash, first, image), "{case}");
+            assert_eq!(state_of(flash, first).state, Some(State::Valid), "{case}");
+            assert_eq!(reboot(flash), first, "{case}");
+            outcomes[first.number() as usize] += 1;
+            recovers(flash, first, &next, case);
+        },
+    );
+    assert_eq!(cuts, 33);
+    // Only the whole entry confirms.
+    assert_eq!(outcomes, [33, 1]);
+}
+
+#[test]
+fn a_cut_roll_back_boots_one_of_the_two_images() {
+    let old = small_app("1.0.0", 0);
+    let new = small_app("2.0.0", 900);
+    let next = small_app("3.0.0", 100);
+    let start = updated(&old, &new).bytes();
+    let mut outcomes = [0; 2];
+    let cuts = sweep(
+        &start,
+        Ota1,
+        |ota| run(ota.roll_back()),
+        |flash, case| {
+            confined(flash, 0, Ota1);
+            let first = reboot(flash);
+            let image = if first == Ota1 { &new } else { &old };
+            assert!(holds(flash, first, image), "{case}");
+            assert_eq!(state_of(flash, first).state, Some(State::Valid), "{case}");
+            assert_eq!(reboot(flash), first, "{case}");
+            outcomes[first.number() as usize] += 1;
+            recovers(flash, first, &next, case);
+        },
+    );
+    assert_eq!(cuts, 33);
+    // The erase alone already rolls back; only a cut before it doesn't.
+    assert_eq!(outcomes, [33, 1]);
+}
+
+// A long run of random operations.
+
+/// A board running the simulated bootloader, with the operations of an OTA
+/// service on top of [`Ota`], and power cuts.
+struct Board<'a> {
+    flash: &'a RamFlash,
+    images: &'a [Vec<u8>],
+    ota: Ota<'a>,
+    running: Slot,
+    /// The image the running slot holds, by index in `images`.
+    running_image: usize,
+    /// Whether each slot's image was confirmed since it was written: the
+    /// image `flash-all` wrote, or one a valid entry gave the state `Valid`
+    /// while it ran, through `mark_valid` or, after a fallback, the entries
+    /// `begin_update` writes for the running slot.
+    confirmed: [bool; 2],
+    /// A finished image not yet activated.
+    held: Option<VerifiedImage<'a>>,
+    /// An update began after `held` was made.
+    stale: bool,
+    /// A byte of the other slot changed after `held` was made.
+    decayed: bool,
+    /// The erases and programs checked so far.
+    checked: usize,
+    rng: Rng,
+    stats: Stats,
+    log: Vec<String>,
+}
+
+#[derive(Debug, Default)]
+struct Stats {
+    boots: usize,
+    cuts: usize,
+    activated: usize,
+    updates_booted: usize,
+    confirmed: usize,
+    rolled_back: usize,
+    aborted: usize,
+    fallbacks: usize,
+    stale: usize,
+    refused: usize,
+}
+
+impl<'a> Board<'a> {
+    fn new(flash: &'a RamFlash, images: &'a [Vec<u8>], seed: u64) -> Self {
+        Self {
+            flash,
+            images,
+            ota: ota_on(flash, Ota0),
+            running: Ota0,
+            running_image: 0,
+            confirmed: [true, false],
+            held: None,
+            stale: false,
+            decayed: false,
+            checked: flash.ops().len(),
+            rng: Rng::new(seed),
+            stats: Stats::default(),
+            log: Vec::new(),
+        }
+    }
+
+    fn other(&self) -> usize {
+        self.running.other().number() as usize
+    }
+
+    /// The last lines of the log, for a failure.
+    fn trail(&self) -> String {
+        self.log[self.log.len().saturating_sub(30)..].join("\n")
+    }
+
+    /// The image `slot` holds whole, by index.
+    fn image_in(&self, slot: Slot) -> Option<usize> {
+        self.images
+            .iter()
+            .position(|image| holds(self.flash, slot, image))
+    }
+
+    /// Arms a power cut somewhere in the next operation, now and then.
+    fn maybe_cut(&mut self) {
+        if self.rng.below(4) == 0 {
+            let at = self.rng.below(24);
+            let torn = self.rng.below(32);
+            self.flash.cut_after(at, torn);
+        }
+    }
+
+    /// Checks the erases and programs since the last check, and that the
+    /// running image is intact and the board boots.
+    fn check(&mut self) {
+        let ops = self.flash.ops();
+        for op in &ops[self.checked..] {
+            if *op == Op::Erase(self.running.other().partition().offset) {
+                let other = self.other();
+                self.confirmed[other] = false;
+            }
+        }
+        confined(self.flash, self.checked, self.running);
+        self.checked = ops.len();
+        let otadata = otadata_of(self.flash);
+        if Sector::ALL.into_iter().any(|sector| {
+            otadata
+                .valid(sector)
+                .is_some_and(|entry| entry.slot() == self.running && entry.state == State::Valid)
+        }) {
+            self.confirmed[self.running.number() as usize] = true;
+        }
+        assert_eq!(
+            self.image_in(self.running),
+            Some(self.running_image),
+            "{}",
+            self.trail()
+        );
+        let loadable = Slot::ALL.map(|slot| self.image_in(slot).is_some());
+        let mut otadata = self.flash.at(OTADATA_AT, OTADATA_LEN);
+        assert!(
+            crate::test_support::boot(&mut otadata, loadable).is_some(),
+            "{}",
+            self.trail()
+        );
+    }
+
+    /// Ends an operation: a cut one loses the power, and the board boots
+    /// again.
+    fn end(&mut self, result: Result<(), OtaError>) -> Result<(), OtaError> {
+        self.flash.heal();
+        self.log.push(format!("  {result:?}"));
+        if result == Err(OtaError::Access(AccessError::Device)) {
+            self.stats.cuts += 1;
+            self.reboot();
+        }
+        result
+    }
+
+    fn reboot(&mut self) {
+        self.check();
+        let before = self.running;
+        let pending = state_of(self.flash, before).state == Some(State::PendingVerify);
+        let running = boot_flash(self.flash).unwrap_or_else(|| panic!("{}", self.trail()));
+        self.stats.boots += 1;
+        let image = self
+            .image_in(running)
+            .unwrap_or_else(|| panic!("a broken image boots\n{}", self.trail()));
+        let state = state_of(self.flash, running);
+        self.log.push(format!(
+            "  boot {running:?} image {image} {:?} confirmed {:?}",
+            otadata_of(self.flash)
+                .entries
+                .map(|entry| entry.map(|entry| (entry.seq, entry.state))),
+            self.confirmed
+        ));
+        assert_ne!(state.state, Some(State::New));
+        match state.selected {
+            Some(selected) if selected != running => {
+                // A fallback, only from a slot that doesn't hold a whole
+                // image: here, one whose image decayed.
+                assert_eq!(self.image_in(selected), None, "{}", self.trail());
+                self.stats.fallbacks += 1;
+            }
+            _ if !self.confirmed[running.number() as usize] => {
+                // An image nobody confirmed runs only with its rollback
+                // armed.
+                assert_eq!(state.state, Some(State::PendingVerify), "{}", self.trail());
+                self.stats.updates_booted += 1;
+            }
+            _ => {}
+        }
+        if pending && running != before {
+            self.stats.aborted += 1;
+        }
+        self.running = running;
+        self.running_image = image;
+        self.ota = ota_on(self.flash, running);
+        self.held = None;
+        self.checked = self.flash.ops().len();
+    }
+
+    /// Writes image `index` as an update, `corrupt` with a byte changed, and
+    /// finishes it; or abandons it after `stop` bytes.
+    fn write(
+        &mut self,
+        index: usize,
+        corrupt: bool,
+        stop: Option<usize>,
+    ) -> Result<Option<VerifiedImage<'a>>, OtaError> {
+        let mut image = self.images[index].clone();
+        if corrupt {
+            let at = self.rng.below(image.len());
+            image[at] ^= 1 << self.rng.below(8);
+        }
+        let parts = parts(&image, &mut self.rng, 5000);
+        let ota = &mut self.ota;
+        let result = run(async {
+            let mut update = ota.begin_update().await?;
+            for part in parts {
+                if stop.is_some_and(|stop| update.written() as usize >= stop) {
+                    return Ok(None);
+                }
+                update.write(part).await?;
+            }
+            update.finish().await.map(Some)
+        });
+        if !matches!(result, Err(OtaError::Plan(_))) {
+            self.stale = true;
+        }
+        result
+    }
+
+    fn update(&mut self) {
+        let index = self.rng.below(self.images.len());
+        self.maybe_cut();
+        let pending = self.ota.boot_state().state == Some(State::PendingVerify);
+        let result = match self.write(index, false, None) {
+            Ok(image) => {
+                let image = image.unwrap();
+                assert_eq!(image.size() as usize, self.images[index].len());
+                run(self.ota.activate(image))
+            }
+            Err(error) => Err(error),
+        };
+        if result.is_ok() {
+            self.stats.activated += 1;
+            assert_eq!(self.ota.boot_state().selected, Some(self.running.other()));
+        }
+        if result == Err(OtaError::Plan(PlanError::PendingVerify)) {
+            assert!(pending, "{}", self.trail());
+        }
+        let _ = self.end(result);
+    }
+
+    fn abandon(&mut self) {
+        let index = self.rng.below(self.images.len());
+        let stop = self.rng.below(self.images[index].len());
+        self.maybe_cut();
+        let result = self.write(index, false, Some(stop)).map(|_| ());
+        let _ = self.end(result);
+    }
+
+    fn corrupt(&mut self) {
+        let index = self.rng.below(self.images.len());
+        self.maybe_cut();
+        let result = self.write(index, true, None);
+        assert!(
+            result.is_err(),
+            "a changed image verifies\n{}",
+            self.trail()
+        );
+        if matches!(result, Err(OtaError::Image(_) | OtaError::Length { .. })) {
+            self.stats.refused += 1;
+        }
+        let _ = self.end(result.map(|_| ()));
+    }
+
+    fn finish(&mut self) {
+        let index = self.rng.below(self.images.len());
+        self.maybe_cut();
+        let result = self.write(index, false, None);
+        let ended = result.as_ref().map(|_| ()).map_err(|error| *error);
+        if let Ok(image) = result {
+            self.held = image;
+            self.stale = false;
+            self.decayed = false;
+        }
+        let _ = self.end(ended);
+    }
+
+    fn activate_held(&mut self) {
+        let Some(image) = self.held.take() else {
+            return;
+        };
+        self.maybe_cut();
+        let result = run(self.ota.activate(image));
+        match result {
+            Err(OtaError::Stale) => {
+                assert!(self.stale, "{}", self.trail());
+                self.stats.stale += 1;
+            }
+            Err(OtaError::Changed) => assert!(self.decayed, "{}", self.trail()),
+            Ok(()) => {
+                assert!(!self.stale && !self.decayed, "{}", self.trail());
+                self.stats.activated += 1;
+            }
+            _ => {}
+        }
+        let _ = self.end(result);
+    }
+
+    fn switch_back(&mut self) {
+        self.maybe_cut();
+        let result = match run(self.ota.verify_other()) {
+            Ok(image) => {
+                assert!(self.image_in(self.running.other()).is_some());
+                run(self.ota.activate(image))
+            }
+            Err(error) => Err(error),
+        };
+        let _ = self.end(result);
+    }
+
+    fn mark_valid(&mut self) {
+        let state = self.ota.boot_state();
+        self.maybe_cut();
+        let result = run(self.ota.mark_valid());
+        match result {
+            Ok(()) => {
+                self.confirmed[self.running.number() as usize] = true;
+                self.stats.confirmed += 1;
+            }
+            Err(OtaError::Plan(PlanError::NotSelected)) => {
+                assert_ne!(state.selected, Some(self.running), "{}", self.trail());
+            }
+            _ => {}
+        }
+        let _ = self.end(result);
+    }
+
+    fn roll_back(&mut self) {
+        let state = self.ota.boot_state();
+        let target = self.image_in(self.running.other());
+        self.maybe_cut();
+        let result = run(self.ota.roll_back());
+        if result.is_ok() {
+            assert!(
+                state.rollback_target && target.is_some(),
+                "{}",
+                self.trail()
+            );
+        }
+        if result == Err(OtaError::Plan(PlanError::NoRollbackTarget)) {
+            assert!(!state.rollback_target);
+        }
+        if self.end(result).is_ok() {
+            self.reboot();
+            assert_eq!(self.running_image, target.unwrap(), "{}", self.trail());
+            self.stats.rolled_back += 1;
+        }
+    }
+
+    /// A byte of the other slot's image changes on the flash.
+    fn decay(&mut self) {
+        if let Some(index) = self.image_in(self.running.other()) {
+            let at = self.rng.below(self.images[index].len());
+            let address = self.running.other().partition().offset + at as u32;
+            let byte = self.flash.at(address, 1)[0];
+            self.flash.poke(address, &[byte ^ 0x01]);
+            self.decayed = true;
+        }
+    }
+
+    fn step(&mut self) {
+        let op = self.rng.below(16);
+        self.log.push(format!(
+            "op {op} running {:?} image {} {:?}",
+            self.running,
+            self.running_image,
+            self.ota.boot_state()
+        ));
+        match op {
+            0..=3 => self.update(),
+            4 => self.abandon(),
+            5 => self.corrupt(),
+            6 => self.finish(),
+            7 => self.activate_held(),
+            8 => self.switch_back(),
+            9..=11 => self.mark_valid(),
+            12 => self.roll_back(),
+            13 if self.rng.below(8) == 0 => self.decay(),
+            _ => self.reboot(),
+        }
+        self.check();
+    }
+}
+
+#[test]
+fn random_updates_confirmations_rollbacks_and_power_cuts_keep_the_board_booting() {
+    let images: Vec<Vec<u8>> = [(0, "1.0.0"), (300, "1.1.0"), (1100, "1.2.0"), (40, "1.3.0")]
+        .into_iter()
+        .map(|(extra, version)| small_app(version, extra))
+        .collect();
+    // Odd seeds: the generator sets the lowest bit.
+    let mut fallbacks = 0;
+    for seed in (1..40).step_by(2) {
+        let flash = flashed(&images[0]);
+        let mut board = Board::new(&flash, &images, seed);
+        for _ in 0..3000 {
+            board.step();
+        }
+        let stats = &board.stats;
+        assert!(stats.cuts > 150, "{seed}: {stats:?}");
+        assert!(stats.updates_booted > 100, "{seed}: {stats:?}");
+        assert!(stats.confirmed > 200, "{seed}: {stats:?}");
+        assert!(stats.rolled_back > 10, "{seed}: {stats:?}");
+        assert!(stats.aborted > 30, "{seed}: {stats:?}");
+        assert!(stats.stale > 1, "{seed}: {stats:?}");
+        assert!(stats.refused > 80, "{seed}: {stats:?}");
+        fallbacks += stats.fallbacks;
+    }
+    // Rare: a decayed image selected at a reboot.
+    assert!(fallbacks > 20, "{fallbacks}");
+}
