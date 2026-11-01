@@ -7,7 +7,7 @@
 //!
 //! | Tier | Condition | Handles |
 //! |---|---|---|
-//! | [`Tier::Untrusted`] | the table at [`layout::TABLE_OFFSET`] doesn't match the layout, the flash is smaller than it, or the app didn't boot from a slot | [`BootChain`]: the bootloader, the table found on the board (if any), the running app (if its span is known) |
+//! | [`Tier::Untrusted`] | the table at [`layout::TABLE_OFFSET`] doesn't match the layout, the flash is smaller than it, the app didn't boot from a slot, or the bootloader isn't known and another table could be the one it read | [`BootChain`]: the bootloader, the table found on the board (if exactly one), the running app (if its span is known) |
 //! | [`Tier::Data`] | otherwise | + [`Data`]: config, other config, diag, other app, otadata |
 //! | [`Tier::Full`] | + the bootloader is known and the running app's descriptor reads | + [`Ota`] |
 
@@ -19,7 +19,7 @@ use crate::partitions::{
     Bootloader, Config, Diag, Otadata, OtherApp, OtherConfig, Partition, PartitionTable, RunningApp,
 };
 use crate::region::Region;
-use crate::table::{self, LayoutComparison};
+use crate::table::{self, Found, LayoutComparison};
 use crate::{Entry, Flash, ReadError, Slot, TYPE_APP, Text, known, layout};
 
 /// How far the board is trusted, from least to most.
@@ -46,6 +46,12 @@ pub enum Limit {
     FlashSize,
     /// The booted offset is neither `ota_0`'s nor `ota_1`'s. Untrusted tier.
     NotASlot,
+    /// The table at [`layout::TABLE_OFFSET`] matches the layout, but the
+    /// bootloader isn't known and another table below the running app has an
+    /// app at the booted offset ([`Report::found_table`] says where). Only a
+    /// known bootloader is known to read the compiled offset, so the layout
+    /// the bootloader uses is unknown. Untrusted tier.
+    OtherTable,
     /// The bootloader doesn't verify ([`Report::bootloader`] says why). Data
     /// tier.
     BootloaderInvalid,
@@ -62,7 +68,7 @@ impl Limit {
     #[must_use]
     pub const fn tier(self) -> Tier {
         match self {
-            Self::Table | Self::FlashSize | Self::NotASlot => Tier::Untrusted,
+            Self::Table | Self::FlashSize | Self::NotASlot | Self::OtherTable => Tier::Untrusted,
             Self::BootloaderInvalid | Self::BootloaderUnknown | Self::AppDescriptor => Tier::Data,
         }
     }
@@ -95,10 +101,12 @@ pub struct Report {
     /// The table at [`layout::TABLE_OFFSET`] compared with the layout, entry
     /// by entry (T1).
     pub table: LayoutComparison,
-    /// The offset of the table the bootloader read, found on the board when
-    /// the one at the compiled offset doesn't match the layout (T2); `None`
-    /// when it matches, or when no table was found.
-    pub found_table: Option<u32>,
+    /// The tables below the running app that the bootloader could have read
+    /// (T2). Searched when the table at the compiled offset doesn't match the
+    /// layout, and when it matches but the bootloader isn't known, which
+    /// leaves the board's table unknown unless the compiled one is the only
+    /// one found. `None` when not searched.
+    pub found_table: Option<Found>,
     /// The bootloader at 0x0, verified up to the table (T3).
     pub bootloader: Result<BootloaderId, ImageError>,
     /// The offset of the app the bootloader started.
@@ -122,15 +130,12 @@ impl Report {
         self.limit.map_or(Tier::Full, Limit::tier)
     }
 
-    /// The offset of the table the boot chain's handle covers: the compiled
-    /// offset when the table there matches, else the one found.
+    /// The offset of the table the boot chain's handle covers: the only
+    /// table found when the board was searched, else the compiled offset when
+    /// the table there matches.
     #[must_use]
     pub fn table_offset(&self) -> Option<u32> {
-        if self.table.matches() {
-            Some(layout::TABLE_OFFSET)
-        } else {
-            self.found_table
-        }
+        board_table(&self.table, self.found_table)
     }
 
     /// Whether the running image is [`State::PendingVerify`] in a tier below
@@ -152,15 +157,16 @@ impl Report {
 #[derive(Clone, Copy, Debug)]
 pub struct BootChain<'f> {
     /// The bootloader: from 0x0 up to the table (the compiled offset when
-    /// no table is found), within the flash.
+    /// the board's table isn't known), within the flash.
     pub bootloader: Partition<'f, Bootloader>,
     /// The table the bootloader read, [`table::MAX_LEN`] bytes or up to the
-    /// end of the flash; `None` when no table was found. Always `Some` in
-    /// the data and full tiers.
+    /// end of the flash; `None` when it isn't known: none was found, or
+    /// several. Always `Some` in the data and full tiers.
     pub table: Option<Partition<'f, PartitionTable>>,
-    /// The running app: its slot in the data and full tiers; else its entry
-    /// in the board's table, or its image when the table has none; `None`
-    /// when neither lies inside the flash.
+    /// The running app: its slot in the data and full tiers; else its image,
+    /// cut to its entry in the board's table when that is shorter, or the
+    /// entry when the image doesn't read; `None` when neither lies inside
+    /// the flash.
     pub running_app: Option<Partition<'f, RunningApp>>,
 }
 
@@ -227,13 +233,16 @@ pub struct Storage<'f> {
 /// `booted`, an offset from the start of the flash.
 ///
 /// The table at [`layout::TABLE_OFFSET`] is compared with the layout; when it
-/// doesn't match, the board's table is the first well-formed one below
-/// `booted` with an app entry at `booted` ([`table::find`]). The bootloader is
-/// verified up to that table, yielding every 4 KiB hashed, and looked up in
-/// [`known::BOOTLOADERS`]. In the data and full tiers `booted` has to be a
-/// slot's offset; in the untrusted tier the running app's span is its entry
-/// in the board's table, or its image's length when the table has none. The
-/// boot state is read in the data and full tiers.
+/// doesn't match, the board's table is the well-formed one below `booted`
+/// with an app entry at `booted` ([`table::find`]), and unknown when there is
+/// none or several. The bootloader is verified up to that table, yielding
+/// every 4 KiB hashed, and looked up in [`known::BOOTLOADERS`]. When the table
+/// matches but the bootloader isn't known, the board is searched the same way,
+/// and any table found besides the compiled one leaves the layout unknown. In
+/// the data and full tiers `booted` has to be a slot's offset; in the
+/// untrusted tier the running app's span is its image's length, cut to its
+/// entry in the board's table. The boot state is read in the data and full
+/// tiers.
 ///
 /// Every handle lies inside the flash, and the data and full tiers' are the
 /// layout's partitions. `flash` is borrowed mutably for as long as any handle
@@ -242,45 +251,66 @@ pub async fn split(flash: &mut dyn Flash, booted: u32) -> Storage<'_> {
     let flash: &dyn Flash = flash;
     let mut checks = Checks::new(flash, booted);
     checks.verify_bootloader().await;
+    checks.search_unknown_bootloader();
     checks.storage()
 }
 
-/// What `split` checks, in order: the table, the bootloader and the running
-/// app. Each step returns little or nothing and the async one writes its
-/// result in place, so no frame holds more than one [`Storage`].
+/// What `split` checks, in order: the table, the bootloader, the other
+/// tables an unknown bootloader could have read, and the running app. Each
+/// step returns little or nothing and the async one writes its result in
+/// place, so no frame holds more than one [`Storage`]. The running app's span
+/// is found where it is needed rather than kept, to keep `split`'s frame
+/// small.
 struct Checks<'f> {
     flash: &'f dyn Flash,
     booted: u32,
     comparison: LayoutComparison,
-    found: Option<u32>,
+    found: Option<Found>,
     bootloader: Result<BootloaderId, ImageError>,
-    running_app: Result<Region<'f>, ImageError>,
 }
 
 impl<'f> Checks<'f> {
-    /// Compares the table and finds the board's, and finds the running app.
+    /// Compares the table, and finds the board's when it doesn't match.
     fn new(flash: &'f dyn Flash, booted: u32) -> Self {
-        let whole = Region::clamped(flash, 0, flash.capacity());
-        let comparison = table::compare_layout(&whole);
-        // A booted offset past the flash has no table entry to find.
-        let found = if comparison.matches() || booted >= whole.len() {
-            None
-        } else {
-            table::find(&whole, booted)
-        };
         let mut checks = Self {
             flash,
             booted,
-            comparison,
-            found,
+            comparison: table::compare_layout(&Region::clamped(flash, 0, flash.capacity())),
+            found: None,
             bootloader: Err(ImageError::PastEnd),
-            running_app: Err(ImageError::PastEnd),
         };
-        checks.running_app = match checks.data_spans() {
-            Some(spans) => Ok(spans.running),
-            None => untrusted_app(flash, checks.table_offset(), booted),
-        };
+        if !checks.comparison.matches() {
+            checks.search();
+        }
         checks
+    }
+
+    /// Looks for the tables below the running app that the bootloader could
+    /// have read. A booted offset past the flash has no table entry to find.
+    fn search(&mut self) {
+        let whole = Region::clamped(self.flash, 0, self.flash.capacity());
+        if self.booted < whole.len() {
+            self.found = Some(table::find(&whole, self.booted));
+        }
+    }
+
+    /// Searches the board when the table matches the layout but only the
+    /// bootloader knows where it reads its table from. Only the data tier
+    /// needs it: below, the layout isn't trusted anyway.
+    fn search_unknown_bootloader(&mut self) {
+        let known = self.bootloader.is_ok_and(|id| id.name.is_some());
+        if !known && self.comparison.matches() && self.layout_fits() && self.booted_slot().is_some()
+        {
+            self.search();
+        }
+    }
+
+    /// The running app's span.
+    fn running_app(&self) -> Result<Region<'f>, ImageError> {
+        match self.data_spans() {
+            Some(spans) => Ok(spans.running),
+            None => untrusted_app(self.flash, self.table_offset(), self.booted),
+        }
     }
 
     /// Verifies the bootloader up to the board's table and looks it up.
@@ -295,11 +325,21 @@ impl<'f> Checks<'f> {
 
     /// The offset of the board's table.
     fn table_offset(&self) -> Option<u32> {
-        if self.comparison.matches() {
-            Some(layout::TABLE_OFFSET)
-        } else {
-            self.found
-        }
+        board_table(&self.comparison, self.found)
+    }
+
+    /// Whether the flash holds every partition of the layout.
+    fn layout_fits(&self) -> bool {
+        self.flash.capacity() >= layout::FLASH_SIZE
+    }
+
+    /// Whether the table at the compiled offset matches the layout but
+    /// another table could be the one the bootloader read.
+    fn other_table(&self) -> bool {
+        self.comparison.matches()
+            && self
+                .found
+                .is_some_and(|found| found != Found::One(layout::TABLE_OFFSET))
     }
 
     /// The bootloader's span: up to the board's table, else up to the
@@ -319,23 +359,25 @@ impl<'f> Checks<'f> {
     /// The layout's partitions, in the data tier and up.
     fn data_spans(&self) -> Option<DataSpans<'f>> {
         let slot = self.booted_slot()?;
-        let trusted = self.comparison.matches() && self.flash.capacity() >= layout::FLASH_SIZE;
+        let trusted = self.comparison.matches() && self.layout_fits() && !self.other_table();
         trusted.then(|| DataSpans::new(self.flash, slot))
     }
 
     /// The running app's name and version.
     fn app(&self) -> Result<AppId, ImageError> {
-        self.running_app.and_then(|region| app_id(&region))
+        self.running_app().and_then(|region| app_id(&region))
     }
 
     /// The first check that keeps the tier below full.
     fn limit(&self) -> Option<Limit> {
         if !self.comparison.matches() {
             Some(Limit::Table)
-        } else if self.flash.capacity() < layout::FLASH_SIZE {
+        } else if !self.layout_fits() {
             Some(Limit::FlashSize)
         } else if self.booted_slot().is_none() {
             Some(Limit::NotASlot)
+        } else if self.other_table() {
+            Some(Limit::OtherTable)
         } else if self.bootloader.is_err() {
             Some(Limit::BootloaderInvalid)
         } else if self.bootloader.is_ok_and(|id| id.name.is_none()) {
@@ -377,7 +419,7 @@ impl<'f> Checks<'f> {
             table: self
                 .table_offset()
                 .map(|offset| Partition::new(Region::clamped(self.flash, offset, table::MAX_LEN))),
-            running_app: self.running_app.ok().map(Partition::new),
+            running_app: self.running_app().ok().map(Partition::new),
         }
     }
 
@@ -418,8 +460,19 @@ fn app_id(region: &Region<'_>) -> Result<AppId, ImageError> {
     })
 }
 
-/// The running app's span in the untrusted tier: its entry in the table at
-/// `table_offset`, else the length of the image at `booted`.
+/// The offset of the board's table: the only table found when the board was
+/// searched, else the compiled offset when the table there matches.
+fn board_table(comparison: &LayoutComparison, found: Option<Found>) -> Option<u32> {
+    match found {
+        Some(found) => found.offset(),
+        None => comparison.matches().then_some(layout::TABLE_OFFSET),
+    }
+}
+
+/// The running app's span in the untrusted tier: the image at `booted`, cut to
+/// its entry in the table at `table_offset` when that is shorter, or the
+/// entry when the image doesn't read. A table that isn't the bootloader's
+/// can't widen it past the image.
 fn untrusted_app(
     flash: &dyn Flash,
     table_offset: Option<u32>,
@@ -431,16 +484,20 @@ fn untrusted_app(
             .map_while(Result::ok)
             .find(|entry| entry.kind == TYPE_APP && entry.offset == booted)
     });
-    if let Some(region) = entry.and_then(|entry| Region::new(flash, booted, entry.size)) {
-        return Ok(region);
-    }
-    let rest = flash
+    let image = flash
         .capacity()
         .checked_sub(booted)
         .and_then(|len| Region::new(flash, booted, len))
-        .ok_or(ImageError::Read(ReadError::OutOfRange))?;
-    let info = image::inspect_app(&rest)?;
-    Region::new(flash, booted, info.size()).ok_or(ImageError::Read(ReadError::OutOfRange))
+        .ok_or(ImageError::Read(ReadError::OutOfRange))
+        .and_then(|rest| image::inspect_app(&rest));
+    let region = |len| Region::new(flash, booted, len);
+    match image {
+        Ok(info) => {
+            let len = entry.map_or(info.size(), |entry| info.size().min(entry.size));
+            region(len).ok_or(ImageError::Read(ReadError::OutOfRange))
+        }
+        Err(err) => entry.and_then(|entry| region(entry.size)).ok_or(err),
+    }
 }
 
 /// The layout's partitions for the app running from `slot`.
