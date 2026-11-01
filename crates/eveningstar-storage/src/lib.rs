@@ -21,16 +21,23 @@
 //! The crate is `no_std`, allocation-free, and also builds on the host. Every
 //! parser reads through [`Source`], with buffers of at most 256 bytes on the
 //! stack, and returns an error rather than panicking on any input.
+//!
+//! An image's verification hashes through a [`hash::Sha256Hasher`] and hands
+//! control back between its steps through a [`pace::Pace`]: SHA-256 in
+//! software and a yield, unless the caller gives others
+//! ([`image::verify_app_with`]).
 
 #![cfg_attr(not(test), no_std)]
 
 mod flash;
 mod future;
+pub mod hash;
 pub mod image;
 pub mod known;
 pub mod layout;
 mod ota;
 pub mod otadata;
+pub mod pace;
 pub mod partitions;
 mod region;
 mod source;
