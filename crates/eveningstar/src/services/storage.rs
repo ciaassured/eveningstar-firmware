@@ -10,7 +10,7 @@
 //! after the other: the running app ([`AppRole::Current`]), and in the data
 //! and full tiers the other slot ([`AppRole::Alternate`]). A check is
 //! [`verify_app`]: the checksum and the digest the image stores, from one pass
-//! that also gives the SHA-256 of the whole image, yielding every 4 KiB
+//! that also gives the SHA-256 of the whole image, yielding every 1 KiB
 //! hashed. Its result is valid with both digests, empty (no image header) or
 //! invalid with the error, and is logged.
 //!
