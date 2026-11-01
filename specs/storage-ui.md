@@ -17,7 +17,12 @@ rules.
 ## Decided with the user
 
 - Read only. No endpoint writes, erases, confirms or rolls back anything.
-  Those arrive with the OTA service and need their own discussion.
+  Wiping a region is wanted later, from the service that owns it and once
+  authentication is enforced (see "Later: wiping").
+- The web UI queues downloads and runs one at a time, waiting while another
+  client downloads. Downloads are fetched into the page and saved when they
+  finish, by an app-wide download service, so they carry on across the
+  page's routes.
 - Reading non-sensitive storage needs only the `read` scope, the lowest one.
   The device enforces no scope yet; authentication comes later and covers
   these endpoints like every other.
@@ -554,15 +559,47 @@ Storage                                                        [Refresh]
   size against the slot. Badges: Running, Selected for next boot, Rollback
   target, Needs confirmation. A slot that is selected but not running says
   the bootloader fell back from it.
-- **Download.** The button fetches the content through the API client, so
-  the request carries the session's credentials once authentication exists,
-  rather than a plain link the browser would send without them. Progress
-  shows bytes of total with cancel. A broken download keeps what arrived and
-  offers to resume, asking for the rest with `Range` and `If-Range`; a `200`
-  in answer means the region changed, and the download starts again and
-  says why. On completion the blob is saved through an object URL and a
-  `download` link with the filename above, and the URL is revoked. A `503
-  busy` waits for `Retry-After` and says so.
+- **Download.** A download button adds the download to the queue (below)
+  rather than starting it. The page fetches the content into memory through
+  the API client and hands it to the browser only when it is complete, so
+  the browser's own download list shows nothing until then and the page
+  shows the progress. It is done this way, rather than with a plain link
+  the browser would download itself, because:
+  - the request carries the session's credentials once authentication
+    exists, which a plain link can't when they are held in memory;
+  - the page can verify the bytes before saving them (below), and resume,
+    queue and retry on its own terms;
+  - the largest region is 3 MiB, so holding it in memory costs nothing that
+    matters.
+
+  Streaming to disk (the File System Access API, or a service worker) is
+  left out: it is Chromium-only or a lot of machinery, needs a secure
+  context, and buys nothing at these sizes. On completion the blob is saved
+  through an object URL and a `download` link with the filename above, and
+  the URL is revoked.
+- **Download queue.** One app-wide download service, not the page, owns the
+  downloads, so they carry on while the person moves to another route. It
+  runs one at a time, in order:
+  - Each entry is `queued`, `waiting` (another client is downloading),
+    `downloading` (bytes of total), `verifying`, `done`, `failed` or
+    `cancelled`. Entries can be cancelled and reordered while queued.
+  - A `503 busy`, which means some other client holds the device's one
+    download, waits for its `Retry-After` and asks again, for as long as the
+    entry stays queued, showing "Waiting: another client is downloading" and
+    for how long. It is never counted as a failure.
+  - A broken download keeps what arrived and resumes, asking for the rest
+    with `Range` and `If-Range`, a few times with backoff, then fails with a
+    resume button. A `200` in answer means the region changed: the download
+    starts again and says why.
+  - A device restart (uptime going down) doesn't cancel the queue; the
+    `If-Range` of a resumed entry then always answers `200`, and the entry
+    starts again.
+  - A download tray in the header shows the active entry's progress and the
+    number queued, and opens the list. The Storage page shows the same state
+    beside each region's button.
+  - Closing or reloading the tab loses the queue, so while it isn't empty
+    the page asks before unloading (`beforeunload`). Moving between routes
+    doesn't.
 - **Verifying a download.** When `isSecureContext` (the page served over
   HTTPS), the page hashes the download with `crypto.subtle` before saving
   it: an image download against the image's `file_sha256`, and the image
@@ -581,14 +618,15 @@ Storage                                                        [Refresh]
 - The transport gets a download lane beside its queue: at most one download,
   user priority, no timeout while bytes keep arriving (a stall timeout
   instead, e.g. 10 s without a chunk), never retried on its own, aborted on
-  cancel or on leaving the page. Polls keep flowing through the queue
-  meanwhile.
-- New modules: `storage/` (service, types, labels for tiers, limits, roles,
-  states, the map and gap computation, filenames, the download and resume
-  state machine), the page in `pages/Storage.tsx`, and presentational pieces
-  in `ui/` (flash map bar, region table, copyable digest, progress). Logic
-  stays out of components and is tested without a DOM, as the rest of the
-  client is.
+  cancel. Retrying, resuming and waiting on `busy` belong to the download
+  service. Polls keep flowing through the queue meanwhile.
+- New modules: `downloads/` (the app-wide download service: the queue, the
+  per-entry state machine with resume and busy waits, verification, saving),
+  `storage/` (service, types, labels for tiers, limits, roles, states, the
+  map and gap computation, filenames), the page in `pages/Storage.tsx`, the
+  tray in the shell, and presentational pieces in `ui/` (flash map bar,
+  region table, copyable digest, progress, download list). Logic stays out
+  of components and is tested without a DOM, as the rest of the client is.
 
 ## Verifying
 
@@ -613,9 +651,11 @@ Storage                                                        [Refresh]
   generation.
 - Web: unit tests with fakes for each tier, a differing table, an empty and
   an invalid slot, checks still running, and downloads that are cancelled,
-  stall, resume, find the region changed or are busy; the page in headless
-  Chromium in both themes and at 360 px, with no CSP or Trusted Types
-  violations during a download.
+  stall, resume, find the region changed or are busy; the queue running one
+  at a time, reordering, waiting on `busy` without failing, surviving a
+  route change and a device restart, and asking before unload while not
+  empty; the page in headless Chromium in both themes and at 360 px, with no
+  CSP or Trusted Types violations during a download.
 
 ## Delivery
 
@@ -640,8 +680,24 @@ A GitHub stack on `main`, one PR per piece:
 commit of 4 exists, the firmware half of 4 and all of 5 are built at the same
 time, the web side against fakes and the generated types.
 
+## Later: wiping
+
+Wiping is wanted, but each wipe belongs to the service that owns the region,
+none of which exists yet, and a wipe can't be undone, so it waits for
+enforced authentication and needs the `configure` scope:
+
+| Region             | What a wipe means                                     | Owner          | Conditions and effects                                                                                                                                                  |
+|--------------------|-------------------------------------------------------|----------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `config_alternate` | A secure wipe of the previous firmware's settings     | Config store   | Only after the store has migrated from it. The handle already allows erasing and not programming (`OtherConfig`). A rollback then boots on defaults.                      |
+| `app_alternate`    | Removing the rollback target, e.g. a vulnerable image | OTA service    | Through `Ota`, the only writer of the other slot: first both otadata entries select the running slot, so no pending activation points at an erased slot. Full tier, running image `Valid`. No rollback until the next update. |
+| `config_current`   | A factory reset of the settings                       | Config service | Erase and reboot, as erasing under a running store leaves its state wrong. The same action as the board's button. Loses the Wi-Fi credentials, so the device may leave the network. |
+
+Erasing a 3 MiB slot is 768 sector erases, about 35 s with interrupts off for
+tens of milliseconds (up to about 400 ms) at a time. Each wipe is a long job
+under its own watchdog handle, fed per sector and yielding between them.
+
 ## Out of scope
 
-Writes of any kind, OTA uploads, confirming or rolling back an image,
-sanitized dumps of sensitive partitions (`specs/storage.md`), the external
-NAND's contents, and checks on request or on a schedule.
+Writes of any kind (wiping is above), OTA uploads, confirming or rolling back
+an image, sanitized dumps of sensitive partitions (`specs/storage.md`), the
+external NAND's contents, and checks on request or on a schedule.
