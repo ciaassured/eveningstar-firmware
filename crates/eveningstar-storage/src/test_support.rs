@@ -2,6 +2,8 @@
 
 #![allow(
     clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
     reason = "the generator and the builders keep low bits on purpose, of values that fit"
 )]
 
@@ -293,4 +295,164 @@ pub(crate) fn segment_at(image: &[u8], index: usize) -> usize {
         at += 8 + len as usize;
     }
     at
+}
+
+/// The otadata partition as the board's bootloader left it on its first boot
+/// after `flash-all` wrote it blank.
+pub(crate) const OTADATA_FIRST_BOOT: &[u8] = include_bytes!("../testdata/otadata-first-boot.bin");
+
+/// Length of the otadata partition in bytes.
+pub(crate) const OTADATA_LEN: usize = crate::layout::OTADATA.size as usize;
+
+/// An otadata partition holding `first` and `second` at the starts of its
+/// sectors, erased elsewhere.
+pub(crate) fn otadata_of(first: &[u8; 32], second: &[u8; 32]) -> Vec<u8> {
+    flash_with(OTADATA_LEN, &[(0, first), (SECTOR_LEN, second)])
+}
+
+const SECTOR_LEN: u32 = crate::otadata::SECTOR_SIZE;
+
+/// `write` executed on `otadata`: its sector erased, then its entry
+/// programmed.
+pub(crate) fn apply(otadata: &mut [u8], write: &crate::otadata::Write) {
+    apply_cut(otadata, write, 32);
+}
+
+/// `write` cut short on `otadata`: its sector erased, then only the first
+/// `programmed` bytes of its entry programmed.
+pub(crate) fn apply_cut(otadata: &mut [u8], write: &crate::otadata::Write, programmed: usize) {
+    let at = write.offset() as usize;
+    otadata[at..at + SECTOR_LEN as usize].fill(0xFF);
+    otadata[at..at + programmed].copy_from_slice(&write.bytes()[..programmed]);
+}
+
+/// An `esp_select_entry_t` as ESP-IDF's C code sees it, read from raw bytes
+/// without the crate's parser, so the simulated bootloader checks the parser
+/// rather than sharing it.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct IdfEntry {
+    pub(crate) seq: u32,
+    pub(crate) state: u32,
+    pub(crate) crc: u32,
+    bytes: [u8; 32],
+}
+
+const IDF_NEW: u32 = 0;
+const IDF_PENDING_VERIFY: u32 = 1;
+const IDF_VALID: u32 = 2;
+const IDF_INVALID: u32 = 3;
+const IDF_ABORTED: u32 = 4;
+
+impl IdfEntry {
+    pub(crate) fn read(otadata: &[u8], index: usize) -> Self {
+        let at = index * SECTOR_LEN as usize;
+        let bytes: [u8; 32] = otadata[at..at + 32].try_into().unwrap();
+        let word = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+        Self {
+            seq: word(0),
+            state: word(24),
+            crc: word(28),
+            bytes,
+        }
+    }
+
+    /// `bootloader_common_ota_select_crc` matches.
+    fn crc_ok(&self) -> bool {
+        self.crc == crate::otadata::crc(self.seq)
+    }
+
+    /// `bootloader_common_ota_select_invalid`, which ignores the CRC.
+    fn invalid(&self) -> bool {
+        self.seq == u32::MAX || self.state == IDF_INVALID || self.state == IDF_ABORTED
+    }
+
+    /// `bootloader_common_ota_select_valid`.
+    pub(crate) fn valid(&self) -> bool {
+        !self.invalid() && self.crc_ok()
+    }
+
+    /// `write_otadata` of this entry with `state`: the sector erased, then the
+    /// struct as read written back with only the state changed.
+    fn rewrite(&mut self, otadata: &mut [u8], index: usize, state: u32) {
+        self.state = state;
+        self.bytes[24..28].copy_from_slice(&state.to_le_bytes());
+        let at = index * SECTOR_LEN as usize;
+        otadata[at..at + SECTOR_LEN as usize].fill(0xFF);
+        otadata[at..at + 32].copy_from_slice(&self.bytes);
+    }
+}
+
+/// `bootloader_common_get_active_otadata`: the index of the active entry.
+pub(crate) fn idf_active(entries: &[IdfEntry; 2]) -> Option<usize> {
+    match (entries[0].valid(), entries[1].valid()) {
+        (true, true) => Some(usize::from(
+            entries[0].seq.max(entries[1].seq) != entries[0].seq,
+        )),
+        (true, false) => Some(0),
+        (false, true) => Some(1),
+        (false, false) => None,
+    }
+}
+
+/// The slot ESP-IDF maps sequence number `seq` to with two OTA slots.
+pub(crate) fn idf_slot(seq: u32) -> crate::Slot {
+    crate::Slot::ALL[(seq.wrapping_sub(1) % 2) as usize]
+}
+
+/// The ESP-IDF 5.5 bootloader's choice of app, with
+/// `BOOTLOADER_APP_ROLLBACK_ENABLE`, two OTA slots and no factory or test
+/// app, followed branch by branch from `bootloader_utility.c`
+/// (`bootloader_utility_get_selected_boot_partition`,
+/// `bootloader_utility_load_boot_image`, `set_actual_ota_seq`).
+///
+/// `loadable` says which slots hold an image the bootloader loads. The
+/// otadata is updated as the bootloader writes it, and the slot started is
+/// returned, `None` when no slot loads (the bootloader resets).
+pub(crate) fn boot(otadata: &mut [u8], loadable: [bool; 2]) -> Option<crate::Slot> {
+    let mut e = [IdfEntry::read(otadata, 0), IdfEntry::read(otadata, 1)];
+
+    // Every PENDING_VERIFY entry is aborted, whatever its CRC.
+    for (i, entry) in e.iter_mut().enumerate() {
+        if entry.state == IDF_PENDING_VERIFY {
+            entry.rewrite(otadata, i, IDF_ABORTED);
+        }
+    }
+
+    // Index -1 is the factory app, which the layout doesn't have.
+    let mut initial = false;
+    let boot_index: i32 = if e[0].invalid() && e[1].invalid() {
+        // "No factory image, trying OTA 0", and remember whether the otadata
+        // is blank or corrupt in both copies.
+        let blank_or_corrupt = |e: &IdfEntry| e.seq == u32::MAX || !e.crc_ok();
+        initial = blank_or_corrupt(&e[0]) && blank_or_corrupt(&e[1]);
+        0
+    } else if let Some(i) = idf_active(&e) {
+        if e[i].state == IDF_NEW {
+            e[i].rewrite(otadata, i, IDF_PENDING_VERIFY);
+        }
+        idf_slot(e[i].seq).number() as i32
+    } else {
+        // "ota data partition invalid and no factory, will try all
+        // partitions".
+        -1
+    };
+
+    // Down from the selected index to the factory app, then up from it.
+    let order = (0..=boot_index).rev().chain(boot_index + 1..2);
+    for index in order {
+        let index = index as usize;
+        if loadable[index] {
+            if initial {
+                let seq = index as u32 + 1;
+                let mut entry = [0xFF; 32];
+                entry[..4].copy_from_slice(&seq.to_le_bytes());
+                entry[24..28].copy_from_slice(&IDF_VALID.to_le_bytes());
+                entry[28..].copy_from_slice(&crate::otadata::crc(seq).to_le_bytes());
+                otadata[..SECTOR_LEN as usize].fill(0xFF);
+                otadata[..32].copy_from_slice(&entry);
+            }
+            return Some(crate::Slot::ALL[index]);
+        }
+    }
+    None
 }
