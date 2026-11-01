@@ -20,9 +20,10 @@
 
 use core::fmt;
 
-use sha2::{Digest as _, Sha256};
+use sha2::Sha256;
 
-use crate::future::yield_now;
+use crate::hash::Sha256Hasher;
+use crate::pace::{Pace, Yield};
 use crate::source::{Source, read_array};
 use crate::{ReadError, Text};
 
@@ -520,31 +521,48 @@ fn first_segment<S: Source + ?Sized>(source: &S) -> Result<Segment, ImageError> 
 
 /// Verifies the app image in `source`: the header, every segment, the
 /// checksum, the appended SHA-256 digest (which has to be there) and the app
-/// descriptor. Yields to the executor every [`YIELD_INTERVAL`] bytes hashed.
+/// descriptor. Hashes in software, and yields to the executor every
+/// [`YIELD_INTERVAL`] bytes hashed.
 ///
 /// # Errors
 ///
 /// The first check that fails, as an [`ImageError`].
 pub async fn verify_app<S: Source + ?Sized>(source: &S) -> Result<App, ImageError> {
-    let mut verifier = Verifier::new(source, Kind::App);
+    verify_app_with(source, Sha256::default(), &mut Yield).await
+}
+
+/// Verifies the app image in `source` as [`verify_app`] does, hashing with
+/// `sha`, a hash not yet fed, and running `pace` after every
+/// [`YIELD_INTERVAL`] bytes hashed.
+///
+/// # Errors
+///
+/// The first check that fails, as an [`ImageError`].
+pub async fn verify_app_with<S, H, P>(source: &S, sha: H, pace: &mut P) -> Result<App, ImageError>
+where
+    S: Source + ?Sized,
+    H: Sha256Hasher,
+    P: Pace,
+{
+    let mut verifier = Verifier::new(source, Kind::App, sha);
     while !verifier.step()? {
-        yield_now().await;
+        pace.pause().await;
     }
     verifier.app()
 }
 
 /// Verifies the bootloader image in `source`: the header, every segment, the
 /// checksum and the appended SHA-256 digest (which has to be there), and reads
-/// its descriptor when it has one. Yields to the executor every
-/// [`YIELD_INTERVAL`] bytes hashed.
+/// its descriptor when it has one. Hashes in software, and yields to the
+/// executor every [`YIELD_INTERVAL`] bytes hashed.
 ///
 /// # Errors
 ///
 /// The first check that fails, as an [`ImageError`].
 pub async fn verify_bootloader<S: Source + ?Sized>(source: &S) -> Result<Bootloader, ImageError> {
-    let mut verifier = Verifier::new(source, Kind::Bootloader);
+    let mut verifier = Verifier::new(source, Kind::Bootloader, Sha256::default());
     while !verifier.step()? {
-        yield_now().await;
+        Yield.pause().await;
     }
     verifier.bootloader()
 }
@@ -632,11 +650,11 @@ enum Kind {
 
 /// The verification of an image, run in steps of [`YIELD_INTERVAL`] bytes
 /// hashed: the header, then each segment's header and data, then the tail.
-struct Verifier<'s, S: ?Sized> {
+struct Verifier<'s, S: ?Sized, H> {
     source: &'s S,
     kind: Kind,
     header: Header,
-    sha: Sha256,
+    sha: H,
     hashed: u32,
     yields: u32,
     checksum: u8,
@@ -652,8 +670,8 @@ struct Verifier<'s, S: ?Sized> {
     descriptor_len: u32,
 }
 
-impl<'s, S: Source + ?Sized> Verifier<'s, S> {
-    fn new(source: &'s S, kind: Kind) -> Self {
+impl<'s, S: Source + ?Sized, H: Sha256Hasher> Verifier<'s, S, H> {
+    fn new(source: &'s S, kind: Kind, sha: H) -> Self {
         Self {
             source,
             kind,
@@ -671,7 +689,7 @@ impl<'s, S: Source + ?Sized> Verifier<'s, S> {
                 max_chip_rev_full: 0,
                 hash_appended: false,
             },
-            sha: Sha256::new(),
+            sha,
             hashed: 0,
             yields: 0,
             checksum: CHECKSUM_SEED,
@@ -812,8 +830,7 @@ impl<'s, S: Source + ?Sized> Verifier<'s, S> {
             return Err(ImageError::NoDigest);
         }
         let stored: [u8; 32] = read_array(self.source, tail.unhashed_end)?;
-        let file = finish_digests(core::mem::take(&mut self.sha), &stored)
-            .ok_or(ImageError::DigestMismatch)?;
+        let file = finish_digests(&self.sha, &stored).ok_or(ImageError::DigestMismatch)?;
         Ok(Digests {
             size: tail.size,
             stored,
@@ -822,19 +839,19 @@ impl<'s, S: Source + ?Sized> Verifier<'s, S> {
     }
 }
 
-/// Finishes `sha`, the hash of every byte of an image before its digest, and
-/// compares it with `stored`, the digest the image stores. Returns the digest
-/// of the whole image when they match: a copy of `sha`, fed `stored`. Never
-/// inlined, so the two hashers stay out of the verifier's frame.
+/// Finishes a copy of `sha`, the hash of every byte of an image before its
+/// digest, and compares it with `stored`, the digest the image stores.
+/// Returns the digest of the whole image when they match: another copy of
+/// `sha`, fed `stored`. Never inlined, so the copies stay out of the
+/// verifier's frame.
 #[inline(never)]
-fn finish_digests(sha: Sha256, stored: &[u8; 32]) -> Option<[u8; 32]> {
-    let mut file = sha.clone();
-    let computed: [u8; 32] = sha.finalize().into();
-    if computed != *stored {
+fn finish_digests<H: Sha256Hasher>(sha: &H, stored: &[u8; 32]) -> Option<[u8; 32]> {
+    if sha.clone().finalize() != *stored {
         return None;
     }
+    let mut file = sha.clone();
     file.update(stored);
-    Some(file.finalize().into())
+    Some(file.finalize())
 }
 
 #[cfg(test)]
