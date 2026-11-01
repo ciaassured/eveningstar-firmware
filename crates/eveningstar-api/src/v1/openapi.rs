@@ -16,8 +16,8 @@ use serde_json::{Map, Value, json};
 
 use super::endpoint::param_name;
 use super::{
-    Empty, Endpoint, Error, ErrorCode, Errors, Json, Operation, PATH, PathParam, RequestBody,
-    RouteError, Scope,
+    Bytes, Empty, Endpoint, Error, ErrorCode, Errors, Json, Operation, PATH, PathParam,
+    RequestBody, ResponseBody, RouteError, Scope,
 };
 
 /// The document's description of the API as a whole, before the errors any
@@ -113,7 +113,7 @@ impl Document {
             "operationId": id,
             "summary": E::SUMMARY,
             "security": [{ BEARER_SCHEME: [E::SCOPE] }],
-            "responses": { E::STATUS.to_string(): E::Response::document(self) },
+            "responses": E::Response::document(self, E::STATUS),
         });
         if let Some(description) = E::DESCRIPTION {
             operation["description"] = description.into();
@@ -128,13 +128,14 @@ impl Document {
             names.len(),
             schemas.len()
         );
-        let parameters: Vec<Value> = names
+        let mut parameters: Vec<Value> = names
             .into_iter()
             .zip(schemas)
             .map(|(name, schema)| {
                 json!({ "name": name, "in": "path", "required": true, "schema": schema })
             })
             .collect();
+        parameters.extend(E::Response::parameters());
         if !parameters.is_empty() {
             operation["parameters"] = parameters.into();
         }
@@ -145,6 +146,7 @@ impl Document {
 
         let errors = <E::Request as RequestBody>::Error::CODES
             .iter()
+            .chain(<E::Response as ResponseBody>::Error::CODES)
             .chain(E::Error::CODES);
         for &code in errors {
             let status = status(code).to_string();
@@ -184,13 +186,14 @@ impl Document {
         }
 
         // One response per error code, from the codes' schemas.
+        let unsatisfiable = name(ErrorCode::RangeNotSatisfiable);
         let responses: Map<String, Value> = schemas["ErrorCode"]["oneOf"]
             .as_array()
             .into_iter()
             .flatten()
             .map(|code| {
                 let name = code["const"].as_str().unwrap_or_default().to_owned();
-                let response = json!({
+                let mut response = json!({
                     "description": code["description"],
                     "content": {
                         "application/json": {
@@ -201,6 +204,11 @@ impl Document {
                         },
                     },
                 });
+                if name == unsatisfiable {
+                    response["headers"] = json!({
+                        "Content-Range": content_range("`bytes */<length>`: the body's length."),
+                    });
+                }
                 (name, response)
             })
             .collect();
@@ -279,21 +287,99 @@ impl<T: PathParam + JsonSchema> DocumentParams for T {
 
 /// A response body the document can describe.
 pub(super) trait DocumentResponse {
-    /// The successful response of an operation.
-    fn document(document: &mut Document) -> Value;
+    /// The successful responses of an operation whose status code is
+    /// `status`, by status code.
+    fn document(document: &mut Document, status: u16) -> Value;
+
+    /// The request headers the responses depend on, as parameters.
+    fn parameters() -> Vec<Value> {
+        Vec::new()
+    }
 }
 
 impl DocumentResponse for Empty {
-    fn document(_document: &mut Document) -> Value {
-        json!({ "description": "The response has no body." })
+    fn document(_document: &mut Document, status: u16) -> Value {
+        json!({ status.to_string(): { "description": "The response has no body." } })
     }
 }
 
 impl<T: JsonSchema> DocumentResponse for Json<T> {
-    fn document(document: &mut Document) -> Value {
+    fn document(document: &mut Document, status: u16) -> Value {
         let schema = document.response::<T>();
-        json_response(&document.response_description(&schema), &schema)
+        let response = json_response(&document.response_description(&schema), &schema);
+        json!({ status.to_string(): response })
     }
+}
+
+impl DocumentResponse for Bytes {
+    fn document(_document: &mut Document, status: u16) -> Value {
+        let content = json!({
+            "application/octet-stream": { "schema": { "type": "string", "format": "binary" } },
+        });
+        let headers = json!({
+            "Accept-Ranges": {
+                "description": "`bytes`: the body can be asked for in part.",
+                "required": true,
+                "schema": { "const": "bytes" },
+            },
+            "ETag": {
+                "description": "The body's strong entity tag, if it has one. It \
+                    differs whenever the body may differ.",
+                "schema": { "type": "string" },
+            },
+            "Content-Disposition": {
+                "description": "`attachment`, with the name to save the body under.",
+                "required": true,
+                "schema": { "type": "string" },
+            },
+        });
+        let mut partial_headers = headers.clone();
+        partial_headers["Content-Range"] = content_range(
+            "`bytes <first>-<last>/<length>`: the offsets of the first and last \
+            bytes sent, and the body's length.",
+        );
+        json!({
+            status.to_string(): {
+                "description": "The whole body.",
+                "headers": headers,
+                "content": content,
+            },
+            Bytes::PARTIAL_STATUS.to_string(): {
+                "description": "The part of the body the `Range` header asks for.",
+                "headers": partial_headers,
+                "content": content,
+            },
+        })
+    }
+
+    fn parameters() -> Vec<Value> {
+        alloc::vec![
+            json!({
+                "name": "Range",
+                "in": "header",
+                "description": "One range of bytes of the body, such as \
+                    `bytes=0-1023`, `bytes=1024-` or `bytes=-512`, to answer \
+                    with that part alone. The last offset is clamped to the \
+                    body's end. A header that isn't valid is ignored, and \
+                    several ranges, or one starting past the body's end, are \
+                    answered with `416`.",
+                "schema": { "type": "string" },
+            }),
+            json!({
+                "name": "If-Range",
+                "in": "header",
+                "description": "The `ETag` of the body the `Range` was taken \
+                    from. If the body's tag differs, or the value isn't a \
+                    strong entity tag, the answer is the whole body.",
+                "schema": { "type": "string" },
+            }),
+        ]
+    }
+}
+
+/// A required `Content-Range` response header, described by `description`.
+fn content_range(description: &str) -> Value {
+    json!({ "description": description, "required": true, "schema": { "type": "string" } })
 }
 
 /// A response with a JSON body matching `schema`.
@@ -423,6 +509,46 @@ mod tests {
             &json!("second_item")
         ));
         assert!(!component_accepts(&document, "TestItem", &json!("third")));
+    }
+
+    #[test]
+    fn binary_bodies_are_answered_whole_or_in_part() {
+        let document = openapi();
+        let operation = &document["paths"]["/test/{item}/content"]["get"];
+        let responses = operation["responses"].as_object().unwrap();
+        let statuses: Vec<_> = responses.keys().cloned().collect();
+        assert_eq!(statuses, ["200", "206", "416"]);
+
+        let binary = json!({ "type": "string", "format": "binary" });
+        for status in ["200", "206"] {
+            let response = &responses[status];
+            assert_eq!(
+                response["content"]["application/octet-stream"]["schema"],
+                binary
+            );
+            let headers = response["headers"].as_object().unwrap();
+            for header in ["Accept-Ranges", "ETag", "Content-Disposition"] {
+                assert!(headers.contains_key(header), "{status} {header}");
+            }
+            assert_eq!(headers.contains_key("Content-Range"), status == "206");
+        }
+        assert_eq!(
+            responses["416"],
+            json!({ "$ref": "#/components/responses/range_not_satisfiable" })
+        );
+        let unsatisfiable = &document["components"]["responses"]["range_not_satisfiable"];
+        assert!(unsatisfiable["headers"]["Content-Range"].is_object());
+        let not_found = &document["components"]["responses"]["not_found"];
+        assert!(not_found.get("headers").is_none());
+
+        let headers: Vec<_> = operation["parameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|parameter| parameter["in"] == "header")
+            .map(|parameter| parameter["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(headers, ["Range", "If-Range"]);
     }
 
     #[test]

@@ -17,13 +17,15 @@ use crate::DeviceId;
 mod endpoint;
 #[cfg(feature = "schema")]
 mod openapi;
+mod range;
 
 pub use endpoint::{
-    BodyError, Empty, Endpoint, Errors, Json, Method, PathParam, PathParams, RequestBody,
-    ResponseBody, RouteError, is_json_content_type,
+    BodyError, Bytes, Empty, Endpoint, Errors, Json, Method, PathParam, PathParams, RangeError,
+    RequestBody, ResponseBody, RouteError, is_json_content_type,
 };
 #[cfg(feature = "schema")]
 pub use openapi::openapi;
+pub use range::{ContentRange, EntityTag, Selection};
 
 /// Path prefix of every version 1 endpoint.
 pub const PATH: &str = "/api/v1";
@@ -205,7 +207,7 @@ impl Endpoint for Reboot {
     type Error = Infallible;
 }
 
-/// An endpoint of the tests, with a path parameter.
+/// An endpoint of the tests, with a path parameter and a binary body.
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GetTestContent;
@@ -214,13 +216,13 @@ pub struct GetTestContent;
 impl Endpoint for GetTestContent {
     const METHOD: Method = Method::Get;
     const PATH: &'static str = "/test/{item}/content";
-    const STATUS: u16 = 204;
+    const STATUS: u16 = 200;
     const SCOPE: Scope = Scope::Read;
     const SUMMARY: &'static str = "Get an item's content";
 
     type Params = TestItem;
     type Request = Empty;
-    type Response = Empty;
+    type Response = Bytes;
     type Error = Infallible;
 }
 
@@ -570,9 +572,14 @@ mod tests {
 
     #[test]
     fn error_codes_of_error_sets_have_statuses() {
-        for &code in BodyError::CODES.iter().chain(RouteError::CODES) {
+        let codes = BodyError::CODES
+            .iter()
+            .chain(RangeError::CODES)
+            .chain(RouteError::CODES);
+        for &code in codes {
             assert!(code.status().is_some(), "{code:?}");
         }
+        assert_eq!(RangeError::RangeNotSatisfiable.code().status(), Some(416));
         assert_eq!(
             BodyError::PayloadTooLarge.code(),
             ErrorCode::PayloadTooLarge

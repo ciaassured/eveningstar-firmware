@@ -53,7 +53,7 @@ pub trait Endpoint {
     /// The body of a successful response.
     type Response: ResponseBody;
     /// The errors the operation answers with, besides those of reading the
-    /// request body.
+    /// request body and of answering with the response body.
     type Error: Errors;
 }
 
@@ -123,10 +123,12 @@ pub trait RequestBody {
     type Error: Errors;
 }
 
-/// The body of a response: [`Empty`] or [`Json`].
+/// The body of a response: [`Empty`], [`Json`] or [`Bytes`].
 pub trait ResponseBody {
     /// The value the body holds.
-    type Value;
+    type Value: ?Sized;
+    /// The errors of answering with the body.
+    type Error: Errors;
 }
 
 /// No body, holding `()`.
@@ -140,6 +142,7 @@ impl RequestBody for Empty {
 
 impl ResponseBody for Empty {
     type Value = ();
+    type Error = Infallible;
 }
 
 /// A JSON body holding a `T`. A request with one has the `Content-Type`
@@ -169,6 +172,27 @@ impl<T> RequestBody for Json<T> {
 
 impl<T> ResponseBody for Json<T> {
     type Value = T;
+    type Error = Infallible;
+}
+
+/// A binary body, with the `Content-Type` `application/octet-stream`.
+///
+/// A `GET` request can ask for part of the body with a `Range` header, and make
+/// that conditional with an `If-Range` header (see
+/// [`Selection`](super::Selection)). The answer is the whole body with the
+/// endpoint's status code, the part with
+/// [`PARTIAL_STATUS`](Self::PARTIAL_STATUS), or [`RangeError`].
+#[derive(Debug)]
+pub enum Bytes {}
+
+impl Bytes {
+    /// The status code of a response with part of the body.
+    pub const PARTIAL_STATUS: u16 = 206;
+}
+
+impl ResponseBody for Bytes {
+    type Value = [u8];
+    type Error = RangeError;
 }
 
 /// A set of [`ErrorCode`]s, as a type whose values are the codes.
@@ -215,6 +239,11 @@ macro_rules! errors {
 errors! {
     /// The errors of reading a [`Json`] request body.
     BodyError { BadRequest, UnsupportedMediaType, PayloadTooLarge }
+}
+
+errors! {
+    /// The errors of answering with a [`Bytes`] response body.
+    RangeError { RangeNotSatisfiable }
 }
 
 errors! {
