@@ -18,6 +18,9 @@ const failures: ApiFailure[] = [
   { kind: "api", status: 413, code: "payload_too_large" },
   { kind: "api", status: 415, code: "unsupported_media_type" },
   { kind: "api", status: 400, code: "from_the_future" },
+  { kind: "api", status: 403, code: "sensitive" },
+  { kind: "api", status: 409, code: "unavailable" },
+  { kind: "api", status: 416, code: "range_not_satisfiable" },
   { kind: "decode", status: 200 },
   { kind: "aborted" },
   { kind: "unknown-outcome", cause: { kind: "network" } },
@@ -43,6 +46,18 @@ test("an error code from a newer firmware is named and suggests a reload", () =>
   const message = describeFailure({ kind: "api", status: 400, code: "from_the_future" });
   assert.match(message.explanation, /from_the_future/);
   assert.deepEqual(message.actions, ["reload"]);
+});
+
+test("the storage refusals say what they mean and don't suggest a reload", () => {
+  const sensitive = describeFailure({ kind: "api", status: 403, code: "sensitive" });
+  assert.match(sensitive.explanation, /never sends/);
+  assert.deepEqual(sensitive.actions, []);
+  assert.deepEqual(describeFailure({ kind: "api", status: 409, code: "unavailable" }).actions, []);
+  const busy = describeFailure({ kind: "busy", retryAfterS: 5, code: "busy" });
+  assert.equal(busy.title, "Another download is running");
+  assert.match(busy.explanation, /5 seconds/);
+  const lines = failureDetails({ kind: "busy", retryAfterS: 5, code: "busy" }, { method: "GET", path: "/x", attempts: 1, at: 0 });
+  assert.ok(lines.includes("code busy"));
 });
 
 test("an unknown outcome says the request wasn't repeated", () => {

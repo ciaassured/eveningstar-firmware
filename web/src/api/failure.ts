@@ -7,7 +7,7 @@ export type ErrorCode = components["schemas"]["ErrorCode"];
 export type ApiFailure =
   | { kind: "network" }
   | { kind: "timeout"; afterMs: number }
-  | { kind: "busy"; retryAfterS?: number }
+  | { kind: "busy"; retryAfterS?: number; code?: ErrorCode | (string & {}) }
   | { kind: "unauthorized" }
   | { kind: "forbidden" }
   | { kind: "locked"; holder?: string; since?: string }
@@ -54,7 +54,7 @@ export function isTransient(failure: ApiFailure): boolean {
   }
 }
 
-function describeCode(code: string): { title: string; explanation: string } {
+function describeCode(code: ErrorCode | (string & {})): { title: string; explanation: string } {
   switch (code) {
     case "bad_request":
       return {
@@ -80,6 +80,28 @@ function describeCode(code: string): { title: string; explanation: string } {
       return {
         title: "The request was too large",
         explanation: "The device can't read a request that large.",
+      };
+    case "sensitive":
+      return {
+        title: "That never leaves the device",
+        explanation:
+          "The region holds configuration, secrets or factory data, which the device never sends, whatever the session may do.",
+      };
+    case "unavailable":
+      return {
+        title: "The device can't read that now",
+        explanation:
+          "The firmware doesn't trust the flash's layout this boot, so it doesn't read that region. The Storage page says why.",
+      };
+    case "range_not_satisfiable":
+      return {
+        title: "That range is outside the region",
+        explanation: "The bytes asked for aren't part of the region. The region may have changed size since this page loaded.",
+      };
+    case "busy":
+      return {
+        title: "Another download is running",
+        explanation: "The device serves one download at a time, and another client is downloading.",
       };
     default:
       // A code from a firmware newer than this page.
@@ -107,6 +129,16 @@ export function describeFailure(failure: ApiFailure): FailureMessage {
         actions: ["retry"],
       };
     case "busy":
+      if (failure.code === "busy") {
+        return {
+          title: "Another download is running",
+          explanation:
+            failure.retryAfterS === undefined
+              ? "The device serves one download at a time, and another client is downloading."
+              : `The device serves one download at a time, and another client is downloading. It asked for ${failure.retryAfterS} seconds.`,
+          actions: ["retry"],
+        };
+      }
       return {
         title: "The device is busy",
         explanation:
@@ -138,7 +170,9 @@ export function describeFailure(failure: ApiFailure): FailureMessage {
       };
     case "api": {
       const { title, explanation } = describeCode(failure.code);
-      return { title, explanation, actions: ["reload"] };
+      // The device's own refusals don't change with a newer page.
+      const settled = ["sensitive", "unavailable", "range_not_satisfiable", "busy"].includes(failure.code);
+      return { title, explanation, actions: settled ? [] : ["reload"] };
     }
     case "decode":
       return {
@@ -180,6 +214,7 @@ export function failureDetails(failure: ApiFailure, context: FailureContext): st
       lines.push(`timed out after ${failure.afterMs} ms`);
       break;
     case "busy":
+      if (failure.code !== undefined) lines.push(`code ${failure.code}`);
       if (failure.retryAfterS !== undefined) lines.push(`retry after ${failure.retryAfterS} s`);
       break;
     case "unknown-outcome":

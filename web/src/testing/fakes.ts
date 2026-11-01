@@ -62,7 +62,73 @@ export function emptyResponse(status: number, headers: Record<string, string> = 
   return new Response(null, { status, headers });
 }
 
-type Step = (url: string, init: RequestInit) => Promise<Response> | Response;
+export type Step = (url: string, init: RequestInit) => Promise<Response> | Response;
+
+/** How the fake device serves a region's content. */
+export interface ContentScript {
+  /** The region's tag; answers carry it, and an `If-Range` with another one gets the whole region. */
+  etag?: string;
+  /** Ends the body with a network error after this many bytes. */
+  cutAfter?: number;
+  /** Stops sending after this many bytes, without ending the body. */
+  stallAfter?: number;
+  /** The size of each chunk sent. */
+  chunk?: number;
+}
+
+/**
+ * A step answering a content request for `bytes` as the device does: the
+ * whole region with `200`, a `Range` with `206`, and a stale `If-Range` with
+ * the whole region again.
+ */
+export function serveContent(bytes: Uint8Array, script: ContentScript = {}): Step {
+  return (_url, init) => {
+    const headers = (init.headers ?? {}) as Record<string, string>;
+    let first = 0;
+    let last = bytes.byteLength - 1;
+    let status = 200;
+    const range = /^bytes=(\d+)-(\d*)$/.exec(headers["Range"] ?? "");
+    const fresh = headers["If-Range"] === undefined || headers["If-Range"] === script.etag;
+    if (range !== null && fresh) {
+      first = Number(range[1]);
+      last = range[2] === "" ? last : Math.min(last, Number(range[2]));
+      status = 206;
+      if (first > last) {
+        return jsonResponse(416, { error: "range_not_satisfiable" }, { "Content-Range": `bytes */${bytes.byteLength}` });
+      }
+    }
+    const body = bytes.subarray(first, last + 1);
+    const chunk = script.chunk ?? 1_024;
+    let sent = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (script.cutAfter !== undefined && sent >= script.cutAfter) {
+          controller.error(new TypeError("network error"));
+          return undefined;
+        }
+        if (script.stallAfter !== undefined && sent >= script.stallAfter) return new Promise<void>(() => {});
+        if (sent >= body.byteLength) {
+          controller.close();
+          return undefined;
+        }
+        let end = Math.min(body.byteLength, sent + chunk);
+        if (script.cutAfter !== undefined) end = Math.min(end, script.cutAfter);
+        if (script.stallAfter !== undefined) end = Math.min(end, script.stallAfter);
+        controller.enqueue(body.slice(sent, end));
+        sent = end;
+        return undefined;
+      },
+    });
+    const out: Record<string, string> = {
+      "Content-Type": "application/octet-stream",
+      "Content-Length": String(body.byteLength),
+      "Accept-Ranges": "bytes",
+    };
+    if (script.etag !== undefined) out["ETag"] = script.etag;
+    if (status === 206) out["Content-Range"] = `bytes ${first}-${last}/${bytes.byteLength}`;
+    return new Response(stream, { status, headers: out });
+  };
+}
 
 /** A `fetch` that answers from a script and records what it was asked. */
 export class FakeFetch {

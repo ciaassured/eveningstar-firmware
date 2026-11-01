@@ -66,6 +66,50 @@ export interface TransportDeps {
   onAttempt?: (reachable: boolean) => void;
 }
 
+/** Downloads wait this long for the next bytes before giving up on the connection. */
+export const STALL_MS = 10_000;
+
+/** Inclusive byte offsets, and the length of what they are offsets into. */
+export interface ByteRange {
+  first: number;
+  last: number;
+  length: number;
+}
+
+/** What a download's answer says about its body, before the body. */
+export interface DownloadHead {
+  status: 200 | 206;
+  /** The body's strong entity tag, if it has one. */
+  etag?: string;
+  /** The length of this answer's body. */
+  length?: number;
+  /** For a `206`, the part of the whole the body is. */
+  range?: ByteRange;
+}
+
+export interface DownloadSpec {
+  /** The path on the device. */
+  path: string;
+  headers?: Record<string, string>;
+  /** Overrides how long the download waits for the next bytes. */
+  stallMs?: number;
+  /** Called once the device answers `200` or `206`, before the first chunk. */
+  onHead?(head: DownloadHead): void;
+  /** Called with every chunk of the body as it arrives. */
+  onChunk(chunk: Uint8Array): void;
+}
+
+/** How a download ended. A failure keeps the head and the count of the bytes that arrived before it. */
+export type DownloadOutcome =
+  | { ok: true; head: DownloadHead; received: number; context: FailureContext }
+  | { ok: false; failure: ApiFailure; head?: DownloadHead; received: number; context: FailureContext };
+
+export interface DownloadCall {
+  readonly done: Promise<DownloadOutcome>;
+  /** Aborts the download; `done` then settles with an `aborted` failure. */
+  cancel(): void;
+}
+
 interface Job {
   spec: RequestSpec;
   seq: number;
@@ -89,6 +133,7 @@ export class Transport {
   readonly #queue: Job[] = [];
   #running: Job | null = null;
   #paused = false;
+  #downloading = false;
   #seq = 0;
 
   constructor(deps: TransportDeps) {
@@ -143,6 +188,124 @@ export class Transport {
       running.aborted = true;
       running.current?.abort();
       running.wake?.();
+    }
+  }
+
+  /** Whether a download is running. */
+  get downloading(): boolean {
+    return this.#downloading;
+  }
+
+  /**
+   * Downloads a body beside the queue, so the page's other requests keep
+   * flowing: at most one at a time, started at once as a person's action, with
+   * no limit on its length while bytes keep arriving, and never retried.
+   * Resuming and waiting are for the caller.
+   */
+  download(spec: DownloadSpec): DownloadCall {
+    const controller = new AbortController();
+    const state = { cancelled: false, halt: (): void => {} };
+    const cancel = (): void => {
+      state.cancelled = true;
+      controller.abort();
+      state.halt();
+    };
+    if (this.#downloading) {
+      const context = { method: "GET", path: spec.path, attempts: 0, at: this.#deps.now() };
+      return { done: Promise.resolve({ ok: false, failure: { kind: "busy" }, received: 0, context }), cancel };
+    }
+    this.#downloading = true;
+    const done = this.#runDownload(spec, controller, state).finally(() => {
+      this.#downloading = false;
+    });
+    return { done, cancel };
+  }
+
+  async #runDownload(
+    spec: DownloadSpec,
+    controller: AbortController,
+    state: { cancelled: boolean; halt: () => void },
+  ): Promise<DownloadOutcome> {
+    const { timers } = this.#deps;
+    const stallMs = spec.stallMs ?? STALL_MS;
+    const context = (): FailureContext => ({ method: "GET", path: spec.path, attempts: 1, at: this.#deps.now() });
+    let stalled = false;
+    let received = 0;
+    let head: DownloadHead | undefined;
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    let timer: unknown;
+    // Aborting the request ends a body read in the browser; cancelling the reader also ends one that isn't tied to it.
+    state.halt = () => {
+      void reader?.cancel().catch(() => {});
+    };
+    const arm = (): void => {
+      timers.clearTimeout(timer);
+      timer = timers.setTimeout(() => {
+        stalled = true;
+        controller.abort();
+        state.halt();
+      }, stallMs);
+    };
+    const fail = (failure: ApiFailure): DownloadOutcome => {
+      const outcome: DownloadOutcome = { ok: false, failure, received, context: context() };
+      if (head !== undefined) outcome.head = head;
+      return outcome;
+    };
+    const ended = (): DownloadOutcome | undefined => {
+      if (state.cancelled) return fail({ kind: "aborted" });
+      if (stalled) return fail({ kind: "timeout", afterMs: stallMs });
+      return undefined;
+    };
+
+    arm();
+    const init: RequestInit = {
+      method: "GET",
+      headers: { Accept: "application/octet-stream, application/json", ...spec.headers },
+      signal: controller.signal,
+      credentials: "same-origin",
+      cache: "no-store",
+      redirect: "error",
+      referrerPolicy: "no-referrer",
+    };
+    try {
+      const response = await this.#deps.fetch(spec.path, this.#deps.auth.decorate(init));
+      this.#deps.onAttempt?.(true);
+      if (response.status !== 200 && response.status !== 206) {
+        const attempt = classify(response, await response.text());
+        const failure: ApiFailure = attempt.ok ? { kind: "decode", status: response.status } : attempt.failure;
+        if (failure.kind === "unauthorized" && (await this.#deps.auth.onUnauthorized()) === "login-required") {
+          this.#deps.onLoginRequired();
+        }
+        return fail(failure);
+      }
+      head = readHead(response);
+      spec.onHead?.(head);
+      const early = ended();
+      if (early !== undefined) {
+        void response.body?.cancel().catch(() => {});
+        return early;
+      }
+      reader = response.body?.getReader();
+      arm();
+      while (reader !== undefined) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        arm();
+        received += value.byteLength;
+        spec.onChunk(value);
+      }
+      const late = ended();
+      if (late !== undefined) return late;
+      // The device closes the connection early when the region is written while it streams.
+      if (head.length !== undefined && received < head.length) return fail({ kind: "network" });
+      return { ok: true, head, received, context: context() };
+    } catch {
+      const late = ended();
+      if (late !== undefined) return late;
+      if (head === undefined) this.#deps.onAttempt?.(false);
+      return fail({ kind: "network" });
+    } finally {
+      timers.clearTimeout(timer);
     }
   }
 
@@ -319,10 +482,13 @@ export function classify(response: Response, text: string): Attempt {
   }
 
   if (status >= 200 && status < 300) return { ok: true, reply: { status, body } };
+  const fields = asRecord(body);
+  const code = typeof fields?.["error"] === "string" ? fields["error"] : undefined;
   if (status === 401) return { ok: false, failure: { kind: "unauthorized" } };
-  if (status === 403) return { ok: false, failure: { kind: "forbidden" } };
-  if (status === 409 || status === 423) {
-    const fields = asRecord(body);
+  // A region that never leaves the device is the API's own answer, not a lack of access.
+  if (status === 403 && code !== "sensitive") return { ok: false, failure: { kind: "forbidden" } };
+  // A conflict the API names, such as a region the firmware can't read this boot, isn't a lock.
+  if (status === 423 || (status === 409 && code === undefined)) {
     const failure: ApiFailure = { kind: "locked" };
     if (typeof fields?.["holder"] === "string") failure.holder = fields["holder"];
     if (typeof fields?.["since"] === "string") failure.since = fields["since"];
@@ -332,9 +498,30 @@ export function classify(response: Response, text: string): Attempt {
     const failure: ApiFailure = { kind: "busy" };
     const retryAfter = Number(response.headers.get("Retry-After"));
     if (Number.isFinite(retryAfter) && retryAfter > 0) failure.retryAfterS = retryAfter;
+    if (code !== undefined) failure.code = code;
     return { ok: false, failure };
   }
-  const code = asRecord(body)?.["error"];
-  if (typeof code === "string") return { ok: false, failure: { kind: "api", status, code } };
+  if (code !== undefined) return { ok: false, failure: { kind: "api", status, code } };
   return { ok: false, failure: { kind: "decode", status } };
+}
+
+/** The offsets of a `Content-Range` such as `bytes 0-1023/4096`; `undefined` if it isn't one. */
+export function parseContentRange(value: string | null): ByteRange | undefined {
+  const match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(value?.trim() ?? "");
+  if (match === null) return undefined;
+  const [first, last, length] = [Number(match[1]), Number(match[2]), Number(match[3])];
+  if (first > last || last >= length) return undefined;
+  return { first, last, length };
+}
+
+function readHead(response: Response): DownloadHead {
+  const head: DownloadHead = { status: response.status === 206 ? 206 : 200 };
+  const tag = response.headers.get("ETag");
+  // Only a strong tag says the bytes are the same, so only it is worth resuming with.
+  if (tag !== null && tag.startsWith('"')) head.etag = tag;
+  const length = Number(response.headers.get("Content-Length") ?? "");
+  if (response.headers.has("Content-Length") && Number.isSafeInteger(length) && length >= 0) head.length = length;
+  const range = parseContentRange(response.headers.get("Content-Range"));
+  if (range !== undefined) head.range = range;
+  return head;
 }
