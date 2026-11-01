@@ -1,11 +1,22 @@
-//! Storage on the internal flash: the partition layout and, later, the checks
-//! of the table and bootloader on the board and the handles to the partitions.
+//! Storage on the internal flash: the partition layout, the formats on the
+//! flash (the partition table and ESP images), and, later, the checks of the
+//! board's table and bootloader and the handles to the partitions.
 //!
-//! The crate is `no_std` and also builds on the host.
+//! The crate is `no_std`, allocation-free, and also builds on the host. Every
+//! parser reads through [`Source`], with buffers of at most 256 bytes on the
+//! stack, and returns an error rather than panicking on any input.
 
-#![no_std]
+#![cfg_attr(not(test), no_std)]
 
 pub mod layout;
+mod source;
+pub mod table;
+#[cfg(test)]
+mod test_support;
+mod text;
+
+pub use source::{ReadError, Source};
+pub use text::Text;
 
 /// Partition type of an application image.
 pub const TYPE_APP: u8 = 0x00;
