@@ -517,6 +517,24 @@ impl RamFlash {
         *self.fail_reads.lock().unwrap() = Some(range);
     }
 
+    /// Lets every erase, program and read succeed again.
+    pub(crate) fn heal(&self) {
+        *self.fail_after.lock().unwrap() = None;
+        *self.fail_reads.lock().unwrap() = None;
+    }
+
+    /// Writes `bytes` at `address` as they are, without logging them or
+    /// failing: what the bootloader writes, or what decays on the flash.
+    pub(crate) fn poke(&self, address: u32, bytes: &[u8]) {
+        let range = self.range(address, bytes.len());
+        self.bytes.lock().unwrap()[range].copy_from_slice(bytes);
+    }
+
+    /// What `read` returns given the bytes, without copying them.
+    pub(crate) fn with_bytes<T>(&self, read: impl FnOnce(&[u8]) -> T) -> T {
+        read(&self.bytes.lock().unwrap())
+    }
+
     /// The erases and programs carried out so far.
     pub(crate) fn ops(&self) -> Vec<Op> {
         self.ops.lock().unwrap().clone()
@@ -662,4 +680,61 @@ pub(crate) fn espflash_board() -> RamFlash {
             (0x1_0000, APP),
         ],
     )
+}
+
+/// Whether the ESP-IDF bootloader loads the app image at the start of
+/// `partition`, as `esp_image_verify` checks it without secure boot: the
+/// magic, the chip, at most 16 segments, each a whole number of words inside
+/// the partition, the checksum, and the SHA-256 when one is appended. It reads
+/// the format on its own, apart from the crate's parser, so the simulated
+/// boots check what the crate verifies.
+pub(crate) fn idf_loads(partition: &[u8]) -> bool {
+    let word = |at: usize| {
+        partition
+            .get(at..at + 4)
+            .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()) as usize)
+    };
+    let Some(header) = partition.get(..24) else {
+        return false;
+    };
+    if header[0] != 0xE9 || header[12..14] != [0x0D, 0x00] || header[1] > 16 {
+        return false;
+    }
+    let mut at = 24;
+    let mut checksum = 0xEF;
+    for _ in 0..header[1] {
+        let Some(len) = word(at + 4) else {
+            return false;
+        };
+        let Some(data) = partition.get(at + 8..at + 8 + len) else {
+            return false;
+        };
+        if len % 4 != 0 {
+            return false;
+        }
+        checksum = data.iter().fold(checksum, |sum, b| sum ^ b);
+        at += 8 + len;
+    }
+    let end = (at | 0x0F) + 1;
+    if partition.get(end - 1) != Some(&checksum) {
+        return false;
+    }
+    header[23] == 0
+        || partition
+            .get(end..end + 32)
+            .is_some_and(|stored| Sha256::digest(&partition[..end])[..] == *stored)
+}
+
+/// One boot of `flash` by the simulated ESP-IDF bootloader ([`boot`]), which
+/// loads a slot when [`idf_loads`] says so and writes the otadata back
+/// unlogged: the slot started, `None` when none loads.
+pub(crate) fn boot_flash(flash: &RamFlash) -> Option<crate::Slot> {
+    let loadable = crate::Slot::ALL.map(|slot| {
+        let entry = slot.partition();
+        flash.with_bytes(|bytes| idf_loads(&bytes[entry.offset as usize..entry.end() as usize]))
+    });
+    let mut otadata = flash.at(OTADATA_AT, OTADATA_LEN);
+    let booted = boot(&mut otadata, loadable);
+    flash.poke(OTADATA_AT, &otadata);
+    booted
 }

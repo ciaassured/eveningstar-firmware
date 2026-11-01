@@ -1,10 +1,20 @@
 //! Storage on the internal flash: the partition layout, the formats on the
 //! flash (the partition table, ESP images and the otadata), the checks of the
-//! board's table and bootloader, and the typed handles to the partitions.
+//! board's table and bootloader, the typed handles to the partitions, and the
+//! OTA mechanism.
 //!
 //! [`split`] reads the board through a [`Flash`] once per boot and hands out
 //! the handles of the trust tier it reaches ([`Storage`]); the
 //! [`partitions`] module documents the handles.
+//!
+//! In the full tier, [`Ota`] alone writes the other app slot and the otadata.
+//! An update is written and verified ([`Ota::begin_update`],
+//! [`Update::write`], [`Update::finish`]), the [`VerifiedImage`] it gives is
+//! selected for the next boot ([`Ota::activate`]), and the image that boots
+//! is confirmed ([`Ota::mark_valid`]) or rolled back ([`Ota::roll_back`]). A
+//! power cut at any step leaves a selection that starts a whole image: the
+//! one running, or an activated one with its rollback armed. Nothing in the
+//! crate reboots.
 //!
 //! The crate is `no_std`, allocation-free, and also builds on the host. Every
 //! parser reads through [`Source`], with buffers of at most 256 bytes on the
@@ -17,6 +27,7 @@ mod future;
 pub mod image;
 pub mod known;
 pub mod layout;
+mod ota;
 pub mod otadata;
 pub mod partitions;
 mod region;
@@ -28,9 +39,10 @@ mod test_support;
 mod text;
 
 pub use flash::{DeviceError, Flash, SECTOR_SIZE, WORD_SIZE};
+pub use ota::{Ota, OtaError, Update, VerifiedImage};
 pub use region::AccessError;
 pub use source::{ReadError, Source};
-pub use split::{AppId, BootChain, BootloaderId, Data, Limit, Ota, Report, Storage, Tier, split};
+pub use split::{AppId, BootChain, BootloaderId, Data, Limit, Report, Storage, Tier, split};
 pub use text::Text;
 
 /// Partition type of an application image.

@@ -11,9 +11,8 @@
 //! | [`Tier::Data`] | otherwise | + [`Data`]: config, other config, diag, other app, otadata |
 //! | [`Tier::Full`] | + the bootloader is known and the running app's descriptor reads | + [`Ota`] |
 
-use core::fmt;
-
 use crate::image::{self, ImageError};
+use crate::ota::Ota;
 use crate::otadata::{self, BootState, State};
 use crate::partitions::{
     Bootloader, Config, Diag, Otadata, OtherApp, OtherConfig, Partition, PartitionTable, RunningApp,
@@ -185,35 +184,6 @@ pub struct Data<'f> {
     pub otadata: Partition<'f, Otadata>,
     /// The OTA mechanism, in the full tier only.
     pub ota: Option<Ota<'f>>,
-}
-
-/// The OTA mechanism, in the full tier only: the other app slot and the
-/// otadata, which it alone writes, the running slot and the running app's
-/// project name.
-pub struct Ota<'f> {
-    other: Region<'f>,
-    otadata: Region<'f>,
-    running: Slot,
-    project: Text<32>,
-}
-
-impl Ota<'_> {
-    /// The boot state the otadata gives now.
-    #[must_use]
-    pub fn boot_state(&self) -> BootState {
-        otadata::read(&self.otadata).boot_state(self.running)
-    }
-}
-
-impl fmt::Debug for Ota<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Ota")
-            .field("other", &self.other)
-            .field("otadata", &self.otadata)
-            .field("running", &self.running)
-            .field("project", &self.project)
-            .finish()
-    }
 }
 
 /// What `split` hands out: the report, the boot chain, and the data tier's
@@ -442,17 +412,19 @@ impl<'f> Checks<'f> {
             return None;
         }
         let app = self.app().ok()?;
-        Some(Ota {
-            other: spans.other_app,
-            otadata: spans.otadata,
-            running: spans.slot,
-            project: app.project_name,
-        })
+        Some(Ota::new(
+            spans.other_app,
+            spans.otadata,
+            spans.slot,
+            app.project_name,
+        ))
     }
 }
 
-/// The name and version of the app image in `region`.
-fn app_id(region: &Region<'_>) -> Result<AppId, ImageError> {
+/// The name and version of the app image in `region`. Never inlined, so the
+/// descriptor it reads stays out of its callers' frames.
+#[inline(never)]
+pub(crate) fn app_id(region: &Region<'_>) -> Result<AppId, ImageError> {
     let descriptor = image::app_descriptor(region)?;
     Ok(AppId {
         project_name: descriptor.project_name(),
