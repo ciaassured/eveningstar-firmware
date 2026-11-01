@@ -19,8 +19,8 @@ mod endpoint;
 mod openapi;
 
 pub use endpoint::{
-    BodyError, Empty, Endpoint, Errors, Json, Method, RequestBody, ResponseBody, RouteError,
-    is_json_content_type,
+    BodyError, Empty, Endpoint, Errors, Json, Method, PathParam, PathParams, RequestBody,
+    ResponseBody, RouteError, is_json_content_type,
 };
 #[cfg(feature = "schema")]
 pub use openapi::openapi;
@@ -28,27 +28,65 @@ pub use openapi::openapi;
 /// Path prefix of every version 1 endpoint.
 pub const PATH: &str = "/api/v1";
 
-/// Defines [`Operation`], with a variant holding each endpoint listed.
+/// Defines [`Operation`], with a variant holding each endpoint listed, and
+/// [`Call`], with a variant holding each endpoint and its path's parameters.
 macro_rules! operations {
-    ($($endpoint:ident),* $(,)?) => {
+    ($($(#[$attr:meta])* $endpoint:ident),* $(,)?) => {
         /// Every operation of the API, each holding its [`Endpoint`].
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         pub enum Operation {
             $(
+                $(#[$attr])*
                 #[doc = concat!("[`", stringify!($endpoint), "`].")]
                 $endpoint($endpoint),
             )*
         }
 
+        /// The operation a request is for, holding its [`Endpoint`] and the
+        /// parameters the request's path holds.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub enum Call {
+            $(
+                $(#[$attr])*
+                #[doc = concat!("[`", stringify!($endpoint), "`].")]
+                $endpoint($endpoint, <$endpoint as Endpoint>::Params),
+            )*
+        }
+
         impl Operation {
             /// Every operation.
-            pub const ALL: &[Self] = &[$(Self::$endpoint($endpoint)),*];
+            pub const ALL: &[Self] = &[$($(#[$attr])* Self::$endpoint($endpoint)),*];
+
+            /// The operation a request with `method` and `path`, relative to
+            /// [`PATH`], is for, with the parameters `path` holds.
+            ///
+            /// # Errors
+            ///
+            /// [`RouteError::NotFound`] if no operation has the path, including
+            /// when a segment that is a path parameter doesn't parse, and
+            /// [`RouteError::MethodNotAllowed`] if none with the path has the
+            /// method.
+            pub fn find(method: &str, path: &str) -> Result<Call, RouteError> {
+                let mut error = RouteError::NotFound;
+                $(
+                    $(#[$attr])*
+                    if let Some(params) =
+                        endpoint::path_params(<$endpoint as Endpoint>::PATH, path)
+                    {
+                        if <$endpoint as Endpoint>::METHOD.as_str() == method {
+                            return Ok(Call::$endpoint($endpoint, params));
+                        }
+                        error = RouteError::MethodNotAllowed;
+                    }
+                )*
+                Err(error)
+            }
 
             /// The operation's name: the name of its endpoint's type.
             #[must_use]
             pub const fn name(self) -> &'static str {
                 match self {
-                    $(Self::$endpoint(_) => stringify!($endpoint),)*
+                    $($(#[$attr])* Self::$endpoint(_) => stringify!($endpoint),)*
                 }
             }
 
@@ -56,7 +94,7 @@ macro_rules! operations {
             #[must_use]
             pub const fn method(self) -> Method {
                 match self {
-                    $(Self::$endpoint(_) => <$endpoint as Endpoint>::METHOD,)*
+                    $($(#[$attr])* Self::$endpoint(_) => <$endpoint as Endpoint>::METHOD,)*
                 }
             }
 
@@ -64,7 +102,7 @@ macro_rules! operations {
             #[must_use]
             pub const fn path(self) -> &'static str {
                 match self {
-                    $(Self::$endpoint(_) => <$endpoint as Endpoint>::PATH,)*
+                    $($(#[$attr])* Self::$endpoint(_) => <$endpoint as Endpoint>::PATH,)*
                 }
             }
 
@@ -72,7 +110,7 @@ macro_rules! operations {
             #[must_use]
             pub const fn scope(self) -> Scope {
                 match self {
-                    $(Self::$endpoint(_) => <$endpoint as Endpoint>::SCOPE,)*
+                    $($(#[$attr])* Self::$endpoint(_) => <$endpoint as Endpoint>::SCOPE,)*
                 }
             }
 
@@ -80,36 +118,36 @@ macro_rules! operations {
             #[cfg(feature = "schema")]
             fn document(self, document: &mut openapi::Document) {
                 match self {
-                    $(Self::$endpoint(_) => document.operation::<$endpoint>(self.name()),)*
+                    $(
+                        $(#[$attr])*
+                        Self::$endpoint(_) => document.operation::<$endpoint>(self.name()),
+                    )*
+                }
+            }
+        }
+
+        impl Call {
+            /// The operation called.
+            #[must_use]
+            pub const fn operation(self) -> Operation {
+                match self {
+                    $(
+                        $(#[$attr])*
+                        Self::$endpoint(endpoint, _) => Operation::$endpoint(endpoint),
+                    )*
                 }
             }
         }
     };
 }
 
-operations!(GetSystem, GetRebootStatus, Reboot);
-
-impl Operation {
-    /// The operation a request with `method` and `path`, relative to
-    /// [`PATH`], is for.
-    ///
-    /// # Errors
-    ///
-    /// [`RouteError::NotFound`] if no operation has the path, and
-    /// [`RouteError::MethodNotAllowed`] if none with the path has the method.
-    pub fn find(method: &str, path: &str) -> Result<Self, RouteError> {
-        let mut error = RouteError::NotFound;
-        for &operation in Self::ALL {
-            if operation.path() == path {
-                if operation.method().as_str() == method {
-                    return Ok(operation);
-                }
-                error = RouteError::MethodNotAllowed;
-            }
-        }
-        Err(error)
-    }
-}
+operations!(
+    GetSystem,
+    GetRebootStatus,
+    Reboot,
+    #[cfg(test)]
+    GetTestContent,
+);
 
 /// The endpoint answering with the device's [`System`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -122,6 +160,7 @@ impl Endpoint for GetSystem {
     const SCOPE: Scope = Scope::Read;
     const SUMMARY: &'static str = "Get the device's identity and uptime";
 
+    type Params = ();
     type Request = Empty;
     type Response = Json<System>;
     type Error = Infallible;
@@ -138,6 +177,7 @@ impl Endpoint for GetRebootStatus {
     const SCOPE: Scope = Scope::Read;
     const SUMMARY: &'static str = "Get the pending reboot and its holds";
 
+    type Params = ();
     type Request = Empty;
     type Response = Json<RebootStatus>;
     type Error = Infallible;
@@ -159,10 +199,45 @@ impl Endpoint for Reboot {
         the reboot drops the connection.",
     );
 
+    type Params = ();
     type Request = Json<RebootRequest>;
     type Response = Empty;
     type Error = Infallible;
 }
+
+/// An endpoint of the tests, with a path parameter.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GetTestContent;
+
+#[cfg(test)]
+impl Endpoint for GetTestContent {
+    const METHOD: Method = Method::Get;
+    const PATH: &'static str = "/test/{item}/content";
+    const STATUS: u16 = 204;
+    const SCOPE: Scope = Scope::Read;
+    const SUMMARY: &'static str = "Get an item's content";
+
+    type Params = TestItem;
+    type Request = Empty;
+    type Response = Empty;
+    type Error = Infallible;
+}
+
+/// An item of the tests, named by a path parameter.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum TestItem {
+    /// The first item.
+    First,
+    /// The item after the first.
+    SecondItem,
+}
+
+#[cfg(test)]
+impl PathParam for TestItem {}
 
 /// What a session needs to be allowed to call an operation. Later versions may
 /// add scopes.
@@ -347,10 +422,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn finds_every_operation_by_its_method_and_path() {
+    fn finds_every_operation_without_parameters_by_its_method_and_path() {
         for &operation in Operation::ALL {
+            if operation.path().contains('{') {
+                continue;
+            }
             let found = Operation::find(operation.method().as_str(), operation.path());
-            assert_eq!(found, Ok(operation), "{}", operation.name());
+            assert_eq!(
+                found.map(Call::operation),
+                Ok(operation),
+                "{}",
+                operation.name()
+            );
         }
     }
 
@@ -358,7 +441,11 @@ mod tests {
     fn finds_operations_by_exact_method_and_path() {
         assert_eq!(
             Operation::find("POST", "/system/reboot"),
-            Ok(Operation::Reboot(Reboot))
+            Ok(Call::Reboot(Reboot, ()))
+        );
+        assert_eq!(
+            Operation::find("GET", "/system"),
+            Ok(Call::GetSystem(GetSystem, ()))
         );
         assert_eq!(
             Operation::find("POST", "/system"),
@@ -378,6 +465,87 @@ mod tests {
     }
 
     #[test]
+    fn finds_operations_with_the_parameters_of_their_paths() {
+        assert_eq!(
+            Operation::find("GET", "/test/first/content"),
+            Ok(Call::GetTestContent(GetTestContent, TestItem::First))
+        );
+        assert_eq!(
+            Operation::find("GET", "/test/second_item/content"),
+            Ok(Call::GetTestContent(GetTestContent, TestItem::SecondItem))
+        );
+        assert_eq!(
+            Operation::find("POST", "/test/first/content"),
+            Err(RouteError::MethodNotAllowed)
+        );
+    }
+
+    #[test]
+    fn parameters_that_do_not_parse_are_not_found() {
+        for path in [
+            "/test/third/content",
+            "/test/First/content",
+            "/test/second-item/content",
+            "/test/second%5Fitem/content",
+            "/test/%66irst/content",
+            "/test/first%20/content",
+            "/test/{item}/content",
+            "/test//content",
+            "/test/first/second_item/content",
+            "/test/first/content/",
+            "/test/first",
+            "/test/content",
+            "/test/first/contents",
+            "/tests/first/content",
+        ] {
+            assert_eq!(
+                Operation::find("GET", path),
+                Err(RouteError::NotFound),
+                "{path}"
+            );
+            // Without a path, no method is allowed or not.
+            assert_eq!(
+                Operation::find("POST", path),
+                Err(RouteError::NotFound),
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn path_parameters_take_every_segment_they_name() {
+        // A template naming more parameters than its type parses never matches.
+        assert_eq!(
+            endpoint::path_params::<TestItem>("/test/{a}/{b}", "/test/first/first"),
+            None
+        );
+        // Nor does one naming fewer.
+        assert_eq!(
+            endpoint::path_params::<TestItem>("/test/first", "/test/first"),
+            None
+        );
+        assert_eq!(
+            endpoint::path_params::<()>("/test/{item}", "/test/first"),
+            None
+        );
+        assert_eq!(endpoint::path_params::<()>("/test", "/test"), Some(()));
+        assert_eq!(endpoint::path_params::<()>("/test", "/test/"), None);
+        assert_eq!(endpoint::path_params::<()>("/test", ""), None);
+    }
+
+    #[test]
+    fn calls_name_their_operations() {
+        assert_eq!(
+            Call::GetTestContent(GetTestContent, TestItem::First).operation(),
+            Operation::GetTestContent(GetTestContent)
+        );
+        assert_eq!(
+            Call::Reboot(Reboot, ()).operation(),
+            Operation::Reboot(Reboot)
+        );
+    }
+
+    #[test]
     fn operations_name_the_scope_they_need() {
         let scopes: Vec<_> = Operation::ALL
             .iter()
@@ -389,6 +557,7 @@ mod tests {
                 ("GetSystem", Scope::Read),
                 ("GetRebootStatus", Scope::Read),
                 ("Reboot", Scope::Operate),
+                ("GetTestContent", Scope::Read),
             ]
         );
         assert_eq!(
