@@ -12,12 +12,25 @@
 //!
 //! [`InternalFlash`] is the one `FlashStorage`: every read, erase and program
 //! of the internal flash goes through it, one at a time.
+//!
+//! It also counts writes. Each partition of the layout has a write
+//! generation, which every erase and program of an address inside the
+//! partition increments before it runs, so no writer has to report what it
+//! changed. [`Generations`] reads them, and [`Writes`] wakes a task after
+//! each write. Writes outside every partition (the bootloader, the table and
+//! the gap before the first app slot) increment nothing: no handle covers
+//! them, and the storage crate's protected regions refuse the bootloader and
+//! the table before an operation reaches the flash. Writes from outside the
+//! firmware, over the USB debug link, aren't counted either; flashing resets
+//! the chip.
 
 use core::cell::RefCell;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use defmt::{Debug2Format, Format, Formatter, error, info, warn};
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::signal::Signal;
 use embassy_time::Instant;
 use esp_hal::peripherals::{FLASH, SPI0};
 use esp_storage::{FlashStorage, FlashStorageError};
@@ -39,8 +52,33 @@ const UNKNOWN_BOOTED: u32 = u32::MAX;
 /// step of the code halves it.
 const MMU_MAX_PAGE_SIZE: u32 = 0x1_0000;
 
+/// The layout's partitions, read in place rather than copied.
+static LAYOUT: [Entry; layout::PARTITIONS.len()] = layout::PARTITIONS;
+
+/// The write generation of each partition of the layout, in the order of
+/// [`LAYOUT`].
+static GENERATIONS: [AtomicU32; LAYOUT.len()] = [const { AtomicU32::new(0) }; LAYOUT.len()];
+
+/// Signalled after each erase and program of the internal flash.
+static WRITTEN: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+/// What [`start`] hands out.
+#[derive(Debug)]
+#[expect(
+    dead_code,
+    reason = "nothing takes the storage handles or the write counts yet"
+)]
+pub(crate) struct Started {
+    /// The handles of the tier reached, and the report.
+    pub(crate) storage: Storage<'static>,
+    /// The write generations of the layout's partitions.
+    pub(crate) generations: Generations,
+    /// The wake after each write.
+    pub(crate) writes: Writes,
+}
+
 /// Splits the internal flash into handles, logs the report, and returns the
-/// handles.
+/// handles with the views of the write counts.
 ///
 /// When the running image is `PendingVerify` and the tier isn't full
 /// ([`Report::cannot_confirm`]), it requests a graceful reboot through
@@ -58,7 +96,7 @@ pub(crate) async fn start(
     flash: FLASH<'static>,
     cache: SPI0<'static>,
     reboot: GracefulReboot,
-) -> Storage<'static> {
+) -> Started {
     static INTERNAL_FLASH: StaticCell<InternalFlash> = StaticCell::new();
 
     let started = Instant::now();
@@ -77,7 +115,67 @@ pub(crate) async fn start(
     );
     log(&storage, capacity);
     confirm_or_reboot(&storage.report, reboot);
-    storage
+    Started {
+        storage,
+        generations: Generations(()),
+        writes: Writes(()),
+    }
+}
+
+/// A read-only view of the write generations: one counter per partition of
+/// the layout, incremented before each erase and program of an address inside
+/// it. A span's generation changes whenever the flash under it may have.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Generations(());
+
+impl Generations {
+    /// The generation of the `len` bytes at `offset` from the start of the
+    /// flash: the wrapping sum of the generations of the partitions the span
+    /// overlaps, so it changes with every write to any of them. 0 for a span
+    /// outside every partition, as no write is counted there.
+    #[expect(dead_code, reason = "nothing reads the generations yet")]
+    #[expect(
+        clippy::unused_self,
+        reason = "the view is the permission to read, not data"
+    )]
+    pub(crate) fn of(self, offset: u32, len: u32) -> u32 {
+        overlapped(offset, len).fold(0, |sum, generation| {
+            sum.wrapping_add(generation.load(Ordering::Acquire))
+        })
+    }
+}
+
+/// The wake after each write to the internal flash, for the one task that
+/// waits for writes. Only [`start`] makes one.
+#[derive(Debug)]
+pub(crate) struct Writes(());
+
+impl Writes {
+    /// Waits for the next erase or program of the internal flash, or returns
+    /// at once when one has finished since the last wait returned.
+    #[expect(dead_code, reason = "no task waits for writes yet")]
+    pub(crate) async fn wait(&mut self) {
+        WRITTEN.wait().await;
+    }
+}
+
+/// The generations of the partitions that the `len` bytes at `offset`
+/// overlap.
+fn overlapped(offset: u32, len: u32) -> impl Iterator<Item = &'static AtomicU32> {
+    let end = offset.saturating_add(len);
+    LAYOUT
+        .iter()
+        .zip(&GENERATIONS)
+        .filter(move |(partition, _)| len > 0 && partition.offset < end && offset < partition.end())
+        .map(|(_, generation)| generation)
+}
+
+/// Increments the generation of each partition the `len` bytes at `address`
+/// overlap, before they are erased or programmed.
+fn bump(address: u32, len: u32) {
+    for generation in overlapped(address, len) {
+        generation.fetch_add(1, Ordering::AcqRel);
+    }
 }
 
 /// Requests a reboot when the running image can't be confirmed (T7).
@@ -175,16 +273,20 @@ impl Flash for InternalFlash {
     }
 
     fn erase_sector(&self, address: u32) -> Result<(), DeviceError> {
+        bump(address, SECTOR_SIZE);
         // A range of one sector is erased with a sector erase, even when it
         // starts on a 64 KiB block boundary: `erase` uses a block erase only
         // for a whole block.
         let result =
             self.with(|storage| storage.erase(address, address.saturating_add(SECTOR_SIZE)));
+        WRITTEN.signal(());
         checked("erase", address, result)
     }
 
     fn program(&self, address: u32, bytes: &[u8]) -> Result<(), DeviceError> {
+        bump(address, u32::try_from(bytes.len()).unwrap_or(u32::MAX));
         let result = self.with(|storage| storage.write_nor(address, bytes));
+        WRITTEN.signal(());
         checked("program", address, result)
     }
 }
@@ -242,15 +344,12 @@ fn log(storage: &Storage<'_>, capacity: u32) {
 
 /// Logs how the table at the compiled offset differs from the layout.
 fn log_comparison(report: &Report) {
-    /// The layout's partitions, read in place rather than copied.
-    static PARTITIONS: [Entry; layout::PARTITIONS.len()] = layout::PARTITIONS;
-
     let comparison = &report.table;
     warn!(
         "Partition table at {=u32:#x} doesn't match the layout:",
         layout::TABLE_OFFSET
     );
-    for (expected, comparison) in PARTITIONS.iter().zip(&comparison.partitions) {
+    for (expected, comparison) in LAYOUT.iter().zip(&comparison.partitions) {
         match *comparison {
             Match::Matches => info!("  {=str}: matches", expected.label),
             Match::Differs(fields) => {
