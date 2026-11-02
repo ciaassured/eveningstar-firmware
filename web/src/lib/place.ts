@@ -40,3 +40,16 @@ export function stepIndex(index: number, count: number, key: string): number | u
   const next = key === "ArrowDown" ? index + 1 : key === "ArrowUp" ? index - 1 : undefined;
   return next === undefined || next < 0 || next >= count ? undefined : next;
 }
+
+/** How close to the top, in CSS pixels, a list counts as scrolled to the top. */
+export const TOP_SLACK = 2;
+
+/**
+ * Where a list scrolled to `top` goes when items `added` pixels tall are put
+ * above what it shows: at the top it stays, and the new items show; scrolled
+ * away it moves down by them, keeping what it shows, and `pill` says to point
+ * at them while the list is `open`.
+ */
+export function keepPlace(top: number, added: number, open: boolean): { top: number; pill: boolean } {
+  return top <= TOP_SLACK ? { top, pill: false } : { top: top + added, pill: open };
+}

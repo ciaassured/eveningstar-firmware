@@ -647,16 +647,26 @@ test("what each download is in the tray, with its hash and note", () => {
   };
   const image = { region: "app_current", what: { kind: "image" } } as const;
   assert.deepEqual(downloadSubject(image, input.regions, plan(image)), {
+    code: "A0",
+    colour: "--r-a0",
     title: "ota_0",
     subtitle: "Running app",
     what: "App image, ota_0",
     hash: { label: "SHA-256 of the image file", text: "the value for the file you receive", value: appImage().fileSha256 },
   });
-  assert.deepEqual(downloadSubject(image, input.regions), { title: "ota_0", subtitle: "Running app", what: "App image, ota_0" });
+  assert.deepEqual(downloadSubject(image, input.regions), {
+    code: "A0",
+    colour: "--r-a0",
+    title: "ota_0",
+    subtitle: "Running app",
+    what: "App image, ota_0",
+  });
   const bootloader = { region: "bootloader", what: { kind: "image" } } as const;
   assert.equal(downloadSubject(bootloader, input.regions, plan(bootloader)).what, "Bootloader image");
   const table = { region: "partition_table", what: { kind: "whole" } } as const;
   assert.deepEqual(downloadSubject(table, input.regions, plan(table)), {
+    code: "PT",
+    colour: "--r-pt",
     title: "Partition table",
     subtitle: "Map of the flash",
     what: "Partition table, entries and MD5 entry",
@@ -665,6 +675,8 @@ test("what each download is in the tray, with its hash and note", () => {
   });
   const otadata = { region: "otadata", what: { kind: "whole" } } as const;
   assert.deepEqual(downloadSubject(otadata, input.regions, plan(otadata)), {
+    code: "OD",
+    colour: "--r-od",
     title: "otadata",
     subtitle: "Boot selection",
     what: "Boot selection (otadata)",
@@ -672,6 +684,8 @@ test("what each download is in the tray, with its hash and note", () => {
   });
   const whole = { region: "app_current", what: { kind: "whole" } } as const;
   assert.deepEqual(downloadSubject(whole, input.regions, plan(whole)), {
+    code: "A0",
+    colour: "--r-a0",
     title: "ota_0",
     subtitle: "Running app",
     what: "Whole region, ota_0",

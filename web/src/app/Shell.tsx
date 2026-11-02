@@ -4,8 +4,9 @@ import { Banner } from "../ui/Banner.tsx";
 import { Button } from "../ui/Button.tsx";
 import { Mark, Wordmark } from "../ui/Brand.tsx";
 import { ConnectionIndicator } from "../ui/ConnectionIndicator.tsx";
+import { PopoverHost } from "../ui/Popover.tsx";
 import { useServices } from "./context.ts";
-import { DownloadTray } from "./downloads-view.tsx";
+import { DownloadsHeaderButton, DownloadsTray } from "./downloads-view.tsx";
 import { cx } from "../lib/cx.ts";
 import { NAVIGATION, fillsFrame, pathOf } from "./router.ts";
 import styles from "./shell.module.css";
@@ -45,7 +46,7 @@ function Notices() {
   );
 }
 
-/** The status bar, the navigation and the room for the page. */
+/** The status bar, the navigation, the room for the page, the downloads tray and the popover. */
 export function Shell({ children }: { children: ComponentChildren }) {
   const { connection, device, router } = useServices();
   const route = router.route.value;
@@ -60,9 +61,9 @@ export function Shell({ children }: { children: ComponentChildren }) {
         </a>
         <span class={styles["device"]}>{name ?? ""}</span>
         <div class={styles["end"]}>
-          <DownloadTray />
           <ConnectionIndicator state={connection.state.value} />
           <span class={styles["badge"]}>Operational</span>
+          <DownloadsHeaderButton />
         </div>
       </header>
       <nav class={styles["nav"]} aria-label="Main">
@@ -93,6 +94,8 @@ export function Shell({ children }: { children: ComponentChildren }) {
           {children}
         </main>
       )}
+      <DownloadsTray class={styles["tray"]} />
+      <PopoverHost />
     </div>
   );
 }

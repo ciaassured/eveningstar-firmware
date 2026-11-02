@@ -73,6 +73,11 @@ const TEXT: [string, string][] = [
   ["--st-critical", "--bg"],
   // The next-boot pill of an activated update.
   ["--on-pending", "--st-serious"],
+  // The pending and downloading words in the downloads tray.
+  ["--st-serious", "--surface"],
+  ["--st-standby", "--surface"],
+  // The badge on the header's Downloads button.
+  ["--header-bg", "--hdr-accent"],
 ];
 
 const STATUS = [
@@ -107,14 +112,14 @@ const GRAPHICS: [string, string][] = [
   ["--st-critical", "--header-bg"],
   ["--moon", "--header-bg"],
   ["--sun-fill", "--header-bg"],
-  // A download's progress bar on its track.
-  ["--accent", "--surface-2"],
+  // A download's progress bar in the tray, on its track.
+  ["--st-standby", "--surface-2"],
   // The outline of a gap on the flash map, the ring of a help button and the lines of a ruler's ticks.
   ["--faint", "--surface"],
   ["--faint", "--bg"],
-  // The download tray in the header: its button's text and its progress on the track.
-  ["--header-accent", "--header-bg"],
-  ["--header-accent", "--header-line"],
+  // The Downloads button in the header: its ring's progress on the header and on the track, and the badge's text.
+  ["--hdr-accent", "--header-bg"],
+  ["--hdr-accent", "--header-line"],
 ];
 
 for (const [name, theme] of themes) {

@@ -1,90 +1,126 @@
-import { useRef } from "preact/hooks";
-import type { EntryAction } from "../downloads/service.ts";
-import { ACTION_LABELS, entryViews, traySummary } from "../downloads/view.ts";
-import { DownloadList } from "../ui/DownloadList.tsx";
-import type { DownloadItem } from "../ui/DownloadList.tsx";
-import { Progress } from "../ui/Progress.tsx";
+import { signal } from "@preact/signals";
+import { createRef } from "preact";
+import { useEffect, useRef } from "preact/hooks";
+import { buttonView, finishedIds, trayCount, trayItems } from "../downloads/view.ts";
+import type { ViewFacts } from "../downloads/view.ts";
+import { USAGE, helpTopic } from "../storage/copy.ts";
+import { planDownload } from "../storage/plan.ts";
+import { DownloadTray, DownloadsButton } from "../ui/DownloadTray.tsx";
+import type { TrayAction } from "../ui/DownloadTray.tsx";
+import { inPopover, popoverOpen } from "../ui/Popover.tsx";
+import type { Services } from "./services.ts";
 import { useServices } from "./context.ts";
-import styles from "./shell.module.css";
 
-/** Every download, as the tray and the Storage page list them. */
-export function Downloads() {
-  const { downloads, now, clipboard } = useServices();
-  const items: DownloadItem[] = entryViews(downloads.entries.value, now.value, downloads.verifies).map((view) => ({
-    ...view,
-    actions: view.actions.map((key) => ({ key, label: ACTION_LABELS[key] })),
-  }));
+const TRAY_ID = "downloads-tray";
+
+/** Whether the tray is open; the header's button and the tray share it. */
+const open = signal(false);
+const button = createRef<HTMLButtonElement>();
+
+function close(focus: boolean): void {
+  open.value = false;
+  if (focus) button.current?.focus();
+}
+
+/** What the tray needs of the storage service: the regions, and a plan for each download not started yet. */
+function viewFacts({ storage, device, now }: Services): ViewFacts {
+  const flash = storage.flash.value;
+  const regions = storage.regions.value ?? [];
+  const table = storage.table.value;
+  const name = device.system.value.value?.name ?? "eveningstar";
+  return {
+    now: now.value,
+    regions,
+    preview(target) {
+      if (flash === undefined) return undefined;
+      const planned = planDownload(target, { flash, regions, device: name, table });
+      return planned.ok ? planned.plan : undefined;
+    },
+  };
+}
+
+/** The header's Downloads button. It pulses when a download is added. */
+export function DownloadsHeaderButton() {
+  const services = useServices();
+  const entries = services.downloads.entries.value;
+  const view = buttonView(trayItems(entries, viewFacts(services)));
+  const newest = entries.reduce((max, entry) => Math.max(max, entry.id), 0);
+  const seen = useRef(newest);
+
+  useEffect(() => {
+    if (newest > seen.current && !globalThis.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      button.current?.animate([{ transform: "scale(1)" }, { transform: "scale(1.08)" }, { transform: "scale(1)" }], 360);
+    }
+    seen.current = newest;
+  }, [newest]);
+
   return (
-    <DownloadList
-      items={items}
-      copy={clipboard}
-      onAction={(id, action) => {
-        downloads.act(id, action as EntryAction);
+    <DownloadsButton
+      {...view}
+      expanded={open.value}
+      controls={TRAY_ID}
+      buttonRef={button}
+      onClick={() => {
+        open.value = !open.peek();
       }}
     />
   );
 }
 
 /**
- * The header's download tray: the running download's progress and how many
- * wait, opening the list. It shows only while there are downloads.
+ * The downloads tray. It closes on Escape, wherever focus is, unless a
+ * popover takes it; on a pointer press outside it, a popover and the button;
+ * and on its close button.
  */
-export function DownloadTray() {
-  const { downloads, now } = useServices();
-  const ref = useRef<HTMLDetailsElement>(null);
-  const entries = downloads.entries.value;
-  if (entries.length === 0) return null;
-  const active = downloads.active.value;
-  const state = active?.state;
-  const progress =
-    state?.kind === "downloading" && state.total !== undefined && state.total > 0 ? state.received / state.total : undefined;
-  const summary = traySummary(entries, now.value);
-  const finished = entries.filter((entry) => ["done", "cancelled"].includes(entry.state.kind));
+export function DownloadsTray({ class: className }: { class?: string | undefined }) {
+  const services = useServices();
+  const { downloads, clipboard } = services;
+  const tray = useRef<HTMLElement>(null);
+  const items = trayItems(downloads.entries.value, viewFacts(services));
+  const shown = open.value;
+
+  useEffect(() => {
+    if (!shown) return;
+    const key = (event: KeyboardEvent): void => {
+      if (event.key !== "Escape" || event.defaultPrevented || popoverOpen()) return;
+      // The page's own Escape, such as closing the phone's inspector, waits for the next press.
+      event.preventDefault();
+      close(true);
+    };
+    const press = (event: PointerEvent): void => {
+      const { target } = event;
+      if (!(target instanceof Node) || tray.current?.contains(target) === true || button.current?.contains(target) === true) return;
+      if (!inPopover(target)) close(false);
+    };
+    document.addEventListener("keydown", key, true);
+    document.addEventListener("pointerdown", press, true);
+    return () => {
+      document.removeEventListener("keydown", key, true);
+      document.removeEventListener("pointerdown", press, true);
+    };
+  }, [shown]);
+
+  const act = (id: number, action: TrayAction): void => {
+    downloads.act(id, action === "remove" ? "dismiss" : action);
+  };
 
   return (
-    <details
-      ref={ref}
-      class={styles["tray"]}
-      onKeyDown={(event) => {
-        if (event.key === "Escape" && ref.current !== null && ref.current.open) {
-          // The page's own Escape, such as closing the phone's inspector, waits for the next press.
-          event.preventDefault();
-          ref.current.open = false;
-          ref.current.querySelector("summary")?.focus();
-        }
+    <DownloadTray
+      id={TRAY_ID}
+      class={className}
+      open={shown}
+      items={items}
+      count={trayCount(items)}
+      trayRef={tray}
+      onClose={() => {
+        close(true);
       }}
-    >
-      <summary class={styles["traySummary"]}>
-        <svg class={styles["trayIcon"]} viewBox="0 0 12 12" aria-hidden="true" focusable="false">
-          <path d="M6 1v6.5M3 5l3 3 3-3M1.5 10.5h9" fill="none" stroke="currentColor" stroke-width="1.5" />
-        </svg>
-        <span>
-          <span class="visually-hidden">Downloads: </span>
-          {summary}
-        </span>
-        {active === undefined ? null : (
-          <span class={styles["trayProgress"]}>
-            <Progress value={progress} label="Download progress" tone="header" />
-          </span>
-        )}
-      </summary>
-      <div class={styles["trayPanel"]}>
-        <div class={styles["trayHead"]}>
-          <h2 class={styles["trayTitle"]}>Downloads</h2>
-          {finished.length > 0 ? (
-            <button
-              type="button"
-              class={styles["trayClear"]}
-              onClick={() => {
-                for (const entry of finished) downloads.act(entry.id, "dismiss");
-              }}
-            >
-              Clear finished
-            </button>
-          ) : null}
-        </div>
-        <Downloads />
-      </div>
-    </details>
+      onClear={() => {
+        for (const id of finishedIds(items)) downloads.act(id, "dismiss");
+      }}
+      onAction={act}
+      copy={clipboard}
+      spanHelp={{ label: USAGE.endHelp, ...helpTopic("span", 0) }}
+    />
   );
 }

@@ -6,7 +6,9 @@ import type { RegionInfo } from "./types.ts";
 export interface DownloadSubject {
   /** What it is, such as "App image, ota_0". */
   what: string;
-  /** The region's title and subtitle, for the "From" fact. */
+  /** The region's code, colour, title and subtitle, for the "From" fact. */
+  code: string;
+  colour: string;
   title: string;
   subtitle: string;
   /** The hash field, when the download has one and the plan holds its value. */
@@ -22,7 +24,7 @@ export function downloadSubject(
 ): DownloadSubject {
   const info = regions.find((region) => region.region === target.region);
   const identity = regionIdentity(target.region, info?.label ?? null);
-  const base = { title: identity.title, subtitle: identity.subtitle };
+  const base = { code: identity.code, colour: identity.colour, title: identity.title, subtitle: identity.subtitle };
   switch (target.what.kind) {
     case "image": {
       const subject: DownloadSubject = {

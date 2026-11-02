@@ -18,7 +18,7 @@
   --header-line: #393939;
   --header-mark-day: #f5a742;
   --header-mark-night: #8fc3f0;
-  --header-accent: #78a9ff;
+  --hdr-accent: #4589ff;
   --mark-day: #bd7724;
   --mark-night: #11273f;
   --nav-active: #e8e8e8;
@@ -90,7 +90,7 @@
     --header-line: #393939;
     --header-mark-day: #f5a742;
     --header-mark-night: #8fc3f0;
-    --header-accent: #78a9ff;
+    --hdr-accent: #4589ff;
     --mark-day: #f5a742;
     --mark-night: #8fc3f0;
     --nav-active: #393939;

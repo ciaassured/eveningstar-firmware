@@ -15,7 +15,7 @@ import { summaryView } from "../storage/summary.ts";
 import { Button } from "../ui/Button.tsx";
 import { useEmphasis } from "../ui/emphasis.ts";
 import { useMedia } from "../ui/media.ts";
-import { PopoverHost, closePopover } from "../ui/Popover.tsx";
+import { closePopover } from "../ui/Popover.tsx";
 import { RegionList } from "../ui/RegionList.tsx";
 import type { RegionRow } from "../ui/RegionList.tsx";
 import { SplitPane } from "../ui/SplitPane.tsx";
@@ -204,7 +204,6 @@ function Frame({ model, page }: { model: StorageModel; page: StoragePage }) {
           )
         }
       />
-      <PopoverHost />
     </div>
   );
 }

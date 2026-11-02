@@ -10,7 +10,8 @@ import type { ContentScript, Step } from "../testing/fakes.ts";
 import { appImage, bytesOf, internalFlash, regions, sha256 } from "../testing/storage.ts";
 import { BUSY_WAIT_S, MAX_RESUMES, RESUME_DELAYS_MS, createDownloads } from "./service.ts";
 import type { DownloadsDeps } from "./service.ts";
-import { entryViews, traySummary } from "./view.ts";
+import { trayItem } from "./view.ts";
+import type { ViewFacts } from "./view.ts";
 
 const DEVICE = "eveningstar-0kd7-9c6";
 /** The longest resume delay, with the jitter the fixed random value gives. */
@@ -55,6 +56,10 @@ function slotBytes(bytes = appImage().bytes): Uint8Array {
   const slot = new Uint8Array(0x30_0000).fill(0xff);
   slot.set(bytes);
   return slot;
+}
+
+function viewFacts(clock: FakeClock): ViewFacts {
+  return { now: clock.now, regions: regions(), preview: () => undefined };
 }
 
 function states(downloads: ReturnType<typeof setup>["downloads"]): string[] {
@@ -104,16 +109,19 @@ test("bytes that don't match aren't saved, unless the person saves them anyway",
   assert.deepEqual(downloads.entries.value[0]?.state, { kind: "done", verified: "mismatch" });
 });
 
-test("outside a secure context nothing is checked, and the list shows the SHA-256 to check by hand", async () => {
+test("outside a secure context nothing is checked, and the tray shows the image's SHA-256 all the same", async () => {
   const { fake, saved, downloads, clock } = setup({ verifies: false });
-  fake.reply(serveContent(slotBytes(), { etag: '"boot-0"', chunk: 65_536 }));
-  downloads.add({ region: "app_current", what: { kind: "whole" } });
+  fake.reply(serveContent(slotBytes(), { etag: '"boot-0"' }));
+  downloads.add(image());
   await clock.advance(1);
-  assert.deepEqual(downloads.entries.value[0]?.state, { kind: "done", verified: "unchecked" });
+  const entry = downloads.entries.value[0];
+  assert.deepEqual(entry?.state, { kind: "done", verified: "unchecked" });
   assert.equal(saved.length, 1);
-  const [view] = entryViews(downloads.entries.value, clock.now, downloads.verifies);
-  assert.equal(view?.expected?.sha256, appImage().fileSha256);
-  assert.match(view?.expected?.command ?? "", /^head -c 4096 eveningstar-0kd7-9c6-app_current-ota_0-slot-of-\w{8}\.bin \| sha256sum$/);
+  assert.ok(entry);
+  const item = trayItem(entry, viewFacts(clock));
+  assert.equal(item.status, "completed");
+  assert.equal(item.hash?.value, appImage().fileSha256);
+  assert.equal(item.filename, saved[0]?.name);
 });
 
 test("the queue runs one download at a time, in order", async () => {
@@ -128,8 +136,8 @@ test("the queue runs one download at a time, in order", async () => {
   await clock.advance(1);
   assert.deepEqual(states(downloads), ["downloading", "queued", "queued"]);
   assert.equal(fake.maxInFlight, 1);
-  assert.equal(downloads.queued.value, 2);
-  assert.equal(traySummary(downloads.entries.value, clock.now), "0% · 2 queued");
+  const items = downloads.entries.value.map((entry) => trayItem(entry, viewFacts(clock)));
+  assert.deepEqual(items.map((item) => [item.status, item.amount]), [["downloading", "0%"], ["pending", "–"], ["pending", "–"]]);
   slow.release();
   await clock.advance(1);
   assert.deepEqual(states(downloads), ["done", "done", "done"]);
@@ -140,30 +148,43 @@ test("the queue runs one download at a time, in order", async () => {
   assert.equal(transport.downloading, false);
 });
 
-test("queued entries can be reordered and cancelled", async () => {
+test("Retry queues a cancelled entry again, as the newest, and it runs after those queued before", async () => {
   const { fake, downloads, clock } = setup();
   const slow = FakeFetch.deferred(jsonResponse(503, { error: "busy" }, { "Retry-After": "1" }));
   fake.reply(slow.step);
   downloads.add(image());
   const b = downloads.add({ region: "otadata", what: { kind: "whole" } });
   const c = downloads.add({ region: "bootloader", what: { kind: "whole" } });
-  const d = downloads.add({ region: "partition_table", what: { kind: "whole" } });
   await clock.advance(1);
-  downloads.act(c, "up");
-  assert.deepEqual(downloads.entries.value.map((entry) => entry.id), [1, c, b, d]);
-  downloads.act(c, "up");
-  assert.deepEqual(downloads.entries.value.map((entry) => entry.id), [1, c, b, d], "the running entry keeps its place");
-  downloads.act(b, "down");
-  assert.deepEqual(downloads.entries.value.map((entry) => entry.id), [1, c, d, b]);
-  downloads.act(d, "cancel");
-  assert.equal(downloads.entries.value.find((entry) => entry.id === d)?.state.kind, "cancelled");
-  const views = entryViews(downloads.entries.value, clock.now, true);
-  assert.deepEqual(views.find((view) => view.id === c)?.actions, ["down", "cancel"]);
-  assert.match(views.find((view) => view.id === c)?.status ?? "", /1st in line/);
+  downloads.act(b, "cancel");
+  assert.equal(downloads.entries.value.find((entry) => entry.id === b)?.state.kind, "cancelled");
+  await clock.advance(5_000);
+  downloads.act(b, "retry");
+  assert.deepEqual(downloads.entries.value.map((entry) => entry.id), [1, c, b]);
+  const retried = downloads.entries.value.at(-1);
+  assert.equal(retried?.state.kind, "queued");
+  assert.equal(retried?.queuedAt, clock.now);
   downloads.act(1, "cancel");
   slow.release();
   await settle();
-  assert.equal(downloads.entries.value[0]?.state.kind, "cancelled");
+  assert.deepEqual(states(downloads), ["cancelled", "downloading", "queued"]);
+});
+
+test("Retry after a mismatch drops the bytes kept for saving anyway and downloads the image again", async () => {
+  const { fake, saved, downloads, clock, planned } = setup();
+  fake.reply(serveContent(slotBytes(bytesOf(4_096, 99)), { etag: '"boot-0"' }), serveContent(slotBytes(), { etag: '"boot-0"' }));
+  const id = downloads.add(image());
+  await clock.advance(1);
+  const failed = downloads.entries.value[0]?.state;
+  assert.equal(failed?.kind === "failed" && failed.received, 4_096);
+  downloads.act(id, "retry");
+  await clock.advance(1);
+  assert.deepEqual(downloads.entries.value[0]?.state, { kind: "done", verified: "checked" });
+  assert.equal(planned.length, 2);
+  assert.equal((fake.calls[1]?.init.headers as Record<string, string>)["Range"], "bytes=0-4095");
+  assert.equal(sha256(saved[0]?.bytes ?? new Uint8Array()), appImage().fileSha256);
+  downloads.act(id, "save-anyway");
+  assert.equal(saved.length, 1, "nothing is left to save anyway");
 });
 
 test("a busy device makes the entry wait, as long as it takes, and that is never a failure", async () => {
@@ -176,7 +197,12 @@ test("a busy device makes the entry wait, as long as it takes, and that is never
   const first = downloads.entries.value[0]?.state;
   assert.equal(first?.kind, "waiting");
   assert.equal(first?.kind === "waiting" && first.until - first.since, 3_000);
-  assert.match(entryViews(downloads.entries.value, clock.now, true)[0]?.status ?? "", /^Waiting: another client is downloading/);
+  const waiting = downloads.entries.value[0];
+  assert.ok(waiting);
+  const item = trayItem(waiting, viewFacts(clock));
+  assert.equal(item.status, "pending");
+  assert.equal(item.amount, "Waiting");
+  assert.deepEqual(item.notes, ["Another client is downloading from the device. Asking again in 0:03."]);
   for (let i = 0; i < 6; i += 1) {
     await clock.advance(3_000);
     assert.notEqual(downloads.entries.value[0]?.state.kind, "failed");
@@ -203,7 +229,7 @@ test("a stalled download resumes with Range and If-Range, keeping what arrived",
   assert.equal(sha256(saved[0]?.bytes ?? new Uint8Array()), appImage().fileSha256);
 });
 
-test("a broken download is resumed a few times with backoff, then waits for the resume button", async () => {
+test("a broken download is resumed a few times with backoff, then waits for Retry", async () => {
   const { fake, downloads, clock, guards } = setup();
   const slot = slotBytes();
   const cut: ContentScript = { etag: '"boot-0"', cutAfter: 1_000 };
@@ -213,11 +239,11 @@ test("a broken download is resumed a few times with backoff, then waits for the 
   await clock.advance(1);
   for (let i = 0; i < MAX_RESUMES; i += 1) await clock.advance(LONGEST_WAIT);
   const state = downloads.entries.value[0]?.state;
-  assert.deepEqual(state, { kind: "failed", reason: "The connection broke before the download finished.", resumable: true });
+  assert.deepEqual(state, { kind: "failed", reason: "The connection broke before the download finished.", resumable: true, received: 1_000 });
   assert.equal(fake.calls.length, 1 + MAX_RESUMES);
   assert.equal(guards.at(-1), true, "a resumable entry still keeps the tab from closing unasked");
   fake.reply(serveContent(slot, { etag: '"boot-0"' }));
-  downloads.act(id, "resume");
+  downloads.act(id, "retry");
   await clock.advance(1);
   assert.equal((fake.calls.at(-1)?.init.headers as Record<string, string>)["Range"], "bytes=1000-4095");
   assert.equal(downloads.entries.value[0]?.state.kind, "done");
@@ -282,6 +308,7 @@ test("a refused download fails without a resume", async () => {
     kind: "failed",
     reason: "The firmware can't read the region this boot.",
     resumable: false,
+    received: 0,
   });
 });
 
@@ -289,7 +316,7 @@ test("a download that can't be planned fails and says why", async () => {
   const { fake, downloads, clock } = setup();
   downloads.add({ region: "app_alternate", what: { kind: "image" } });
   await clock.advance(1);
-  assert.deepEqual(downloads.entries.value[0]?.state, { kind: "failed", reason: "The slot holds no image.", resumable: false });
+  assert.deepEqual(downloads.entries.value[0]?.state, { kind: "failed", reason: "The slot holds no image.", resumable: false, received: 0 });
   assert.equal(fake.calls.length, 0);
 });
 
