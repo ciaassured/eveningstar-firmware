@@ -7,7 +7,6 @@ import { backoffDelayMs } from "../lib/backoff.ts";
 import { unverifiedFilename } from "../storage/filenames.ts";
 import { targetLabel } from "../storage/plan.ts";
 import type { DownloadPlan, DownloadTarget, PlanResult } from "../storage/plan.ts";
-import type { Region } from "../storage/types.ts";
 
 /** Where a download has got to. */
 export type EntryState =
@@ -68,8 +67,6 @@ export interface Downloads {
   /** Adds a download at the end of the queue. Returns its id. */
   add(target: DownloadTarget): number;
   act(id: number, action: EntryAction): void;
-  /** The latest entry for the region, if there is one. */
-  latestFor(region: Region): DownloadEntry | undefined;
 }
 
 /** The waits before each resume of a broken download, long enough to outlast a restart of the device. */
@@ -442,14 +439,6 @@ export function createDownloads(deps: DownloadsDeps): Downloads {
           entries.value = entries.peek().filter((item) => item.id !== id);
           return;
       }
-    },
-    latestFor(region) {
-      const list = entries.value;
-      for (let i = list.length - 1; i >= 0; i -= 1) {
-        const entry = list[i];
-        if (entry?.target.region === region) return entry;
-      }
-      return undefined;
     },
   };
 }

@@ -1,0 +1,42 @@
+.icon {
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.s12 {
+  width: 12px;
+  height: 12px;
+}
+
+.s14 {
+  width: 14px;
+  height: 14px;
+}
+
+.s16 {
+  width: 16px;
+  height: 16px;
+}
+
+.s18 {
+  width: 18px;
+  height: 18px;
+}
+
+.s20 {
+  width: 20px;
+  height: 20px;
+}
+
+.dot {
+  flex: none;
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--booted);
+}

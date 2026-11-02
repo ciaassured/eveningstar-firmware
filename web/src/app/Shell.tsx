@@ -6,7 +6,8 @@ import { Mark, Wordmark } from "../ui/Brand.tsx";
 import { ConnectionIndicator } from "../ui/ConnectionIndicator.tsx";
 import { useServices } from "./context.ts";
 import { DownloadTray } from "./downloads-view.tsx";
-import { NAVIGATION, pathOf } from "./router.ts";
+import { cx } from "../lib/cx.ts";
+import { NAVIGATION, fillsFrame, pathOf } from "./router.ts";
 import styles from "./shell.module.css";
 
 /** How many restarts of the device the person has dismissed the notice of. */
@@ -79,10 +80,19 @@ export function Shell({ children }: { children: ComponentChildren }) {
           ))}
         </ul>
       </nav>
-      <main class={styles["main"]} id="main" data-route={pathOf(route)}>
-        <Notices />
-        {children}
-      </main>
+      {fillsFrame(route) ? (
+        <main class={cx(styles["main"], styles["fill"])} id="main" data-route={pathOf(route)}>
+          <div class={styles["notices"]}>
+            <Notices />
+          </div>
+          {children}
+        </main>
+      ) : (
+        <main class={styles["main"]} id="main" data-route={pathOf(route)}>
+          <Notices />
+          {children}
+        </main>
+      )}
     </div>
   );
 }

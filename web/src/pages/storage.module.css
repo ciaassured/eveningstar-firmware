@@ -1,144 +1,120 @@
-.head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: var(--space-3);
-}
-
-.section {
-  font-size: 1rem;
-  font-weight: 600;
-  margin-top: var(--space-2);
-}
-
-.summary {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-}
-
-.tableHead {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  margin-top: var(--space-2);
-}
-
-.subheading {
-  font-size: 0.875rem;
-  font-weight: 600;
-}
-
-.download {
-  display: inline-flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-}
-
-.state {
-  font-size: 0.85rem;
-  font-variant-numeric: tabular-nums;
-}
-
-.details {
+/* The page fills the main area: the title bar and the strip stay, and only the panes scroll. */
+.page {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
 }
 
-.mini {
-  border-collapse: collapse;
-  font-size: 0.85rem;
-  font-variant-numeric: tabular-nums;
+/* What the load gate shows until the page can: that it is loading, or why it couldn't. */
+.page > :not(.frame) {
+  margin: var(--space-5);
 }
 
-.mini th,
-.mini td {
-  padding: var(--space-1) var(--space-3) var(--space-1) 0;
-  text-align: start;
+.frame {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.titlebar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 max(16px, env(safe-area-inset-right, 0px)) 0 max(16px, env(safe-area-inset-left, 0px));
+  background: var(--surface);
   border-bottom: 1px solid var(--border);
+}
+
+.title {
+  padding: 11px 0 9px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.refresh {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin-left: auto;
+}
+
+.failed {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.mini thead th {
-  font-size: 0.75rem;
-  color: var(--muted);
-  font-weight: 600;
+/* The inspector. */
+.inspector {
+  display: grid;
+  gap: 10px;
+  max-width: 1080px;
+  padding: 14px 24px 20px;
 }
 
-.mini tbody th {
-  font-weight: 400;
+.head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px 14px;
 }
 
-.differs {
-  font-weight: 600;
-}
-
-.scroll {
-  overflow-x: auto;
-  max-width: 100%;
-}
-
-.board {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-
-.note {
-  font-size: 0.85rem;
-  color: var(--muted);
-}
-
-.monoCell {
-  font-family: var(--font-mono);
-}
-
-.otadata summary {
-  cursor: pointer;
-  color: var(--accent);
-}
-
-.otadata[open] summary {
-  margin-bottom: var(--space-2);
-}
-
-.fill {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  max-width: 16rem;
-}
-
-.range {
+.heading {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-3);
+  align-items: baseline;
+  gap: 10px;
+  font-size: 22px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  line-height: 1.15;
 }
 
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  font-size: 0.85rem;
-  flex: 1 1 10rem;
+.subtitle {
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 400;
+  letter-spacing: 0;
 }
 
-.input {
-  min-height: 34px;
-  padding: 0 var(--space-2);
-  border: 1px solid var(--map-region);
-  border-radius: var(--radius-control);
-  background: var(--surface);
-  font-family: var(--font-mono);
+.intro {
+  display: grid;
+  gap: 4px;
 }
 
-.error {
-  color: var(--st-critical);
-  font-weight: 600;
+.explain {
+  max-width: 95ch;
+}
+
+.bootline {
+  max-width: 120ch;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+@media (max-width: 759px) {
+  .inspector {
+    gap: 12px;
+    padding: 12px max(16px, env(safe-area-inset-right, 0px)) 28px max(16px, env(safe-area-inset-left, 0px));
+  }
+
+  .head {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .head > button {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
+
+  .heading {
+    font-size: 20px;
+  }
 }

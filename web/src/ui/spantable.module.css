@@ -1,0 +1,103 @@
+.table {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.9fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.6fr);
+  margin-top: 4px;
+  font-size: 13px;
+}
+
+.head,
+.row {
+  display: contents;
+}
+
+.cell {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 8px;
+  min-width: 0;
+  padding: 5px 8px;
+  border-top: 1px solid var(--border);
+}
+
+.head .cell {
+  align-items: center;
+  gap: 4px;
+  padding-block: 2px 4px;
+  border-top: 0;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.row .cell:first-child {
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 7px;
+  font-weight: 600;
+}
+
+.row:hover .cell,
+.row[data-phl] .cell {
+  background: color-mix(in oklab, var(--c) 9%, var(--surface));
+}
+
+.key {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  background: var(--t);
+  box-shadow: inset 0 0 0 1px var(--c);
+}
+
+.used {
+  background: var(--t2);
+}
+
+.alternate {
+  background: color-mix(in oklab, var(--c) 28%, var(--surface));
+}
+
+.unused {
+  background: repeating-linear-gradient(90deg, var(--surface) 0 2px, color-mix(in oklab, var(--c) 30%, var(--surface)) 2px 3px);
+}
+
+.hex {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.decimal {
+  color: var(--muted);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 759px) {
+  .table {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .cell {
+    padding-inline: 4px;
+  }
+
+  .head .cell:first-child {
+    display: none;
+  }
+
+  .row .cell:first-child {
+    grid-column: 1 / -1;
+    padding-top: 8px;
+    padding-bottom: 0;
+    border-top: 1px solid var(--border);
+  }
+
+  .row .cell:not(:first-child) {
+    flex-direction: column;
+    align-items: flex-start;
+    padding-top: 2px;
+    border-top: 0;
+  }
+}

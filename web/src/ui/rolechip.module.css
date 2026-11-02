@@ -1,0 +1,21 @@
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.update {
+  padding: 1px 8px 1px 6px;
+  border-radius: var(--radius-pill);
+  background: var(--s-pending);
+  color: var(--on-pending);
+}
+
+.fallback {
+  display: inline-flex;
+  color: var(--x-warn);
+}

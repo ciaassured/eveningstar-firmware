@@ -46,7 +46,9 @@ export function DownloadTray() {
       ref={ref}
       class={styles["tray"]}
       onKeyDown={(event) => {
-        if (event.key === "Escape" && ref.current !== null) {
+        if (event.key === "Escape" && ref.current !== null && ref.current.open) {
+          // The page's own Escape, such as closing the phone's inspector, waits for the next press.
+          event.preventDefault();
           ref.current.open = false;
           ref.current.querySelector("summary")?.focus();
         }

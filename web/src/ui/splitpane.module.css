@@ -1,0 +1,98 @@
+.panes {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+.split {
+  display: grid;
+  grid-template-columns: minmax(280px, 340px) minmax(0, 1fr);
+  height: 100%;
+}
+
+.master,
+.detail {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.master {
+  padding-left: env(safe-area-inset-left, 0px);
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+}
+
+.detail {
+  padding-right: env(safe-area-inset-right, 0px);
+  background: var(--bg);
+}
+
+.bar {
+  display: none;
+}
+
+@media (min-width: 760px) and (max-width: 1099px) {
+  .split {
+    grid-template-columns: minmax(250px, 290px) minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 759px) {
+  .split {
+    position: relative;
+    display: block;
+    overflow: hidden;
+  }
+
+  .master,
+  .detail {
+    position: absolute;
+    inset: 0;
+    border-right: 0;
+    transition: transform 0.24s cubic-bezier(0.3, 0.7, 0.2, 1);
+  }
+
+  .detail {
+    padding-right: 0;
+    box-shadow: var(--shadow);
+    transform: translateX(100%);
+  }
+
+  .split[data-shown] .detail {
+    transform: none;
+  }
+
+  .split[data-shown] .master {
+    transform: translateX(-22%);
+  }
+
+  .bar {
+    position: sticky;
+    top: 0;
+    z-index: 3;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px max(16px, env(safe-area-inset-right, 0px)) 6px max(10px, env(safe-area-inset-left, 0px));
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+  }
+}
+
+.back {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.crumb {
+  color: var(--muted);
+  font-size: 12px;
+}

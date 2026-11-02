@@ -1,0 +1,44 @@
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px 5px 9px;
+  border: 1px solid currentColor;
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ok {
+  color: var(--x-ok);
+}
+
+.warn {
+  color: var(--x-warn);
+}
+
+.bad {
+  color: var(--x-bad);
+}
+
+.why {
+  margin-left: 2px;
+  padding-left: 7px;
+  border-left: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.pill:hover .why,
+.pill[aria-expanded="true"] .why {
+  color: var(--fg);
+}
+
+.note {
+  color: var(--muted);
+  font-size: 12.5px;
+}

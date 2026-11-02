@@ -1,0 +1,148 @@
+.ruler {
+  position: relative;
+  height: 40px;
+  border-radius: 5px;
+  background: var(--t);
+  box-shadow: inset 0 0 0 1.5px var(--c);
+  overflow: hidden;
+}
+
+.sensitive {
+  background: repeating-linear-gradient(135deg, var(--t) 0 3px, var(--t2) 3px 5px);
+}
+
+.reserved {
+  background:
+    radial-gradient(circle, var(--t2) 1.1px, transparent 1.5px) 0 0 / 5px 5px,
+    var(--surface);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--c) 45%, transparent);
+}
+
+.gap {
+  background: transparent;
+  box-shadow: none;
+  outline: 1px dashed var(--faint);
+  outline-offset: -1px;
+}
+
+/* The "Region" row of the span table outlines the whole ruler. */
+.ruler[data-phl] {
+  outline: 2px solid var(--fg);
+  outline-offset: 2px;
+}
+
+.part {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--l);
+  width: var(--w);
+  min-width: 1px;
+  overflow: hidden;
+}
+
+.used {
+  background: var(--t2);
+}
+
+.alternate {
+  background: color-mix(in oklab, var(--c) 28%, var(--surface));
+}
+
+.unused {
+  background: repeating-linear-gradient(90deg, transparent 0 9px, color-mix(in oklab, var(--c) 22%, transparent) 9px 10px);
+}
+
+.part + .part {
+  box-shadow: inset 1px 0 0 var(--c);
+}
+
+.part[data-phl] {
+  box-shadow: inset 0 0 0 2px var(--fg);
+}
+
+.label {
+  position: absolute;
+  left: 10px;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  overflow: hidden;
+  color: var(--fg);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.label b {
+  font-weight: 600;
+}
+
+/* The ticks: a line at each boundary, its offset under it. */
+.ticks {
+  position: relative;
+  height: 22px;
+  color: var(--muted);
+  font: 11px/1.2 var(--font-mono);
+  container-type: inline-size;
+}
+
+.two {
+  height: 36px;
+}
+
+.tick {
+  position: absolute;
+  top: 0;
+  left: var(--x);
+  width: 0;
+}
+
+.tick::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 5px;
+  border-left: 1px solid var(--faint);
+}
+
+.second::before {
+  height: 20px;
+}
+
+.end::before {
+  left: -1px;
+}
+
+/* The first offset starts at its line and the last ends at it; the others are centred, but kept on the ruler. */
+.offset {
+  position: absolute;
+  top: 6px;
+  left: 0;
+  white-space: nowrap;
+  transform: translateX(clamp(calc(var(--s) * -100cqw), -50%, calc((1 - var(--s)) * 100cqw - 100%)));
+}
+
+.second .offset {
+  top: 21px;
+}
+
+.start .offset {
+  transform: none;
+}
+
+.end .offset {
+  transform: translateX(-100%);
+}
+
+@media (max-width: 759px) {
+  .label {
+    left: 6px;
+  }
+
+  .percent {
+    display: none;
+  }
+}

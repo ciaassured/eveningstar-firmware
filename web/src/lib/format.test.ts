@@ -4,6 +4,7 @@ import { backoffDelayMs, widen } from "./backoff.ts";
 import {
   formatAge,
   formatByteCount,
+  formatClock,
   formatCountdown,
   formatDecimal,
   formatHex,
@@ -63,6 +64,11 @@ test("percentages have one decimal, and words join as a list", () => {
   assert.equal(joinWords(["offset"]), "offset");
   assert.equal(joinWords(["offset", "size"]), "offset and size");
   assert.equal(joinWords(["type", "offset", "size"]), "type, offset and size");
+});
+
+test("formatClock is the 24-hour clock with seconds", () => {
+  assert.equal(formatClock(new Date(2026, 10, 2, 9, 5, 7).getTime()), "09:05:07");
+  assert.equal(formatClock(new Date(2026, 10, 2, 21, 30, 0).getTime()), "21:30:00");
 });
 
 test("formatUptime picks the two largest units", () => {

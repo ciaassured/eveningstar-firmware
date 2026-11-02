@@ -1,0 +1,42 @@
+.mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.ok {
+  color: var(--x-ok);
+}
+
+.warn {
+  color: var(--x-warn);
+}
+
+.bad {
+  color: var(--x-bad);
+}
+
+.line {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.line > svg {
+  margin-top: 2px;
+}
+
+.line > span {
+  color: var(--fg);
+}
+
+.line.muted {
+  font-size: 12px;
+}
+
+.line.muted > span {
+  color: var(--muted);
+}

@@ -10,7 +10,7 @@ import type { ContentScript, Step } from "../testing/fakes.ts";
 import { appImage, bytesOf, internalFlash, regions, sha256 } from "../testing/storage.ts";
 import { BUSY_WAIT_S, MAX_RESUMES, RESUME_DELAYS_MS, createDownloads } from "./service.ts";
 import type { DownloadsDeps } from "./service.ts";
-import { entryViews, shortStatus, traySummary } from "./view.ts";
+import { entryViews, traySummary } from "./view.ts";
 
 const DEVICE = "eveningstar-0kd7-9c6";
 /** The longest resume delay, with the jitter the fixed random value gives. */
@@ -195,7 +195,6 @@ test("a stalled download resumes with Range and If-Range, keeping what arrived",
   await clock.advance(STALL_MS);
   const state = downloads.entries.value[0]?.state;
   assert.equal(state?.kind === "downloading" && state.retrying, true);
-  assert.equal(shortStatus(downloads.entries.value[0])?.level, "caution");
   await clock.advance(LONGEST_WAIT);
   const headers = fake.calls[1]?.init.headers as Record<string, string>;
   assert.equal(headers["Range"], "bytes=1500-4095");

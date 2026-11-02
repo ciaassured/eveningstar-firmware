@@ -1,9 +1,8 @@
 import { downloadFilename } from "./filenames.ts";
-import { lockReason } from "./labels.ts";
-import type { BoardTable, InternalFlash, Region, RegionInfo, SlotName, Span } from "./types.ts";
+import type { BoardTable, InternalFlash, Open, Region, RegionInfo, SlotName, Span, Tier } from "./types.ts";
 
 /** What of a region to download. */
-export type DownloadWhat = { kind: "whole" } | { kind: "image" } | { kind: "range"; span: Span };
+export type DownloadWhat = { kind: "whole" } | { kind: "image" };
 
 /** A download as the person asked for it, before it is planned against what the device reports. */
 export interface DownloadTarget {
@@ -80,6 +79,21 @@ function imageIn(region: Region, flash: InternalFlash): ImageFacts | { missing: 
   return facts;
 }
 
+/** Why a region can't be downloaded, or `undefined` when it can. */
+export function lockReason(region: RegionInfo, tier: Open<Tier>): string | undefined {
+  switch (region.contents) {
+    case "public":
+      if (region.available) return undefined;
+      return tier === "untrusted" ? "Not readable in the untrusted tier" : "Not readable this boot";
+    case "sensitive":
+      return "Holds configuration, secrets or factory data; never leaves the device";
+    case "reserved":
+      return "Reserved for later firmware";
+    default:
+      return "Not a region this page can download";
+  }
+}
+
 /** Whether the region starts with an image, so the image alone can be downloaded. */
 export function holdsImage(region: Region): boolean {
   return region === "bootloader" || region === "app_current" || region === "app_alternate";
@@ -116,12 +130,6 @@ export function planDownload(
       if (image.length > info.size) return { ok: false, reason: "The image is larger than its region." };
       span = { first: 0, last: image.length - 1 };
       break;
-    case "range": {
-      const { first, last } = target.what.span;
-      if (first < 0 || last < first || last >= info.size) return { ok: false, reason: "The range is outside the region." };
-      span = { first, last };
-      break;
-    }
   }
 
   const size = span === undefined ? info.size : span.last - span.first + 1;
@@ -141,7 +149,7 @@ export function planDownload(
   if (span !== undefined) plan.span = span;
 
   // The image alone hashes to its file_sha256; a whole region starts with the image, whose stored digest covers
-  // every byte before the digest. Other ranges aren't checked.
+  // every byte before the digest.
   if (image?.fileSha256 !== undefined) {
     if (span?.first === 0 && size === image.length) {
       plan.expected = { sha256: image.fileSha256, bytes: image.length };
@@ -181,7 +189,5 @@ export function targetLabel(target: DownloadTarget): string {
         : target.region;
     case "image":
       return `${target.region} image`;
-    case "range":
-      return `${target.region} 0x${target.what.span.first.toString(16)}–0x${target.what.span.last.toString(16)}`;
   }
 }

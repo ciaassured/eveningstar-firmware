@@ -10,8 +10,16 @@ html {
   text-size-adjust: 100%;
 }
 
+/* The app is a frame of the viewport's height; its parts scroll, never the body. */
+html,
+body,
+#app {
+  height: 100%;
+}
+
 body {
   margin: 0;
+  overflow: hidden;
   background: var(--bg);
   color: var(--fg);
   font-family: var(--font-ui);

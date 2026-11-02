@@ -1,8 +1,9 @@
+/* A frame of the viewport's height: the bar and the navigation stay, and the main area scrolls, or the page in it scrolls its own parts. */
 .shell {
-  min-height: 100vh;
+  height: 100%;
   display: grid;
   grid-template-columns: 200px minmax(0, 1fr);
-  grid-template-rows: auto 1fr;
+  grid-template-rows: auto minmax(0, 1fr);
   grid-template-areas:
     "bar bar"
     "nav main";
@@ -136,7 +137,7 @@
   font-size: 0.85rem;
 }
 
-@media (max-width: 639px) {
+@media (max-width: 759px) {
   .tray {
     position: static;
   }
@@ -188,6 +189,28 @@
   gap: var(--panel-gap);
   padding: var(--space-5);
   min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* A page that fills the main area and scrolls its own parts. */
+.main.fill {
+  padding: 0;
+  gap: 0;
+  overflow: hidden;
+}
+
+.notices {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--panel-gap);
+  padding: var(--space-4);
+}
+
+.notices:empty {
+  display: none;
 }
 
 .heading {
@@ -195,10 +218,10 @@
   font-weight: 600;
 }
 
-@media (max-width: 639px) {
+@media (max-width: 759px) {
   .shell {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto auto 1fr;
+    grid-template-rows: auto auto minmax(0, 1fr);
     grid-template-areas:
       "bar"
       "nav"

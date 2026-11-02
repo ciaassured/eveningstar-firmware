@@ -1,0 +1,57 @@
+/*
+ * A region's colours: `--c` is its identity colour, and the tint (`--t`), the
+ * stronger tint (`--t2`) and the text on a tint (`--ink`) derive from it.
+ */
+.region {
+  --t: color-mix(in oklab, var(--c) 17%, var(--surface));
+  --t2: color-mix(in oklab, var(--c) 40%, var(--surface));
+  --ink: color-mix(in oklab, var(--c) 62%, var(--fg));
+}
+
+.r-bl {
+  --c: var(--r-bl);
+}
+
+.r-pt {
+  --c: var(--r-pt);
+}
+
+.r-od {
+  --c: var(--r-od);
+}
+
+.r-a0 {
+  --c: var(--r-a0);
+}
+
+.r-a1 {
+  --c: var(--r-a1);
+}
+
+.r-c0 {
+  --c: var(--r-c0);
+}
+
+.r-c1 {
+  --c: var(--r-c1);
+}
+
+.r-fd {
+  --c: var(--r-fd);
+}
+
+.r-dg {
+  --c: var(--r-dg);
+}
+
+.r-rs {
+  --c: var(--r-rs);
+}
+
+.r-gap {
+  --c: var(--r-gap);
+}
+
+.x-warn {
+  --c: var(--x-warn);
+}

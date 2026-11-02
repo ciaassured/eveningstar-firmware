@@ -393,6 +393,19 @@ export function deviceName(id: string): string {
   return id === "external" ? "External flash" : id === "internal" ? "Internal flash" : id;
 }
 
+// The page's frame.
+
+export const PAGE = {
+  title: "Storage",
+  refresh: "Refresh",
+  refreshing: "Refreshing…",
+  notRefreshed: (failure: string, time: string) => `Not refreshed: ${failure}. Values from ${time}.`,
+  list: "Regions and gaps",
+  back: "Back",
+  crumb: "Regions",
+  downloads: "Downloads",
+} as const;
+
 // The strip and the readout.
 
 export const STRIP = {
@@ -681,7 +694,6 @@ export const TRAY = {
   table: "Partition table, entries and MD5 entry",
   otadata: "Boot selection (otadata)",
   whole: (title: string) => `Whole region, ${title}`,
-  range: (title: string, start: number, end: number) => `Part of ${title}, ${formatHex(start)} to ${formatHex(end)}`,
   imageHash: "SHA-256 of the image file",
   imageHashText: "the value for the file you receive",
   tableHash: "Stored MD5",

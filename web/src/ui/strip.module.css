@@ -1,0 +1,273 @@
+.band {
+  position: relative;
+  z-index: 2;
+  flex: none;
+  padding: 10px max(16px, env(safe-area-inset-right, 0px)) 6px max(16px, env(safe-area-inset-left, 0px));
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.strip {
+  display: flex;
+  gap: 2px;
+  height: 42px;
+}
+
+/* A block: its tint, and a bar of its colour along the bottom edge. */
+.block {
+  position: relative;
+  flex: var(--w) 1 0;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: var(--t);
+  box-shadow: inset 0 -3px 0 var(--c);
+  overflow: hidden;
+  container-type: inline-size;
+  cursor: pointer;
+  transition: opacity 0.12s;
+}
+
+.sensitive {
+  background: repeating-linear-gradient(135deg, var(--t) 0 3px, var(--t2) 3px 5px);
+}
+
+.reserved {
+  background:
+    radial-gradient(circle, var(--t2) 1.1px, transparent 1.5px) 0 0 / 5px 5px,
+    var(--surface);
+  box-shadow:
+    inset 0 -3px 0 var(--c),
+    inset 0 0 0 1px color-mix(in oklab, var(--c) 30%, transparent);
+}
+
+.gap {
+  background: transparent;
+  box-shadow: none;
+  outline: 1px dashed var(--faint);
+  outline-offset: -1px;
+}
+
+.missing {
+  background: transparent;
+  box-shadow: none;
+  outline: 1.5px dashed var(--x-warn);
+  outline-offset: -1.5px;
+}
+
+.extra {
+  background: color-mix(in oklab, var(--x-warn) 14%, var(--surface));
+  box-shadow: inset 0 0 0 1.5px var(--x-warn);
+}
+
+/* The selected block: a ring above its bottom bar, raised. */
+.block[aria-current="true"] {
+  z-index: 1;
+}
+
+.block[aria-current="true"]:not(.gap, .missing, .extra) {
+  box-shadow:
+    inset 0 0 0 2px var(--fg),
+    inset 0 -3px 0 var(--c);
+}
+
+.gap[aria-current="true"] {
+  outline: 2px solid var(--fg);
+}
+
+.missing[aria-current="true"],
+.extra[aria-current="true"] {
+  outline: 2px solid var(--fg);
+  outline-offset: -2px;
+}
+
+/* While a region is pointed at or focused anywhere, the other blocks fade and its own is ringed in its colour. */
+:global([data-emphasised]) .block:not([data-hl]) {
+  opacity: 0.35;
+}
+
+.block[data-hl]:not(.gap, .missing, .extra) {
+  box-shadow:
+    inset 0 0 0 2px var(--c),
+    inset 0 -3px 0 var(--c);
+}
+
+/* The usage bar: a half-height inset track, the used part to scale. */
+.track {
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  bottom: 6px;
+  height: 13px;
+  border-radius: 2px;
+  background: color-mix(in oklab, var(--surface) 55%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--c) 55%, transparent);
+}
+
+.used {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: var(--u);
+  border-radius: 2px;
+  background: var(--c);
+  box-shadow: inset 0 0 0 1px var(--surface);
+}
+
+.used[data-phl] {
+  box-shadow: inset 0 0 0 2px var(--fg);
+}
+
+/* The code, then the name; never under the icons. */
+.code {
+  position: absolute;
+  left: 4px;
+  top: 4px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  max-width: calc(100% - 8px);
+  min-width: 0;
+  padding-bottom: 2px;
+  overflow: hidden;
+  color: var(--ink);
+  font: 700 10px/1.25 var(--font-mono);
+  white-space: nowrap;
+}
+
+.block[data-icons="1"] .code {
+  max-width: calc(100% - 8px - 15px);
+}
+
+.block[data-icons="2"] .code {
+  max-width: calc(100% - 8px - 30px);
+}
+
+.missing .code {
+  text-decoration: line-through;
+}
+
+/* Room under the line for descenders, such as the underscore of `ota_0`, which the ellipsis's clipping would hide. */
+.name {
+  display: none;
+  min-width: 0;
+  margin-bottom: -2px;
+  padding-bottom: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg);
+  font: 500 11px/1 var(--font-ui);
+}
+
+@container (min-width: 84px) {
+  .name {
+    display: inline;
+  }
+}
+
+.icons {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  display: flex;
+  flex-direction: row-reverse;
+  align-items: center;
+  gap: 3px;
+}
+
+.icons > span {
+  display: flex;
+}
+
+.lock {
+  color: var(--ink);
+}
+
+.warn {
+  color: var(--x-warn);
+}
+
+/* The readout line. */
+.axis {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 20px;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.end,
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.end {
+  flex: none;
+}
+
+.readout {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg);
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.readout b {
+  font-weight: 600;
+}
+
+/* It names the region pointed at, else the selected one. */
+.readout > span {
+  display: none;
+}
+
+.readout > [data-selected] {
+  display: inline;
+}
+
+:global([data-emphasised]) .readout > [data-selected] {
+  display: none;
+}
+
+:global([data-emphasised]) .readout > [data-hl] {
+  display: inline;
+}
+
+@media (max-width: 759px) {
+  .band {
+    padding-block: 8px 4px;
+  }
+
+  .strip {
+    height: 30px;
+    gap: 1px;
+  }
+
+  .code,
+  .block[data-icons] .code {
+    left: 3px;
+    top: 50%;
+    max-width: calc(100% - 6px);
+    transform: translateY(-50%);
+    font-size: 9.5px;
+  }
+
+  .block[data-warn] .code {
+    max-width: calc(100% - 6px - 15px);
+  }
+
+  .track,
+  .icons > .lock,
+  .end,
+  .offsets {
+    display: none;
+  }
+}
