@@ -8,10 +8,11 @@ type BootState = NonNullable<InternalFlash["boot"]>;
  * - `same`: the otadata selects the running slot;
  * - `update`: it selects the other slot, whose record is `new`, an update activated for the next boot;
  * - `fallback`: it selects the other slot, which the bootloader failed to load, so it started the running one;
+ * - `rollback`: it selects the running slot, which has not confirmed itself and has a rollback target, so a restart rolls back to the other slot;
  * - `none`: no record is valid;
  * - `unknown`: the otadata isn't read (untrusted tier).
  */
-export type NextBoot = "same" | "update" | "fallback" | "none" | "unknown";
+export type NextBoot = "same" | "update" | "fallback" | "rollback" | "none" | "unknown";
 
 /** The boot state, and what the page derives from it. */
 export interface BootFacts {
@@ -47,7 +48,7 @@ export function bootFacts(flash: InternalFlash): BootFacts {
   let next: NextBoot;
   if (boot === null) next = "unknown";
   else if (boot.selected === null || boot.selected === undefined) next = "none";
-  else if (boot.selected === boot.running) next = "same";
+  else if (boot.selected === boot.running) next = boot.needs_confirmation && boot.rollback_target ? "rollback" : "same";
   else next = booting?.state === "new" ? "update" : "fallback";
   const facts: BootFacts = {
     boot,
@@ -82,12 +83,15 @@ export function roleChips(info: RegionInfo, facts: BootFacts): RoleChip[] {
   const running = roles.includes("running");
   const chips: RoleChip[] = [];
   if (running) chips.push({ role: "running", label: ROLES.running });
-  if (roles.includes("selected")) {
+  if (roles.includes("selected") && !(running && facts.next === "rollback")) {
     if (running) chips.push({ role: "selected", label: ROLES.selected, variant: "plain" });
     else if (facts.next === "update") chips.push({ role: "selected", label: ROLES.selected, variant: "update" });
     else if (facts.next === "fallback") {
       chips.push({ role: "selected", label: ROLES.selected, variant: "fallback", tooltip: ROLES.fallbackTooltip });
     } else chips.push({ role: "selected", label: ROLES.selected, variant: "plain" });
+  }
+  if (roles.includes("rollback_target") && facts.next === "rollback") {
+    chips.push({ role: "selected", label: ROLES.selected, variant: "fallback", tooltip: ROLES.rollbackNextTooltip });
   }
   if (roles.includes("rollback_target")) chips.push({ role: "rollback_target", label: ROLES.rollback, derived: false });
   else if (running && isApp(info) && facts.derivedRollback) {
@@ -106,7 +110,9 @@ export function bootLine(info: RegionInfo, chips: readonly RoleChip[], facts: Bo
   const parts: string[] = [];
   if (has("running")) {
     if (boot === null) parts.push(BOOT_LINES.runningNotRead);
-    else if (has("selected")) {
+    else if (facts.next === "rollback") {
+      parts.push(BOOT_LINES.unconfirmedRunning(info.label === "ota_0" ? "ota_1" : "ota_0"));
+    } else if (has("selected")) {
       parts.push(BOOT_LINES.runningSelected);
       if (boot.needs_confirmation) parts.push(BOOT_LINES.needsConfirmation);
       else if (boot.state === "valid") parts.push(BOOT_LINES.confirmed);
@@ -114,13 +120,14 @@ export function bootLine(info: RegionInfo, chips: readonly RoleChip[], facts: Bo
     else if (facts.next === "fallback" && boot.selected) parts.push(BOOT_LINES.fallbackRunning(boot.selected));
     else parts.push(BOOT_LINES.runningNothingSelected);
   } else if (has("selected") && boot !== null) {
-    if (facts.next === "fallback") parts.push(BOOT_LINES.fallbackSelected(boot.running));
+    if (facts.next === "rollback") parts.push(BOOT_LINES.rollbackNext(boot.running));
+    else if (facts.next === "fallback") parts.push(BOOT_LINES.fallbackSelected(boot.running));
     else {
       const record = bootingRecord(facts.otadata, (entry) => entry.selects !== null && entry.selects === info.label);
       parts.push(BOOT_LINES.update(record?.state ?? null, boot.running));
     }
   }
-  if (has("rollback_target")) parts.push(BOOT_LINES.rollback);
+  if (has("rollback_target") && facts.next !== "rollback") parts.push(BOOT_LINES.rollback);
   if (parts.length === 0) parts.push(BOOT_LINES.none);
   return parts.join(" ");
 }

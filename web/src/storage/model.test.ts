@@ -779,13 +779,39 @@ test("boot lines of the running slot: confirmed, awaiting confirmation, nothing 
   });
   assert.equal(
     inspectorView(pending, "label:ota_0")?.bootLine,
-    "Booted and selected for the next boot. OTA state pending_verify: the app has not confirmed itself, so the bootloader rolls back at the next boot.",
+    "Booted. OTA state pending_verify: the app has not confirmed itself, so the next boot rolls back to ota_1.",
   );
   assert.equal(
     inspectorView(pending, "label:ota_1")?.bootLine,
-    "The bootloader rolls back to this slot if the app in the other slot fails to confirm itself.",
+    "Not running. The app in ota_0 has not confirmed itself, so the next boot rolls back to this slot.",
   );
   assert.equal(inspectorView(model(), "label:ota_1")?.bootLine, "Not selected for booting.");
+});
+
+test("an unconfirmed running app: the next boot is the rollback target, not the running slot", () => {
+  const m = model({
+    flash: { boot: { running: "ota_1", selected: "ota_1", state: "pending_verify", rollback_target: true, needs_confirmation: true } },
+    regions: layoutRegions().map((info) =>
+      info.region === "app_current"
+        ? { ...info, roles: ["rollback_target"] }
+        : info.region === "app_alternate"
+          ? { ...info, roles: ["running", "selected"] }
+          : info,
+    ),
+  });
+  assert.deepEqual(item(m, "label:ota_1").roles, [{ role: "running", label: "Booted" }]);
+  assert.deepEqual(item(m, "label:ota_0").roles, [
+    { role: "selected", label: "Next boot", variant: "fallback", tooltip: "The running app has not confirmed itself, so a restart rolls back to this slot." },
+    { role: "rollback_target", label: "Rollback target", derived: false },
+  ]);
+  assert.equal(
+    inspectorView(m, "label:ota_1")?.bootLine,
+    "Booted. OTA state pending_verify: the app has not confirmed itself, so the next boot rolls back to ota_0.",
+  );
+  assert.equal(
+    inspectorView(m, "label:ota_0")?.bootLine,
+    "Not running. The app in ota_1 has not confirmed itself, so the next boot rolls back to this slot.",
+  );
 });
 
 test("selection defaults to the running app's region and is kept by key across refreshes", () => {

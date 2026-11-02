@@ -420,6 +420,7 @@ export const ROLES = {
   selected: "Next boot",
   rollback: "Rollback target",
   fallbackTooltip: "The bootloader failed to load this slot at the last boot.",
+  rollbackNextTooltip: "The running app has not confirmed itself, so a restart rolls back to this slot.",
   yes: "Yes",
   no: "No",
   notKnown: "Not known",
@@ -432,6 +433,10 @@ export const BOOT_LINES = {
   confirmed: "OTA state valid: the app is confirmed, so the bootloader does not roll back.",
   needsConfirmation:
     "OTA state pending_verify: the app has not confirmed itself, so the bootloader rolls back at the next boot.",
+  unconfirmedRunning: (other: string) =>
+    `Booted. OTA state pending_verify: the app has not confirmed itself, so the next boot rolls back to ${other}.`,
+  rollbackNext: (running: string) =>
+    `Not running. The app in ${running} has not confirmed itself, so the next boot rolls back to this slot.`,
   runningOtherSelected: (other: string) => `Booted. The next boot starts ${other}.`,
   runningNotRead: "Booted. The otadata is not read in the untrusted tier, so the next boot is not known.",
   runningNothingSelected: "Booted.",

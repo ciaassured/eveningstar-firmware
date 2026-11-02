@@ -1357,6 +1357,17 @@ shows because the API differs:
   the checks finish.
 - **Invalid images** are named in the summary header.
 - **needs_confirmation** is stated in the boot line.
+- **Next boot while the running app is unconfirmed.** When the otadata selects
+  the running slot, `needs_confirmation` is true and the API reports a rollback
+  target, a restart makes the bootloader reject the running app and boot the
+  rollback target. The page then puts "Next boot" on the rollback target, in the
+  plain chip with a warning and the tooltip "The running app has not confirmed
+  itself, so a restart rolls back to this slot.", and not on the running slot.
+  The running slot's boot line reads "Booted. OTA state pending_verify: the app
+  has not confirmed itself, so the next boot rolls back to `<slot>`."; the
+  rollback target's reads "Not running. The app in `<running>` has not confirmed
+  itself, so the next boot rolls back to this slot." The Details role boxes
+  follow the chips.
 - **Unknown values** from a newer firmware (region, label, state, fault) show
   as the API names them.
 - **Other storage devices** are one muted line each in the summary header.
