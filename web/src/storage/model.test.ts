@@ -11,7 +11,7 @@ import {
 } from "../testing/storage.ts";
 import type { ScenarioOptions } from "../testing/storage.ts";
 import { consequence, limitClause, regionIdentity } from "./copy.ts";
-import { buildModel, defaultSelection, findItem, keepSelection } from "./items.ts";
+import { buildModel, defaultSelection, findItem, keepSelection, withinSector } from "./items.ts";
 import type { Item, StorageModel } from "./items.ts";
 import { inspectorView } from "./inspector.ts";
 import { summaryView } from "./summary.ts";
@@ -37,7 +37,6 @@ function words(m: StorageModel): [string, string][] {
 const LAYOUT_IDS = [
   "bootloader",
   "partition_table",
-  "gap:35840",
   "label:factory",
   "label:otadata",
   "gap:49152",
@@ -60,8 +59,8 @@ test("a board's table as the expected layout: every item as expected, in offset 
   assert.deepEqual(m.findings, []);
   assert.equal(m.stripEnd, 0x80_0000);
 
-  const gap = item(m, "gap:35840");
-  assert.deepEqual(gap.span, { start: 0x8c00, end: 0x9000, size: 0x400 });
+  const gap = item(m, "gap:49152");
+  assert.deepEqual(gap.span, { start: 0xc000, end: 0x1_0000, size: 0x4000 });
   assert.equal(gap.kind, "gap");
   assert.equal(gap.code, "");
   assert.equal(gap.swatch, "–");
@@ -193,6 +192,33 @@ test("an extra entry that covers part of a gap leaves the rest as gaps", () => {
     ["extra:8", 0x1000],
     ["gap:57344", 0x2000],
   ]);
+});
+
+test("a remainder inside one flash sector is not a gap; a whole sector, or a remainder crossing a sector boundary, is", () => {
+  const range = (start: number, end: number) => ({ start, end, size: end - start });
+  assert.equal(withinSector(range(0x8c00, 0x9000)), true);
+  assert.equal(withinSector(range(0x9000, 0x9400)), true);
+  assert.equal(withinSector(range(0x9000, 0xa000)), false);
+  assert.equal(withinSector(range(0x8c00, 0x9400)), false);
+  // The 1 KiB after the 0xC00-byte partition table is not shown, nor drawn on the strip.
+  const m = model();
+  assert.equal(
+    m.items.some((it) => it.span.start === 0x8c00),
+    false,
+  );
+  assert.equal(m.items.length, LAYOUT_IDS.length);
+  // An extra entry ending within a sector leaves no gap behind it in that sector.
+  const extra = model({ entries: editEntries({}, [tableEntry("scratch", 1, 0x81, 0xc000, 0x3c00)]) });
+  assert.deepEqual(
+    extra.items.filter((it) => it.span.start >= 0xc000 && it.span.start < 0x1_0000).map((it) => it.id),
+    ["extra:8"],
+  );
+  // A remainder that crosses a sector boundary is a gap.
+  const crossing = model({ entries: editEntries({}, [tableEntry("scratch", 1, 0x81, 0xc000, 0x2c00)]) });
+  assert.deepEqual(
+    crossing.items.filter((it) => it.kind === "gap" && it.span.start >= 0xc000 && it.span.start < 0x1_0000).map((it) => [it.span.start, it.span.size]),
+    [[0xec00, 0x1400]],
+  );
 });
 
 test("an extra entry overlapping an expected region is its own block after it, and both sides state the overlap", () => {
@@ -518,7 +544,6 @@ test("a cargo run board: its own entries compared by label, missing, extra and o
   assert.deepEqual(words(m), [
     ["bootloader", "Expected"],
     ["partition_table", "Differs"],
-    ["gap:35840", "Expected"],
     ["label:factory", "Differs"],
     ["extra:0", "Extra"],
     ["label:otadata", "Missing"],

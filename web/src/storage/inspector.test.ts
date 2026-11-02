@@ -105,7 +105,7 @@ test("the inspector's header: the pill reads As expected when ok, and the Why po
     "The OTA app slot the device is currently running from. It holds one app image; the remainder of the slot is unused.",
   );
   assert.equal(ota0.expected, undefined);
-  assert.equal(view(m, "gap:35840").explanation, "Not covered by any partition table entry. Nothing is stored here.");
+  assert.equal(view(m, "gap:49152").explanation, "Not covered by any partition table entry. Nothing is stored here.");
   const missing = model({ entries: editEntries({ reserved: null }) });
   assert.deepEqual(view(missing, "label:reserved").pill, { word: "Missing", name: "Missing. Show why" });
 });
@@ -180,7 +180,7 @@ test("the usage summary of the partition table, the otadata and the regions with
   assert.equal(text("label:config_1"), "Saved settings of the other app, 128 KiB");
   assert.equal(text("label:diag"), "Diagnostic crash and event records, 256 KiB");
   assert.equal(text("label:reserved"), "Reserved, unused, 1.44 MiB");
-  assert.equal(text("gap:35840"), "Nothing stored, 1 KiB");
+  assert.equal(text("gap:49152"), "Nothing stored, 16 KiB");
   assert.equal(text("label:ota_1"), "Erased, no image, 3 MiB");
   assert.equal(view(m, "label:factory").usage?.texture, "sensitive");
   const checking = model({ flash: withApp("app_current", { status: "checking" }) });
@@ -324,6 +324,7 @@ test("the bootloader's details leave out the ESP-IDF version its name already ho
     ],
   );
   assert.match(details?.hashes?.note ?? "", /verified by the ROM/);
+  assert.equal(details?.hashes?.lead, true);
   const unlisted = model({ flash: { bootloader: internalFlash("data").bootloader } });
   assert.deepEqual(
     view(unlisted, "bootloader").details?.cells.slice(0, 3).map((c) => [c.label, c.runs.map((r) => r.text).join("")]),
@@ -348,6 +349,7 @@ test("the partition table's details: entries, MD5 check, where it was read, and 
   assert.deepEqual(details?.hashes, {
     title: "Hashes",
     note: "The table download includes this MD5. The device does not hash the downloaded file as a whole.",
+    lead: false,
     rows: [
       {
         key: "md5",
@@ -391,6 +393,7 @@ test("the otadata's details: each record's CRC, the record that boots, and what 
     "The bootloader boots the slot named by the record with a matching CRC and the highest sequence number (marked next boot).",
   );
   assert.deepEqual(details?.hashes?.rows, []);
+  assert.equal(details?.hashes?.lead, false);
   const corrupt = model({
     flash: {
       otadata: [
@@ -440,10 +443,12 @@ test("the strip's widths: a minimum share each, the rest by size, always filling
   assert.ok((overlapping.share[0] ?? 0) > (overlapping.share[1] ?? 0));
   assert.deepEqual(stripWeights([], 1), { grow: [], share: [], minimum: 6 });
 
+  // Eleven blocks: the bootloader, the table, eight partitions and the gap after the otadata.
   const m = model();
-  assert.equal(m.minimum, 5);
+  assert.equal(m.items.length, 11);
+  assert.equal(m.minimum, 60 / 11);
   assert.ok(Math.abs(m.items.reduce((sum, it) => sum + it.share, 0) - 1) < 1e-12);
-  assert.ok(m.items.every((it) => it.grow >= 5));
+  assert.ok(m.items.every((it) => it.grow >= 60 / 11));
 });
 
 test("the readout names a region with its range, and the strip's ends", () => {

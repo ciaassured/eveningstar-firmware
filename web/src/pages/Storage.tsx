@@ -103,7 +103,7 @@ interface After {
 }
 
 function Frame({ model, page }: { model: StorageModel; page: StoragePage }) {
-  const { downloads } = useServices();
+  const { downloads, clipboard } = useServices();
   const phone = useMedia(PHONE);
   const root = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
@@ -195,6 +195,7 @@ function Frame({ model, page }: { model: StorageModel; page: StoragePage }) {
               view={view}
               flashSize={model.flashSize}
               added={page.added.value}
+              copy={clipboard}
               onDownload={(action: Action, key: string) => {
                 downloads.add(action.target);
                 page.markAdded(key);

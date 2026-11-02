@@ -29,7 +29,8 @@ export interface StorageInput {
  * What an item of the strip and the list is:
  * - `region`: a region of the expected layout, on the board (or not compared);
  * - `missing`: a partition of the expected layout the board's table has no entry for;
- * - `gap`: space no expected region and no extra entry covers;
+ * - `gap`: space no expected region and no extra entry covers, at least a
+ *   whole sector or crossing a sector boundary;
  * - `extra`: a board's entry the expected layout doesn't have.
  */
 export type ItemKind = "region" | "gap" | "missing" | "extra";
@@ -184,6 +185,18 @@ interface Draft {
   order: number;
 }
 
+/** The flash's erase unit. */
+const SECTOR = 0x1000;
+
+/**
+ * Whether a range lies inside one flash sector without filling it, such as
+ * the 1 KiB after a 0xC00-byte partition table: the sector's remainder of the
+ * region beside it, not space of its own.
+ */
+export function withinSector(r: Range): boolean {
+  return r.size < SECTOR && Math.floor(r.start / SECTOR) === Math.floor((r.end - 1) / SECTOR);
+}
+
 /** The space in `[0, end)` no range covers. */
 function uncovered(ranges: readonly Range[], end: number): Range[] {
   const sorted = ranges.filter((r) => r.size > 0).sort((a, b) => a.start - b.start);
@@ -266,10 +279,11 @@ export function buildModel(input: StorageInput): StorageModel {
 
   const blocksEnd = drafts.reduce((max, draft) => Math.max(max, draft.span.end), 0);
   const stripEnd = Math.max(flashSize, blocksEnd);
+  // A remainder inside one sector is not a gap.
   for (const gap of uncovered(
     drafts.map((draft) => draft.span),
     stripEnd,
-  )) {
+  ).filter((r) => !withinSector(r))) {
     drafts.push({ id: `gap:${gap.start}`, kind: "gap", identity: GAP_IDENTITY, span: gap, differs: [], rank: 1, order: gap.start });
   }
   drafts.sort((a, b) => a.span.start - b.span.start || a.rank - b.rank || a.order - b.order);
