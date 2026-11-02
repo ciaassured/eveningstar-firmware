@@ -67,6 +67,7 @@ static INTERNAL_FLASH: Shared<v1::InternalFlash> = Shared::new(v1::InternalFlash
     table: v1::TableSummary {
         offset: 0,
         matches: false,
+        md5: None,
         board_offset: None,
     },
     bootloader: v1::BootloaderInfo {
@@ -113,6 +114,7 @@ fn internal_flash(flash: &mut v1::InternalFlash, storage: StorageView) {
     flash.table = v1::TableSummary {
         offset: layout::TABLE_OFFSET,
         matches: report.table.matches(),
+        md5: table_md5(report.table.end),
         board_offset: report.table_offset(),
     };
     bootloader(&mut flash.bootloader, storage);
@@ -416,6 +418,7 @@ static BOARD_TABLE: Shared<v1::BoardTable> = Shared::new(v1::BoardTable {
         entries: heapless::Vec::new(),
         truncated: false,
         end: v1::TableEnd::Unterminated,
+        md5: None,
     }),
 });
 
@@ -473,7 +476,9 @@ fn table_read(read: &mut v1::TableRead, handle: &Partition<'static, PartitionTab
     for entry in entries.by_ref().map_while(Result::ok) {
         read.truncated |= read.entries.push(table_entry(&entry)).is_err();
     }
-    read.end = match entries.finish() {
+    let end = entries.finish();
+    read.md5 = table_md5(end);
+    read.end = match end {
         Ok(table::End::Md5 { .. }) => v1::TableEnd::Md5,
         // An erased first entry: a table of no entries.
         Ok(table::End::Erased { .. }) | Err(TableError::Empty) => v1::TableEnd::Erased,
@@ -481,6 +486,19 @@ fn table_read(read: &mut v1::TableRead, handle: &Partition<'static, PartitionTab
         Err(TableError::Unterminated) => v1::TableEnd::Unterminated,
         Err(TableError::Read { .. }) => v1::TableEnd::ReadFailed,
     };
+}
+
+/// The MD5 entry a table's entries end at, when they end at one.
+fn table_md5(end: Result<table::End, TableError>) -> Option<v1::TableMd5> {
+    match end {
+        Ok(table::End::Md5 {
+            digest, matches, ..
+        }) => Some(v1::TableMd5 {
+            stored: v1::Md5(digest),
+            matches,
+        }),
+        _ => None,
+    }
 }
 
 fn table_entry(entry: &RawEntry) -> v1::TableEntry {

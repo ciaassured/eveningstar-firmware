@@ -314,11 +314,26 @@ pub enum Limit {
 pub struct TableSummary {
     /// Offset the firmware reads the table at.
     pub offset: u32,
-    /// Whether the table there matches the layout, entry by entry. Its MD5
-    /// isn't checked.
+    /// Whether the table there matches the layout, entry by entry, whatever
+    /// its MD5.
     pub matches: bool,
+    /// The MD5 entry the table's entries end at; `null` when they don't end at
+    /// one.
+    pub md5: Option<TableMd5>,
     /// Offset of the table the bootloader read, when the firmware knows it.
     pub board_offset: Option<u32>,
+}
+
+/// The MD5 entry that ends the entries of a partition table, as ESP-IDF writes
+/// it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct TableMd5 {
+    /// The digest the entry stores.
+    pub stored: Md5,
+    /// Whether it is the MD5 of the 32 bytes of every partition entry before
+    /// it, as stored.
+    pub matches: bool,
 }
 
 /// The bootloader at the start of the flash.
@@ -335,7 +350,9 @@ pub struct BootloaderInfo {
     pub name: Option<heapless::String<BOOTLOADER_NAME_MAX_LEN>>,
     /// Why it doesn't verify, when it doesn't.
     pub error: Option<ImageFault>,
-    /// Length of its image in bytes, when it verifies.
+    /// Length of its image in bytes, when it verifies. The image starts at the
+    /// start of the flash, so it covers offsets 0 up to, but not including,
+    /// `size`.
     pub size: Option<u32>,
     /// The SHA-256 its image stores, over every byte before it (the
     /// "Validation Hash" of `esptool image_info`), when it verifies.
@@ -528,7 +545,8 @@ pub struct AppSlot {
     pub slot: Option<SlotName>,
     /// Offset of the region in the flash.
     pub offset: u32,
-    /// Size of the region in bytes.
+    /// Size of the region in bytes. The region covers `offset` up to, but not
+    /// including, `offset + size`.
     pub size: u32,
     /// The image in it.
     pub image: AppImage,
@@ -545,7 +563,9 @@ pub struct AppImage {
     /// Why the image doesn't verify, when [`ImageStatus::Invalid`].
     pub error: Option<ImageFault>,
     /// Length of the image in bytes, read from its headers without hashing,
-    /// so known while checking; `null` when the headers don't read.
+    /// so known while checking; `null` when the headers don't read. The image
+    /// starts at the start of its slot, so it covers the slot's offset up to,
+    /// but not including, that offset plus this size.
     pub size: Option<u32>,
     /// The SHA-256 the image stores, over every byte before it (the
     /// "Validation Hash" of `esptool image_info`), when
@@ -677,7 +697,8 @@ pub struct RegionInfo {
     pub partition: Option<PartitionKind>,
     /// Offset in the flash.
     pub offset: u32,
-    /// Size in bytes.
+    /// Size in bytes. The region covers `offset` up to, but not including,
+    /// `offset + size`.
     pub size: u32,
     /// Whether its content may leave the device.
     pub contents: Contents,
@@ -902,6 +923,9 @@ pub struct TableRead {
     pub truncated: bool,
     /// How its entries end.
     pub end: TableEnd,
+    /// The MD5 entry its entries end at, checked against every entry, listed
+    /// or not; `null` unless they end at [`TableEnd::Md5`].
+    pub md5: Option<TableMd5>,
 }
 
 /// A partition entry of a table on the flash.
@@ -921,7 +945,8 @@ pub struct TableEntry {
     pub subtype: u8,
     /// Offset in the flash.
     pub offset: u32,
-    /// Size in bytes.
+    /// Size in bytes. The partition covers `offset` up to, but not including,
+    /// `offset + size`.
     pub size: u32,
     /// The flag bits; bit 1 is read-only.
     pub flags: u32,
@@ -932,7 +957,8 @@ pub struct TableEntry {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum TableEnd {
-    /// At an MD5 entry, as ESP-IDF writes tables. The MD5 isn't checked.
+    /// At an MD5 entry, as ESP-IDF writes tables, which [`TableRead::md5`]
+    /// gives.
     Md5,
     /// At an erased entry.
     Erased,
@@ -954,60 +980,23 @@ pub struct Sha256(pub [u8; 32]);
 
 impl fmt::Display for Sha256 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for byte in self.0 {
-            write!(f, "{byte:02x}")?;
-        }
-        Ok(())
+        write_hex(f, &self.0)
     }
 }
 
 impl Serialize for Sha256 {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        const DIGITS: &[u8; 16] = b"0123456789abcdef";
-        let mut text = [0; 64];
-        for (pair, byte) in text.as_chunks_mut::<2>().0.iter_mut().zip(self.0) {
-            pair[0] = DIGITS[usize::from(byte >> 4)];
-            pair[1] = DIGITS[usize::from(byte & 0xF)];
-        }
-        // Every byte written is an ASCII digit.
-        let text = core::str::from_utf8(&text).map_err(serde::ser::Error::custom)?;
-        serializer.serialize_str(text)
+        serialize_hex(&self.0, serializer)
     }
 }
 
 impl<'de> Deserialize<'de> for Sha256 {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct Sha256Visitor;
-
-        impl Visitor<'_> for Sha256Visitor {
-            type Value = Sha256;
-
-            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("a SHA-256 digest as 64 lowercase hexadecimal digits")
-            }
-
-            fn visit_str<E: de::Error>(self, s: &str) -> Result<Sha256, E> {
-                let digit = |c: u8| match c {
-                    b'0'..=b'9' => Some(c - b'0'),
-                    b'a'..=b'f' => Some(c - b'a' + 10),
-                    _ => None,
-                };
-                let bytes = s.as_bytes();
-                if bytes.len() != 64 {
-                    return Err(E::invalid_length(bytes.len(), &self));
-                }
-                let mut digest = [0; 32];
-                for (byte, pair) in digest.iter_mut().zip(bytes.as_chunks::<2>().0) {
-                    let (Some(high), Some(low)) = (digit(pair[0]), digit(pair[1])) else {
-                        return Err(E::invalid_value(de::Unexpected::Str(s), &self));
-                    };
-                    *byte = high << 4 | low;
-                }
-                Ok(Sha256(digest))
-            }
-        }
-
-        deserializer.deserialize_str(Sha256Visitor)
+        deserializer
+            .deserialize_str(HexVisitor::<32>(
+                "a SHA-256 digest as 64 lowercase hexadecimal digits",
+            ))
+            .map(Self)
     }
 }
 
@@ -1027,6 +1016,110 @@ impl schemars::JsonSchema for Sha256 {
             "description": "A SHA-256 digest, as 64 lowercase hexadecimal digits.",
             "pattern": "^[0-9a-f]{64}$",
         })
+    }
+}
+
+/// An MD5 digest, written as 32 lowercase hexadecimal digits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Md5(pub [u8; 16]);
+
+impl fmt::Display for Md5 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write_hex(f, &self.0)
+    }
+}
+
+impl Serialize for Md5 {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serialize_hex(&self.0, serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Md5 {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer
+            .deserialize_str(HexVisitor::<16>(
+                "an MD5 digest as 32 lowercase hexadecimal digits",
+            ))
+            .map(Self)
+    }
+}
+
+#[cfg(feature = "schema")]
+impl schemars::JsonSchema for Md5 {
+    fn schema_name() -> alloc::borrow::Cow<'static, str> {
+        "Md5".into()
+    }
+
+    fn schema_id() -> alloc::borrow::Cow<'static, str> {
+        concat!(module_path!(), "::Md5").into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "description": "An MD5 digest, as 32 lowercase hexadecimal digits.",
+            "pattern": "^[0-9a-f]{32}$",
+        })
+    }
+}
+
+/// Longest digest written in hexadecimal, in bytes: a SHA-256.
+const DIGEST_MAX_LEN: usize = 32;
+
+fn write_hex(f: &mut fmt::Formatter<'_>, bytes: &[u8]) -> fmt::Result {
+    for byte in bytes {
+        write!(f, "{byte:02x}")?;
+    }
+    Ok(())
+}
+
+/// `bytes`, at most [`DIGEST_MAX_LEN`] of them, as lowercase hexadecimal
+/// digits.
+fn serialize_hex<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut text = [0; 2 * DIGEST_MAX_LEN];
+    let text = text
+        .get_mut(..2 * bytes.len())
+        .ok_or_else(|| serde::ser::Error::custom("digest too long"))?;
+    for (pair, byte) in text.as_chunks_mut::<2>().0.iter_mut().zip(bytes) {
+        pair[0] = DIGITS[usize::from(byte >> 4)];
+        pair[1] = DIGITS[usize::from(byte & 0xF)];
+    }
+    // Every byte written is an ASCII digit.
+    let text = core::str::from_utf8(text).map_err(serde::ser::Error::custom)?;
+    serializer.serialize_str(text)
+}
+
+/// Parses `N` bytes written as `2 * N` lowercase hexadecimal digits. It holds
+/// what it expects, for its errors.
+struct HexVisitor<const N: usize>(&'static str);
+
+impl<const N: usize> Visitor<'_> for HexVisitor<N> {
+    type Value = [u8; N];
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.0)
+    }
+
+    fn visit_str<E: de::Error>(self, s: &str) -> Result<[u8; N], E> {
+        let digit = |c: u8| match c {
+            b'0'..=b'9' => Some(c - b'0'),
+            b'a'..=b'f' => Some(c - b'a' + 10),
+            _ => None,
+        };
+        let bytes = s.as_bytes();
+        if bytes.len() != 2 * N {
+            return Err(E::invalid_length(bytes.len(), &self));
+        }
+        let mut digest = [0; N];
+        for (byte, pair) in digest.iter_mut().zip(bytes.as_chunks::<2>().0) {
+            let (Some(high), Some(low)) = (digit(pair[0]), digit(pair[1])) else {
+                return Err(E::invalid_value(de::Unexpected::Str(s), &self));
+            };
+            *byte = high << 4 | low;
+        }
+        Ok(digest)
     }
 }
 
@@ -1091,6 +1184,53 @@ mod tests {
         ] {
             assert!(serde_json::from_str::<Sha256>(&bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn md5_digests_are_lowercase_hex() {
+        let mut bytes = [0; 16];
+        bytes[0] = 0xC5;
+        bytes[15] = 0x0E;
+        let digest = Md5(bytes);
+        let json = serde_json::to_string(&digest).unwrap();
+        assert_eq!(json, format!("\"c5{}0e\"", "0".repeat(28)));
+        assert_eq!(digest.to_string(), json.trim_matches('"'));
+        assert_eq!(serde_json::from_str::<Md5>(&json).unwrap(), digest);
+        for bad in [
+            format!("\"C5{}0e\"", "0".repeat(28)),
+            format!("\"{}\"", "0".repeat(31)),
+            format!("\"{}\"", "0".repeat(33)),
+            format!("\"{}\"", "0".repeat(64)),
+            format!("\"{}g\"", "0".repeat(31)),
+        ] {
+            assert!(serde_json::from_str::<Md5>(&bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn tables_without_an_md5_field_parse() {
+        let summary: TableSummary =
+            serde_json::from_str(r#"{"offset":32768,"matches":true,"board_offset":32768}"#)
+                .unwrap();
+        assert_eq!(summary.md5, None);
+        let read: TableRead =
+            serde_json::from_str(r#"{"offset":32768,"entries":[],"truncated":false,"end":"md5"}"#)
+                .unwrap();
+        assert_eq!(read.md5, None);
+    }
+
+    #[test]
+    fn table_md5s_name_the_stored_digest() {
+        let md5 = TableMd5 {
+            stored: Md5([0xAB; 16]),
+            matches: false,
+        };
+        let json = serde_json::to_string(&md5).unwrap();
+        assert_eq!(
+            json,
+            format!(r#"{{"stored":"{}","matches":false}}"#, "ab".repeat(16))
+        );
+        assert_eq!(serde_json::from_str::<TableMd5>(&json).unwrap(), md5);
     }
 
     #[test]
@@ -1167,6 +1307,13 @@ mod tests {
             s.try_into().unwrap()
         }
 
+        fn table_md5(matches: bool) -> TableMd5 {
+            TableMd5 {
+                stored: Md5([6; 16]),
+                matches,
+            }
+        }
+
         fn internal_flash() -> InternalFlash {
             let mut otadata = heapless::Vec::new();
             otadata
@@ -1239,6 +1386,7 @@ mod tests {
                 table: TableSummary {
                     offset: 0x8000,
                     matches: true,
+                    md5: Some(table_md5(true)),
                     board_offset: Some(0x8000),
                 },
                 bootloader: BootloaderInfo {
@@ -1333,6 +1481,7 @@ mod tests {
                     entries,
                     truncated: false,
                     end: TableEnd::Md5,
+                    md5: Some(table_md5(false)),
                 }),
             }
         }
@@ -1370,6 +1519,9 @@ mod tests {
         fn schemas_reject_invalid_values() {
             let mut value = serde_json::to_value(internal_flash()).unwrap();
             value["bootloader"]["digest"] = json!("AB".repeat(32));
+            assert!(!schema_accepts::<InternalFlash>(&value));
+            let mut value = serde_json::to_value(internal_flash()).unwrap();
+            value["table"]["md5"]["stored"] = json!("ab".repeat(32));
             assert!(!schema_accepts::<InternalFlash>(&value));
             let mut value = serde_json::to_value(regions()).unwrap();
             value["regions"][0]["region"] = json!("unknown");

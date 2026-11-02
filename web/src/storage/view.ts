@@ -231,7 +231,7 @@ export function bootChain(flash: InternalFlash): ChainLine[] {
         : `the bootloader read the one at ${formatHex(table.board_offset, 4)}`;
   lines.push({
     label: "Table",
-    text: `${formatHex(table.offset, 4)}, ${table.matches ? "matches the layout" : "doesn't match the layout"}; ${read} (MD5 not checked)`,
+    text: `${formatHex(table.offset, 4)}, ${table.matches ? "matches the layout" : "doesn't match the layout"}; ${read}; ${table.md5 === null ? "no MD5 entry" : table.md5.matches ? "its MD5 matches" : "its MD5 doesn't match"}`,
     level: table.matches ? "normal" : "caution",
   });
 

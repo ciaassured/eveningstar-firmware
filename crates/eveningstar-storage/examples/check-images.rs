@@ -1,7 +1,8 @@
 //! Checks a bootloader, a partition table and, optionally, an app image with
 //! the code the firmware runs at boot, before they are flashed or released:
 //!
-//! - the table compared with the generated layout, entry by entry;
+//! - the table compared with the generated layout, entry by entry, and its MD5
+//!   entry, when it ends at one, checked against its entries;
 //! - the bootloader verified and looked up in the known list, printing the
 //!   entry to add to `known.rs` when it isn't there;
 //! - the app verified as an ESP32-C6 image of the `eveningstar` project that
@@ -134,6 +135,9 @@ fn check_table(checks: &mut Checks, path: &Path, bytes: &[u8]) {
     match comparison.end {
         Ok(end) => checks.pass(format!("the list ends after {} entries", end.partitions())),
         Err(error) => checks.fail(format!("the table isn't well formed: {error:?}")),
+    }
+    if let Ok(table::End::Md5 { matches, .. }) = comparison.end {
+        checks.check(matches, "the MD5 entry's digest is the MD5 of the entries");
     }
 }
 
