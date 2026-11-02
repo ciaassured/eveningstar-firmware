@@ -175,7 +175,8 @@ export function createStorage(deps: StorageDeps): Storage {
         };
       }
       const device = (await deps.deviceName()) ?? "eveningstar";
-      return planDownload(target, { flash: current, regions: listed, device });
+      // The board's table changes only across a restart, which reads everything again.
+      return planDownload(target, { flash: current, regions: listed, device, table: table.peek() });
     },
     reset() {
       batch(() => {

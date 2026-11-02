@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import type { AppSlot, BoardTable, InternalFlash, RegionInfo, Tier } from "../storage/types.ts";
+import type { StorageInput } from "../storage/items.ts";
+import type { AppSlot, BoardTable, InternalFlash, RegionInfo, TableEntry, TableRead, Tier } from "../storage/types.ts";
 
 /** The SHA-256 of the bytes, in lowercase hex. */
 export function sha256(bytes: Uint8Array): string {
@@ -192,5 +193,115 @@ export function boardTable(differs = false): BoardTable {
     search: differs ? "found" : "compiled",
     offsets: [0x8000],
     table: { offset: 0x8000, entries, truncated: false, end: "md5", md5: { stored: TABLE_MD5, matches: true } },
+  };
+}
+
+/** The partition table region's length, `table::MAX_LEN`. */
+export const TABLE_LEN = 0xc00;
+
+/**
+ * The regions as the firmware lists them: the partition table region is
+ * `TABLE_LEN` long, and `app_current` is running in every tier. In the
+ * untrusted tier the bootloader and the table have the board's spans, with
+ * the board's table at `boardOffset`.
+ */
+export function layoutRegions(options: { tier?: Tier; boardOffset?: number } = {}): RegionInfo[] {
+  const untrusted = options.tier === "untrusted";
+  const at = options.boardOffset ?? 0x8000;
+  return regions({ tier: options.tier ?? "full" }).map((info) => {
+    switch (info.region) {
+      case "bootloader":
+        return { ...info, ...(untrusted ? { offset: 0, size: at } : {}) };
+      case "partition_table":
+        return {
+          ...info,
+          offset: untrusted ? at : 0x8000,
+          size: TABLE_LEN,
+          expected: { offset: 0x8000, size: TABLE_LEN },
+        };
+      case "app_current":
+        return { ...info, roles: untrusted ? ["running"] : ["running", "selected"] };
+      default:
+        return info;
+    }
+  });
+}
+
+/** A partition table entry. */
+export function tableEntry(label: string, type: number, subtype: number, offset: number, size: number, flags = 0): TableEntry {
+  return { label, type, subtype, offset, size, flags };
+}
+
+/** The expected layout's partitions as a board's table holds them. */
+export function expectedEntries(): TableEntry[] {
+  return layoutRegions().flatMap((info) =>
+    info.partition === null || info.partition === undefined || info.expected === null || info.expected === undefined
+      ? []
+      : [tableEntry(info.label ?? "", info.partition.type, info.partition.subtype, info.expected.offset, info.expected.size, info.partition.flags)],
+  );
+}
+
+/** Each change to the board's entries: `null` drops the entry, an object changes its fields. */
+export function editEntries(edits: Readonly<Record<string, Partial<TableEntry> | null>>, added: readonly TableEntry[] = []): TableEntry[] {
+  const entries = expectedEntries().flatMap((entry) => {
+    const edit = edits[entry.label];
+    if (edit === null) return [];
+    return [{ ...entry, ...edit }];
+  });
+  return [...entries, ...added];
+}
+
+export interface ScenarioOptions {
+  tier?: Tier;
+  /** The board's entries; the expected layout's when left out. */
+  entries?: TableEntry[];
+  /** Changes to the board's table; `table: null` for a table the firmware doesn't know. */
+  board?: Partial<BoardTable>;
+  /** Changes to the table read. */
+  read?: Partial<TableRead>;
+  /** Changes to `/storage/internal`. */
+  flash?: Partial<InternalFlash>;
+  regions?: RegionInfo[];
+  /** Where the board's table is; 0x8000 when left out. */
+  boardOffset?: number;
+}
+
+/**
+ * What the storage page is built from in a scenario: the layout's regions, a
+ * board's table with `entries`, and `/storage/internal` in the tier with a
+ * known bootloader. The firmware's positional comparison matches only when
+ * the board's entries are the expected ones.
+ */
+export function storageInput(options: ScenarioOptions = {}): StorageInput {
+  const tier = options.tier ?? "full";
+  const boardOffset = options.boardOffset ?? 0x8000;
+  const entries = options.entries ?? expectedEntries();
+  const read: TableRead = {
+    offset: boardOffset,
+    entries,
+    truncated: false,
+    end: "md5",
+    md5: { stored: TABLE_MD5, matches: true },
+    ...options.read,
+  };
+  const table: BoardTable = { search: "compiled", offsets: [boardOffset], table: read, ...options.board };
+  const same = JSON.stringify(entries) === JSON.stringify(expectedEntries()) && boardOffset === 0x8000;
+  const base = internalFlash(tier);
+  const flash: InternalFlash = {
+    ...base,
+    bootloader: internalFlash("full").bootloader,
+    table: { offset: 0x8000, matches: same, md5: read.md5, board_offset: table.table === null ? null : boardOffset },
+    ...options.flash,
+  };
+  return {
+    flash,
+    regions: options.regions ?? layoutRegions({ tier, boardOffset }),
+    table,
+    devices: {
+      devices: [
+        { id: "internal", kind: "nor_flash", status: "available", capacity: 0x80_0000 },
+        { id: "external", kind: "nand_flash", status: "not_supported", capacity: null },
+      ],
+    },
   };
 }
