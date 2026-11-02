@@ -1411,8 +1411,11 @@ under its own watchdog handle, fed per sector and yielding between them.
 
 ## Left to build
 
-- **The redesigned page** ("The storage page"), with the two API additions it
-  needs.
+- **Listing every layout entry when the app booted from no slot.** The slots
+  and configurations are left out of `/storage/internal/regions` then, so the
+  page compares nothing in that case. Naming a slot without a role needs a new
+  region name, which touches the path parameter, the content endpoint and the
+  web client's lookup by region name.
 - **Re-checks** on request, or periodically to catch flash going bad. Both
   would reuse the check task.
 - **The OTA service's writes.** It is the first writer of a public region. The
@@ -1446,4 +1449,19 @@ Not verified:
 - The web UI over HTTPS on the device, and Chrome's handling of downloads from
   a plain-HTTP page on a real desktop.
 - The `Invalid` image path and the data tier on the board (host tests only).
-- The redesigned page, in every case of "Verification on a board".
+- The redesigned page on a board with: a table at another offset, a damaged
+  MD5 (needs a bootloader built without the MD5 check), several tables, a
+  `cargo run` board and a fallback to the other slot.
+
+Verified on the dev board with the redesigned page (served by the device and in
+headless Chromium, light and dark, 1280 px and 400 px): the matching layout,
+one missing entry (`ota_1`, `reserved`, `config_1`), an extra entry in the gap,
+in the reserved space and over `ota_0` and `ota_1`, a shifted `ota_1` and
+`diag`, a resized `config_0`, a renamed `diag`, a retyped `config_0`, two
+expected entries overlapping each other, and a missing `ota_1` with an extra
+entry on its space. The board booted with every one of those tables (the
+bootloader doesn't check overlaps), always in the untrusted tier, with the
+strip drawing no block over another. The downloads of every public region, by
+the API and by the tray, equal `esptool read-flash` byte for byte; the images'
+SHA-256 equal the device's `file_sha256`, and the table's stored MD5 equals the
+MD5 of its entries.
