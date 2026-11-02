@@ -51,10 +51,6 @@ what hasn't been verified.
 - **A sanitized flash dump**, if it is wanted: each store owns an allowlist
   sanitizer for its partition and fails closed, so a sensitive partition never
   leaves as raw bytes, and the endpoint needs authentication.
-- **The MD5 of the partition table** is not checked. Checking it, and the erased
-  entry that the ESP-IDF bootloader requires after the MD5 entry, would make the
-  comparison equal to the bootloader's instead of slightly more lenient. It is
-  an option, not a need: the comparison is exact on the entries.
 - **The external NAND** is out of scope here. It will hold bulk data logs.
 
 Out of scope until the user asks: updating the bootloader or the partition

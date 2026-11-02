@@ -512,8 +512,10 @@ the untrusted tier, so storage never stops the device from booting.
 
 The table is compared entry by entry with the layout. It is slightly more
 lenient than the bootloader, which also requires the entry after the MD5 entry
-to be erased, and the MD5 isn't checked. When the table at 0x8000 isn't the
-layout, `split` looks for the one the bootloader used, so the boot-chain
+to be erased and the MD5 to match. The MD5 is checked against the entries and
+reported, but decides neither the comparison nor the tier: the comparison is
+exact on the entries already. When the table at 0x8000 isn't the layout,
+`split` looks for the one the bootloader used, so the boot-chain
 handles describe what is on the board: a well-formed table below the running
 app with an app entry at the booted offset. A table left over from an earlier
 layout looks the same, so when two qualify the board's table is unknown and
@@ -677,7 +679,8 @@ whichever image comes up.
   comparison, image verification and `split` on files. The `build` group runs it
   on the Nix bootloader and table and on the release app, and fails on a
   bootloader missing from `known.rs` (printing its entry), a table that isn't
-  the layout, or an app over 75% of its slot.
+  the layout or whose MD5 doesn't match its entries, or an app over 75% of its
+  slot.
 - The crate's tests read fixtures built by Nix and real captures in
   `crates/eveningstar-storage/testdata/` (see its README). The `build` group
   fails when the Nix-built ones are stale.

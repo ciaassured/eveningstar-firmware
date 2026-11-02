@@ -264,7 +264,7 @@ export function tableSearchText(search: Open<TableSearch>): string {
 export function tableEndText(end: Open<TableEnd>): string {
   switch (end) {
     case "md5":
-      return "Ends at an MD5 entry (not checked)";
+      return "Ends at an MD5 entry";
     case "erased":
       return "Ends at an erased entry";
     case "malformed":

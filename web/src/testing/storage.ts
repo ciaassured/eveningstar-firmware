@@ -17,6 +17,9 @@ export function bytesOf(size: number, seed = 1): Uint8Array<ArrayBuffer> {
   return bytes;
 }
 
+/** The digest the fixtures' partition tables store in their MD5 entry. */
+export const TABLE_MD5 = "c5f387345ce92323fb411bc8bfcf3bce";
+
 /** The board's layout as the regions endpoint lists it, in the full tier with ota_0 running. */
 export function regions(options: { tier?: Tier; differs?: boolean } = {}): RegionInfo[] {
   const untrusted = options.tier === "untrusted";
@@ -111,7 +114,12 @@ export function internalFlash(tier: Tier = "full", image = appImage(), overrides
     persistent_config: tier !== "untrusted",
     updates: tier === "full",
     booted_offset: 0x1_0000,
-    table: { offset: 0x8000, matches: tier !== "untrusted", board_offset: tier === "untrusted" ? null : 0x8000 },
+    table: {
+      offset: 0x8000,
+      matches: tier !== "untrusted",
+      md5: { stored: TABLE_MD5, matches: tier !== "untrusted" },
+      board_offset: tier === "untrusted" ? null : 0x8000,
+    },
     bootloader: {
       status: tier === "full" ? "known" : "unlisted",
       name: tier === "full" ? "esp-idf-v5.5.1-rollback" : null,
@@ -166,6 +174,6 @@ export function boardTable(differs = false): BoardTable {
   return {
     search: differs ? "found" : "compiled",
     offsets: [0x8000],
-    table: { offset: 0x8000, entries, truncated: false, end: "md5" },
+    table: { offset: 0x8000, entries, truncated: false, end: "md5", md5: { stored: TABLE_MD5, matches: true } },
   };
 }

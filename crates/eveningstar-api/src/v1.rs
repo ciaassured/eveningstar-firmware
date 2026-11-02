@@ -32,11 +32,11 @@ pub use storage::{
     BootloaderInfo, BootloaderStatus, CheckStatus, Checks, Contents, ENTRY_FIELDS_MAX, EntryField,
     EntryValidity, FLASH_TEXT_MAX_LEN, FlashText, GetInternalFlash, GetPartitionTable,
     GetRegionContent, GetRegions, GetStorage, ImageFault, ImageStatus, InternalFlash,
-    LABEL_MAX_LEN, Label, LayoutMatch, Limit, MatchStatus, OtaState, OtadataEntry, PartitionKind,
-    REGIONS_MAX, ROLES_MAX, Region, RegionContentError, RegionInfo, Regions, Role,
+    LABEL_MAX_LEN, Label, LayoutMatch, Limit, MatchStatus, Md5, OtaState, OtadataEntry,
+    PartitionKind, REGIONS_MAX, ROLES_MAX, Region, RegionContentError, RegionInfo, Regions, Role,
     STORAGE_DEVICES_MAX, Sha256, SlotName, StorageDevice, StorageDevices, StorageId, StorageKind,
-    StorageStatus, TABLE_ENTRIES_MAX, TableEnd, TableEntry, TableRead, TableSearch, TableSummary,
-    Tier,
+    StorageStatus, TABLE_ENTRIES_MAX, TableEnd, TableEntry, TableMd5, TableRead, TableSearch,
+    TableSummary, Tier,
 };
 
 /// Path prefix of every version 1 endpoint.
