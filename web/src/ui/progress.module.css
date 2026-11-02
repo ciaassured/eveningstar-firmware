@@ -27,11 +27,6 @@
   border-radius: var(--radius-pill);
 }
 
-.neutral {
-  --track: var(--surface-2);
-  --bar: var(--map-image);
-}
-
 .header {
   --track: var(--header-line);
   --bar: var(--header-accent);

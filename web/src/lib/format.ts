@@ -69,6 +69,12 @@ export function formatAge(ageMs: number, locale?: string): string {
   return formatter.format(-Math.floor(age / DAY), "day");
 }
 
+/** A time of day on the 24-hour clock with seconds, such as `09:05:07`. */
+export function formatClock(ms: number): string {
+  const time = new Date(ms);
+  return [time.getHours(), time.getMinutes(), time.getSeconds()].map((part) => String(part).padStart(2, "0")).join(":");
+}
+
 /** A whole number grouped by thousands with commas, such as `3,211,264`. */
 export function formatDecimal(value: number): string {
   return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(value);

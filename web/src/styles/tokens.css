@@ -28,8 +28,31 @@
   --st-caution: #8e6a00;
   --st-serious: #ba4e00;
   --st-critical: #da1e28;
-  --map-region: #8d8d8d;
-  --map-image: #393939;
+  --faint: #8d8d8d;
+  --on-pending: #ffffff;
+  --shadow: 0 12px 40px rgba(22, 22, 22, 0.18);
+  --r-bl: #5753b0;
+  --r-pt: #8b47c9;
+  --r-od: #b0459a;
+  --r-a0: #00807e;
+  --r-c0: #4f9d9b;
+  --r-a1: #a8346b;
+  --r-c1: #c9789f;
+  --r-fd: #9a6b78;
+  --r-dg: #7a7426;
+  --r-rs: #6b7385;
+  --r-gap: #8d8d8d;
+
+  /* Status colours, for status only, and the booted dot. */
+  --x-ok: var(--st-normal);
+  --x-warn: var(--st-caution);
+  --x-bad: var(--st-critical);
+  --booted: var(--st-normal);
+  --s-pending: var(--st-serious);
+  --s-active: var(--st-standby);
+  --s-done: var(--st-normal);
+  --s-failed: var(--st-critical);
+  --s-cancel: var(--st-off);
 
   --radius-panel: 10px;
   --radius-control: 7px;
@@ -77,7 +100,19 @@
     --st-caution: #f1c21b;
     --st-serious: #ff832b;
     --st-critical: #fa4d56;
-    --map-region: #6f6f6f;
-    --map-image: #e0e0e0;
+    --faint: #8d8d8d;
+    --on-pending: #1a1a1a;
+    --shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+    --r-bl: #a09cf5;
+    --r-pt: #c08cf5;
+    --r-od: #e88ad8;
+    --r-a0: #3ccac6;
+    --r-c0: #93dcd8;
+    --r-a1: #f27aae;
+    --r-c1: #f6b3d0;
+    --r-fd: #d9a6b4;
+    --r-dg: #cfc56e;
+    --r-rs: #9aa2b1;
+    --r-gap: #8d8d8d;
   }
 }

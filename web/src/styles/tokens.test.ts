@@ -66,10 +66,13 @@ const TEXT: [string, string][] = [
   // The age of stale data turns this colour.
   ["--st-caution", "--surface"],
   ["--st-caution", "--bg"],
-  // A region's name on the flash map.
-  ["--fg", "--map-region"],
-  // Why a range for a download isn't valid.
+  // Status words beside their icons, on panes and on the inspector.
+  ["--st-normal", "--surface"],
+  ["--st-normal", "--bg"],
   ["--st-critical", "--surface"],
+  ["--st-critical", "--bg"],
+  // The next-boot pill of an activated update.
+  ["--on-pending", "--st-serious"],
 ];
 
 const STATUS = [
@@ -104,14 +107,11 @@ const GRAPHICS: [string, string][] = [
   ["--st-critical", "--header-bg"],
   ["--moon", "--header-bg"],
   ["--sun-fill", "--header-bg"],
-  // The flash map: regions and the hatch of unallocated space on the panel, and an image's fill on its slot.
-  ["--map-region", "--surface"],
-  ["--map-image", "--map-region"],
-  // Progress bars on their track: a download's, and an image's size against its slot.
+  // A download's progress bar on its track.
   ["--accent", "--surface-2"],
-  ["--map-image", "--surface-2"],
-  // The edge of a text field.
-  ["--map-region", "--surface"],
+  // The outline of a gap on the flash map, the ring of a help button and the lines of a ruler's ticks.
+  ["--faint", "--surface"],
+  ["--faint", "--bg"],
   // The download tray in the header: its button's text and its progress on the track.
   ["--header-accent", "--header-bg"],
   ["--header-accent", "--header-line"],

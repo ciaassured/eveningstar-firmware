@@ -149,30 +149,6 @@ export function traySummary(entries: readonly DownloadEntry[], now: number): str
   return parts.join(" · ");
 }
 
-/** A word or two for an entry beside its region's button; `undefined` when there is nothing to say. */
-export function shortStatus(entry: DownloadEntry | undefined): { level: StatusLevel; label: string } | undefined {
-  if (entry === undefined) return undefined;
-  const { state } = entry;
-  switch (state.kind) {
-    case "queued":
-      return { level: "standby", label: "Queued" };
-    case "waiting":
-      return { level: "standby", label: "Waiting" };
-    case "downloading":
-      return state.total === undefined || state.total === 0
-        ? { level: "standby", label: "Preparing" }
-        : { level: state.retrying ? "caution" : "normal", label: formatPercent(state.received / state.total) };
-    case "verifying":
-      return { level: "normal", label: "Checking" };
-    case "done":
-      return state.verified === "mismatch" ? { level: "serious", label: "Unverified" } : { level: "normal", label: "Saved" };
-    case "failed":
-      return { level: "serious", label: "Failed" };
-    case "cancelled":
-      return undefined;
-  }
-}
-
 function ordinal(n: number): string {
   const tens = n % 100;
   const suffix = tens >= 11 && tens <= 13 ? "th" : (["th", "st", "nd", "rd"][n % 10] ?? "th");

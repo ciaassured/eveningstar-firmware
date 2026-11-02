@@ -4,15 +4,6 @@ import styles from "./status.module.css";
 /** The six levels of status, each a shape and a colour. */
 export type StatusLevel = "off" | "standby" | "normal" | "caution" | "serious" | "critical";
 
-export const STATUS_LABELS: Record<StatusLevel, string> = {
-  off: "Off",
-  standby: "Standby",
-  normal: "Normal",
-  caution: "Caution",
-  serious: "Serious",
-  critical: "Critical",
-};
-
 function Shape({ level }: { level: StatusLevel }) {
   switch (level) {
     case "off":
@@ -46,15 +37,5 @@ export function StatusIcon({ level, class: className }: { level: StatusLevel; cl
     >
       <Shape level={level} />
     </svg>
-  );
-}
-
-/** A status level's shape and its word. */
-export function Status({ level, label }: { level: StatusLevel; label?: string }) {
-  return (
-    <span class={styles["status"]}>
-      <StatusIcon level={level} />
-      <span>{label ?? STATUS_LABELS[level]}</span>
-    </span>
   );
 }

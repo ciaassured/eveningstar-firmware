@@ -1,0 +1,61 @@
+.swatch {
+  position: relative;
+  flex: none;
+  display: grid;
+  place-items: center;
+  background: var(--t);
+  color: var(--ink);
+  box-shadow: inset 0 0 0 1.5px var(--c);
+  font: 700 11px/1 var(--font-mono);
+}
+
+.md {
+  width: 34px;
+  height: 34px;
+  border-radius: 6px;
+}
+
+.lg {
+  width: 46px;
+  height: 46px;
+  border-radius: 8px;
+  font-size: 14px;
+}
+
+.sm {
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  font-size: 9px;
+}
+
+.sensitive {
+  background: repeating-linear-gradient(135deg, var(--t) 0 3px, var(--t2) 3px 5px);
+}
+
+.reserved {
+  background:
+    radial-gradient(circle, var(--t2) 1.1px, transparent 1.5px) 0 0 / 5px 5px,
+    var(--surface);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--c) 45%, transparent);
+}
+
+.gap {
+  background: transparent;
+  box-shadow: none;
+  outline: 1px dashed var(--faint);
+  outline-offset: -1px;
+  color: var(--muted);
+}
+
+.missing {
+  background: transparent;
+  box-shadow: none;
+  outline: 1.5px dashed var(--x-warn);
+  outline-offset: -1.5px;
+}
+
+.extra {
+  background: color-mix(in oklab, var(--x-warn) 14%, var(--surface));
+  box-shadow: inset 0 0 0 1.5px var(--x-warn);
+}

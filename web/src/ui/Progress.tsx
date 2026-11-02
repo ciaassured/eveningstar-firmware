@@ -13,8 +13,8 @@ export function Progress({
   /** The share done, in [0, 1]; `undefined` while it isn't known. */
   value: number | undefined;
   label: string;
-  /** `accent` for work in progress, `neutral` for how full something is, `header` in the dark header. */
-  tone?: "accent" | "neutral" | "header";
+  /** `accent` for work in progress, `header` in the dark header. */
+  tone?: "accent" | "header";
 }) {
   return value === undefined ? (
     <progress class={cx(styles["progress"], styles[tone])} aria-label={label} />

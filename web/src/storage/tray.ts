@@ -34,12 +34,6 @@ export function downloadSubject(
       }
       return subject;
     }
-    case "range":
-      return {
-        ...base,
-        what: TRAY.range(identity.title, target.what.span.first, target.what.span.last + 1),
-        note: TRAY.noHashNote,
-      };
     case "whole":
       break;
   }

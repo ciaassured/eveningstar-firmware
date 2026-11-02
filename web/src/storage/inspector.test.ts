@@ -9,7 +9,7 @@ import { inspectorView, rulerTicks } from "./inspector.ts";
 import type { InspectorView } from "./inspector.ts";
 import { planDownload } from "./plan.ts";
 import { bootloaderStatus, gapStatus, partitionStatus, tableFindings, tableStatus } from "./status.ts";
-import { readout, readoutEnds, stripWeights } from "./strip.ts";
+import { readout, readoutEnds, stripWeights, usagePart } from "./strip.ts";
 import { downloadSubject } from "./tray.ts";
 import type { AppSlot, InternalFlash } from "./types.ts";
 
@@ -455,12 +455,24 @@ test("the readout names a region with its range, and the strip's ends", () => {
     start: "0x010000",
     end: "0x310000",
     size: "3 MiB",
-    text: "ota_0 Running app: 0x010000 to 0x310000, 3 MiB",
-    short: "ota_0 Running app, 3 MiB",
   });
   assert.deepEqual(readoutEnds(0x80_0000), { start: "0x000000", end: "0x800000, 8 MiB" });
   assert.equal(STRIP.label(0x80_0000), "Flash map, 8 MiB, in flash order");
   assert.match(helpTopic("strip", 0x80_0000).text, /to the end of the 8 MiB flash\./);
+});
+
+test("a usage bar on the strip stands for the first part of its region's ruler", () => {
+  const m = model();
+  const withUsage = m.items.filter((it) => it.usage !== undefined);
+  assert.deepEqual(
+    withUsage.map((it) => it.id),
+    ["bootloader", "partition_table", "label:otadata", "label:ota_0"],
+  );
+  for (const it of withUsage) {
+    const part = usagePart(it.info?.region ?? "");
+    assert.equal(part, inspectorView(m, it.id)?.usage?.parts[0]?.key, it.id);
+  }
+  assert.equal(usagePart("factory"), undefined);
 });
 
 test("statuses and their reasons, case by case", () => {

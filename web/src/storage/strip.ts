@@ -51,25 +51,33 @@ export interface Readout {
   start: string;
   end: string;
   size: string;
-  /** `<title> <subtitle>: <start> to <end>, <size>`, as on a desktop. */
-  text: string;
-  /** `<title> <subtitle>, <size>`, as on a phone. */
-  short: string;
 }
 
 export function readout(item: Named): Readout {
   const start = formatHex(item.span.start);
   const end = formatHex(item.span.end);
   const size = formatSize(item.span.size);
-  return {
-    title: item.title,
-    subtitle: item.subtitle,
-    start,
-    end,
-    size,
-    text: `${item.title} ${item.subtitle}: ${start} to ${end}, ${size}`,
-    short: `${item.title} ${item.subtitle}, ${size}`,
-  };
+  return { title: item.title, subtitle: item.subtitle, start, end, size };
+}
+
+/**
+ * The part of a region its usage bar on the strip stands for, as the
+ * inspector's ruler and span table key it: the image of an app slot or the
+ * bootloader, the partition table's entries, the otadata's first record.
+ */
+export function usagePart(region: string): string | undefined {
+  switch (region) {
+    case "bootloader":
+    case "app_current":
+    case "app_alternate":
+      return "image";
+    case "partition_table":
+      return "entries";
+    case "otadata":
+      return "sector0";
+    default:
+      return undefined;
+  }
 }
 
 /** The readout line's ends: the strip's first offset, and its end and size. */

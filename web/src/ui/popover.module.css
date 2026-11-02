@@ -1,0 +1,48 @@
+.popover {
+  position: fixed;
+  z-index: 60;
+  left: 0;
+  top: 0;
+  max-width: min(360px, calc(100vw - 32px));
+  padding: 12px 14px;
+  background: var(--surface);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--shadow);
+  font-size: 13px;
+}
+
+.popover p + p {
+  margin-top: 6px;
+}
+
+.popover b {
+  font-weight: 600;
+}
+
+.code {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.help {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--faint);
+  border-radius: 50%;
+  background: none;
+  color: var(--muted);
+  font: 600 11px/1 var(--font-ui);
+  cursor: pointer;
+}
+
+.help:hover,
+.help[aria-expanded="true"] {
+  border-color: var(--fg);
+  color: var(--fg);
+}

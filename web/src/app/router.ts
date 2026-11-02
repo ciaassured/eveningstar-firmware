@@ -15,6 +15,11 @@ export const NAVIGATION: readonly { route: Route["name"]; path: string; label: s
   { route: "storage", path: "/storage", label: "Storage" },
 ];
 
+/** Whether the route's page fills the main area and scrolls its own parts, rather than scrolling as a whole. */
+export function fillsFrame(route: Route): boolean {
+  return route.name === "storage";
+}
+
 /** The route a URL fragment such as `#/system` names. */
 export function parseRoute(hash: string): Route {
   const path = hash.replace(/^#/, "").split("?")[0] ?? "";
