@@ -20,7 +20,11 @@ export function bytesOf(size: number, seed = 1): Uint8Array<ArrayBuffer> {
 /** The digest the fixtures' partition tables store in their MD5 entry. */
 export const TABLE_MD5 = "c5f387345ce92323fb411bc8bfcf3bce";
 
-/** The board's layout as the regions endpoint lists it, in the full tier with ota_0 running. */
+/**
+ * The board's layout as the regions endpoint lists it, in the full tier with ota_0 running. In the
+ * untrusted tier the bootloader, the table and the running app have the board's spans, with the
+ * board's table at 0x6000 and the running app cut to a 4 KiB image, and `expected` has the layout's.
+ */
 export function regions(options: { tier?: Tier; differs?: boolean } = {}): RegionInfo[] {
   const untrusted = options.tier === "untrusted";
   const layout = (fields: RegionInfo["layout"]): RegionInfo["layout"] => fields;
@@ -40,15 +44,28 @@ export function regions(options: { tier?: Tier; differs?: boolean } = {}): Regio
     label,
     partition: { type, subtype, flags },
     offset,
-    size,
+    size: untrusted && region === "app_current" ? 4_096 : size,
+    expected: { offset, size },
     contents,
     available: contents === "public" && (!untrusted || region === "app_current"),
     layout: matches,
     roles,
   });
+  type Span = { offset: number; size: number };
+  const boot = (region: RegionInfo["region"], expected: Span, board: Span): RegionInfo => ({
+    region,
+    label: null,
+    partition: null,
+    ...(untrusted ? board : expected),
+    expected,
+    contents: "public",
+    available: true,
+    layout: null,
+    roles: [],
+  });
   const list: RegionInfo[] = [
-    { region: "bootloader", label: null, partition: null, offset: 0, size: 0x8000, contents: "public", available: true, layout: null, roles: [] },
-    { region: "partition_table", label: null, partition: null, offset: 0x8000, size: 0x1000, contents: "public", available: true, layout: null, roles: [] },
+    boot("bootloader", { offset: 0, size: 0x8000 }, { offset: 0, size: 0x6000 }),
+    boot("partition_table", { offset: 0x8000, size: 0x1000 }, { offset: 0x6000, size: 0x1000 }),
     part("factory", "factory", 1, 6, 0x9000, 0x1000, "sensitive", [], 2),
     part("otadata", "otadata", 1, 0, 0xa000, 0x2000, "public"),
     part("app_current", "ota_0", 0, 0x10, 0x1_0000, 0x30_0000, "public", untrusted ? [] : ["running", "selected"]),
