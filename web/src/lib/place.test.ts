@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { placePopover, stepIndex } from "./place.ts";
+import { keepPlace, placePopover, stepIndex } from "./place.ts";
 
 const viewport = { width: 1280, height: 800 };
 const size = { width: 360, height: 120 };
@@ -30,4 +30,11 @@ test("Up and Down step through a list and stop at its ends", () => {
   assert.equal(stepIndex(1, 3, "ArrowUp"), 0);
   assert.equal(stepIndex(0, 3, "ArrowUp"), undefined);
   assert.equal(stepIndex(1, 3, "Enter"), undefined);
+});
+
+test("items put above a list at the top show; scrolled away, the list keeps its place and points at them while open", () => {
+  assert.deepEqual(keepPlace(0, 80, true), { top: 0, pill: false });
+  assert.deepEqual(keepPlace(2, 80, true), { top: 2, pill: false }, "within 2 px counts as the top");
+  assert.deepEqual(keepPlace(3, 80, true), { top: 83, pill: true });
+  assert.deepEqual(keepPlace(240, 80, false), { top: 320, pill: false }, "a closed tray raises no pill");
 });

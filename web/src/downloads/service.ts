@@ -5,7 +5,6 @@ import type { ApiFailure } from "../api/failure.ts";
 import type { DownloadCall, DownloadHead, Timers } from "../api/transport.ts";
 import { backoffDelayMs } from "../lib/backoff.ts";
 import { unverifiedFilename } from "../storage/filenames.ts";
-import { targetLabel } from "../storage/plan.ts";
 import type { DownloadPlan, DownloadTarget, PlanResult } from "../storage/plan.ts";
 
 /** Where a download has got to. */
@@ -18,13 +17,15 @@ export type EntryState =
   | { kind: "verifying" }
   /** `checked` when the bytes matched the digest; `unchecked` when the page couldn't check; `mismatch` when saved anyway. */
   | { kind: "done"; verified: "checked" | "unchecked" | "mismatch" }
-  | { kind: "failed"; reason: string; resumable: boolean; mismatch?: { expected: string; actual: string } }
+  /** `received` is how many bytes had arrived. */
+  | { kind: "failed"; reason: string; resumable: boolean; received: number; mismatch?: { expected: string; actual: string } }
   | { kind: "cancelled" };
 
 export interface DownloadEntry {
   readonly id: number;
   readonly target: DownloadTarget;
-  readonly label: string;
+  /** When it was queued, or queued again by a retry. */
+  readonly queuedAt: number;
   /** The plan the download runs to, once it has started. */
   readonly plan?: DownloadPlan;
   readonly state: EntryState;
@@ -32,7 +33,11 @@ export interface DownloadEntry {
   readonly note?: string;
 }
 
-export type EntryAction = "cancel" | "up" | "down" | "resume" | "dismiss" | "save-anyway";
+/**
+ * `retry` queues a failed or cancelled entry again: a resumable failure goes
+ * on from the bytes kept, anything else starts over.
+ */
+export type EntryAction = "cancel" | "retry" | "dismiss" | "save-anyway";
 
 /** What the download service needs of the page and the browser. */
 export interface DownloadsDeps {
@@ -52,18 +57,13 @@ export interface DownloadsDeps {
 
 /** The app-wide download queue. */
 export interface Downloads {
+  /** Every entry, in queue order: oldest first. */
   readonly entries: ReadonlySignal<readonly DownloadEntry[]>;
-  /** The entry running, if one is. */
-  readonly active: ReadonlySignal<DownloadEntry | undefined>;
-  /** How many entries wait their turn. */
-  readonly queued: ReadonlySignal<number>;
   /**
    * Whether closing the tab would lose something: an entry queued, waiting,
    * downloading or verifying, or failed with its bytes kept for a resume.
    */
   readonly pending: ReadonlySignal<boolean>;
-  /** Whether downloads are checked against their digests: only in a secure context. */
-  readonly verifies: boolean;
   /** Adds a download at the end of the queue. Returns its id. */
   add(target: DownloadTarget): number;
   act(id: number, action: EntryAction): void;
@@ -134,10 +134,6 @@ export function createDownloads(deps: DownloadsDeps): Downloads {
   let nextId = 1;
   let running = false;
 
-  const active = computed(() =>
-    entries.value.find((entry) => !TERMINAL.includes(entry.state.kind) && entry.state.kind !== "queued"),
-  );
-  const queued = computed(() => entries.value.filter((entry) => entry.state.kind === "queued").length);
   const pending = computed(() =>
     entries.value.some(
       (entry) =>
@@ -194,12 +190,12 @@ export function createDownloads(deps: DownloadsDeps): Downloads {
     });
   }
 
-  function fail(id: number, rt: Runtime, reason: string, resumable: boolean): void {
+  function fail(id: number, rt: Runtime, reason: string, resumable: boolean, received = rt.received): void {
     if (!resumable) {
       runtimes.delete(id);
       delete rt.buffer;
     }
-    setState(id, { kind: "failed", reason, resumable });
+    setState(id, { kind: "failed", reason, resumable, received });
   }
 
   async function run(id: number): Promise<void> {
@@ -220,7 +216,7 @@ export function createDownloads(deps: DownloadsDeps): Downloads {
             rt.resumes += 1;
             continue;
           }
-          fail(id, rt, planned.reason, planned.transient === true);
+          fail(id, rt, planned.reason, planned.transient === true, 0);
           return;
         }
         update(id, { plan: planned.plan });
@@ -362,6 +358,7 @@ export function createDownloads(deps: DownloadsDeps): Downloads {
               ? "The download doesn't match the image's SHA-256, so it wasn't saved."
               : "The image in the download doesn't match its stored digest, so it wasn't saved.",
           resumable: false,
+          received: rt.received,
           mismatch: { expected: check.sha256, actual },
         });
         return;
@@ -373,29 +370,12 @@ export function createDownloads(deps: DownloadsDeps): Downloads {
     setState(id, { kind: "done", verified: check !== undefined && hash !== undefined ? "checked" : "unchecked" });
   }
 
-  function move(id: number, step: -1 | 1): void {
-    const list = [...entries.peek()];
-    const from = list.findIndex((entry) => entry.id === id);
-    if (from < 0 || list[from]?.state.kind !== "queued") return;
-    let to = from + step;
-    while (to >= 0 && to < list.length && list[to]?.state.kind !== "queued") to += step;
-    const other = list[to];
-    const self = list[from];
-    if (other === undefined || self === undefined) return;
-    list[from] = other;
-    list[to] = self;
-    entries.value = list;
-  }
-
   return {
     entries,
-    active,
-    queued,
     pending,
-    verifies: deps.sha256 !== undefined,
     add(target) {
       const id = nextId++;
-      entries.value = [...entries.peek(), { id, target, label: targetLabel(target), state: { kind: "queued" } }];
+      entries.value = [...entries.peek(), { id, target, queuedAt: deps.now(), state: { kind: "queued" } }];
       pump();
       return id;
     },
@@ -415,16 +395,23 @@ export function createDownloads(deps: DownloadsDeps): Downloads {
           runtimes.delete(id);
           setState(id, { kind: "cancelled" });
           return;
-        case "up":
-        case "down":
-          move(id, action === "up" ? -1 : 1);
-          return;
-        case "resume":
-          if (entry.state.kind !== "failed" || !entry.state.resumable) return;
-          if (rt !== undefined) rt.resumes = 0;
-          setState(id, { kind: "queued" });
+        case "retry": {
+          const { state } = entry;
+          if (state.kind !== "failed" && state.kind !== "cancelled") return;
+          const queued = { id, target: entry.target, queuedAt: deps.now(), state: { kind: "queued" } as const };
+          // The array stays in queue order: the entry goes to its end, as a new download would.
+          const rest = entries.peek().filter((item) => item.id !== id);
+          if (state.kind === "failed" && state.resumable && rt !== undefined) {
+            rt.resumes = 0;
+            entries.value = [...rest, entry.plan === undefined ? queued : { ...queued, plan: entry.plan }];
+          } else {
+            // The bytes kept for saving anyway go, and the download is planned again.
+            runtimes.delete(id);
+            entries.value = [...rest, queued];
+          }
           pump();
           return;
+        }
         case "save-anyway": {
           const buffer = rt?.buffer;
           if (entry.state.kind !== "failed" || entry.state.mismatch === undefined || buffer === undefined) return;

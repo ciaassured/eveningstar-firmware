@@ -179,15 +179,3 @@ function tableMd5(info: RegionInfo, flash: InternalFlash, table: BoardTable | un
   if (flash.table.offset === info.offset) return flash.table.md5?.stored;
   return undefined;
 }
-
-/** A short name for what is downloaded, such as `app_current image`. */
-export function targetLabel(target: DownloadTarget): string {
-  switch (target.what.kind) {
-    case "whole":
-      return target.region === "app_current" || target.region === "app_alternate"
-        ? `${target.region}, whole slot`
-        : target.region;
-    case "image":
-      return `${target.region} image`;
-  }
-}

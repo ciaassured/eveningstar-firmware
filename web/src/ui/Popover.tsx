@@ -24,6 +24,16 @@ export function closePopover(focus = false): void {
   if (focus) current?.trigger.focus();
 }
 
+/** Whether a popover is open. */
+export function popoverOpen(): boolean {
+  return open.peek() !== undefined;
+}
+
+/** Whether `target` lies in the open popover. */
+export function inPopover(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest(`.${styles["popover"] ?? ""}`) !== null;
+}
+
 /** Whether the popover open is the one of `trigger`. */
 export function usePopoverOpen(trigger: { current: HTMLElement | null }): boolean {
   const current = open.value;

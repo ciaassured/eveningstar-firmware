@@ -362,8 +362,11 @@ couldn't check the bytes before saving them. The largest region is 3 MiB.
   slot.
 - In a secure context the page hashes a download with `crypto.subtle` against
   the device's digest before saving it, and keeps a mismatch from being saved
-  as good. Over plain HTTP, which isn't a secure context, it shows the digest
-  to check by hand. The page has no SHA-256 of its own.
+  as good. Over plain HTTP, which isn't a secure context, it saves the
+  download unchecked. The tray shows an image's SHA-256 either way, to check
+  by hand. The page has no SHA-256 of its own.
+- Retry queues a failed or cancelled download again, as the newest: a broken
+  one resumes from the bytes kept, anything else is planned and fetched again.
 - Closing the tab loses the queue, so the page asks before unloading while it
   isn't empty.
 
