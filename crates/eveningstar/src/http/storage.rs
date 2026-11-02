@@ -372,6 +372,9 @@ fn region_info(region: &Region) -> v1::RegionInfo {
         }),
         offset: region.offset,
         size: region.size,
+        expected: region
+            .expected
+            .map(|(offset, size)| v1::ExpectedSpan { offset, size }),
         contents: match region.name.contents() {
             Contents::Public => v1::Contents::Public,
             Contents::Sensitive => v1::Contents::Sensitive,

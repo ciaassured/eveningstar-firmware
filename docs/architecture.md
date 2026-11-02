@@ -579,6 +579,16 @@ handles.
 that implement `Read`; the sensitive handles never reach it. Its handle,
 `StorageView`, is what the storage endpoints get.
 
+The regions it lists are named by their role this boot (`app_current`,
+`config_alternate`), so the names follow the running slot. Each region has two
+spans: the one the firmware reads, the handle's, and the one the compiled
+layout gives it (`expected`). They differ in the untrusted tier, where the
+bootloader, the table and the running app are read at the board's spans, so a
+client draws the layout from `expected`. Every region of the layout is listed in
+every tier, available or not, except when the app booted from no slot: then the
+running app is listed with no layout span, and the slots and their
+configurations, which have no role, are left out.
+
 After `split`, a task of its own verifies each app slot the firmware holds a
 handle for (`verify_app_with`): the checksum and the digest the image stores,
 and from the same pass the SHA-256 of the whole image, the one `sha256sum`

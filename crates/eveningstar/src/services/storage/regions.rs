@@ -81,6 +81,10 @@ pub(crate) struct Region {
     /// Size in bytes: the handle's when the firmware holds one, else the
     /// layout's.
     pub(crate) size: u32,
+    /// Offset and size the layout gives it, whether or not the firmware
+    /// holds a handle for it; `None` for the running app when it didn't boot
+    /// from a slot.
+    pub(crate) expected: Option<(u32, u32)>,
     /// Whether the firmware holds a handle for it this boot. The service
     /// holds the public handles only, and no task owns a sensitive one yet,
     /// so a sensitive region is never available.
@@ -290,12 +294,8 @@ impl Service {
     /// The region `name`, whose layout entry is `entry` and compares with the
     /// table at the compiled offset as `comparison`.
     fn region(&self, name: RegionName, entry: Option<Entry>, comparison: Option<Match>) -> Region {
-        let fallback = match (name, entry) {
-            (_, Some(entry)) => (entry.offset, entry.size),
-            (RegionName::PartitionTable, None) => (layout::TABLE_OFFSET, table::MAX_LEN),
-            _ => (0, 0),
-        };
-        let (offset, size) = self.handle_span(name).unwrap_or(fallback);
+        let expected = expected_span(name, entry);
+        let (offset, size) = self.handle_span(name).or(expected).unwrap_or((0, 0));
         let boot = self.report.boot_state;
         let slot = match name {
             RegionName::App(role) => self.slot(role),
@@ -306,6 +306,7 @@ impl Service {
             entry,
             offset,
             size,
+            expected,
             available: self.handle_span(name).is_some(),
             layout: comparison,
             roles: Roles {
@@ -316,6 +317,19 @@ impl Service {
                     && boot.is_some_and(|boot| boot.rollback_target),
             },
         }
+    }
+}
+
+/// The offset and size the layout gives the region `name`, whose layout
+/// entry is `entry`: the entry's span, the bootloader up to the compiled
+/// table offset, and the table's longest length at that offset; `None` for
+/// the running app without an entry.
+fn expected_span(name: RegionName, entry: Option<Entry>) -> Option<(u32, u32)> {
+    match (name, entry) {
+        (_, Some(entry)) => Some((entry.offset, entry.size)),
+        (RegionName::Bootloader, None) => Some((0, layout::TABLE_OFFSET)),
+        (RegionName::PartitionTable, None) => Some((layout::TABLE_OFFSET, table::MAX_LEN)),
+        _ => None,
     }
 }
 

@@ -672,8 +672,11 @@ pub const REGIONS_MAX: usize = 12;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Regions {
-    /// Every region, in offset order: the bootloader, the partition table,
-    /// then the layout's partitions. Space between them is unallocated.
+    /// Every region, in order of `offset`: the bootloader, the partition table,
+    /// then the layout's partitions, in every tier, available or not. When
+    /// the app didn't boot from one of the layout's slots, the running app is
+    /// listed without a label or an expected span, and the slots and their
+    /// configurations are left out. Space between them is unallocated.
     #[cfg_attr(
         feature = "schema",
         schemars(with = "alloc::vec::Vec<RegionInfo>", length(max = REGIONS_MAX))
@@ -695,11 +698,19 @@ pub struct RegionInfo {
     pub label: Option<Label>,
     /// The layout's entry for it; `null` for the bootloader and the table.
     pub partition: Option<PartitionKind>,
-    /// Offset in the flash.
+    /// Offset in the flash of the span the firmware reads when it is
+    /// available, else of the layout's span. In the untrusted tier the
+    /// bootloader, the table and the running app are read at the board's
+    /// spans: the bootloader up to the board's table, the table at its
+    /// offset, and the running app cut to its image.
     pub offset: u32,
     /// Size in bytes. The region covers `offset` up to, but not including,
     /// `offset + size`.
     pub size: u32,
+    /// The span the compiled layout gives the region, in every tier, whether
+    /// or not it is available; `null` only for the running app when it
+    /// didn't boot from one of the layout's slots.
+    pub expected: Option<ExpectedSpan>,
     /// Whether its content may leave the device.
     pub contents: Contents,
     /// Whether the firmware can read it this boot. A region is downloadable
@@ -714,6 +725,17 @@ pub struct RegionInfo {
         schemars(with = "alloc::vec::Vec<Role>", length(max = ROLES_MAX))
     )]
     pub roles: heapless::Vec<Role, ROLES_MAX>,
+}
+
+/// The span the compiled layout gives a region.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ExpectedSpan {
+    /// Offset in the flash.
+    pub offset: u32,
+    /// Size in bytes. The span covers `offset` up to, but not including,
+    /// `offset + size`.
+    pub size: u32,
 }
 
 /// A region of the internal flash, named by what it is to the running
@@ -1220,6 +1242,15 @@ mod tests {
     }
 
     #[test]
+    fn regions_without_an_expected_field_parse() {
+        let region: RegionInfo = serde_json::from_str(
+            r#"{"region":"bootloader","label":null,"partition":null,"offset":0,"size":32768,"contents":"public","available":true,"layout":null,"roles":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(region.expected, None);
+    }
+
+    #[test]
     fn table_md5s_name_the_stored_digest() {
         let md5 = TableMd5 {
             stored: Md5([0xAB; 16]),
@@ -1424,7 +1455,11 @@ mod tests {
                     label: None,
                     partition: None,
                     offset: 0,
-                    size: 0x8000,
+                    size: 0x6000,
+                    expected: Some(ExpectedSpan {
+                        offset: 0,
+                        size: 0x8000,
+                    }),
                     contents: Contents::Public,
                     available: true,
                     layout: None,
@@ -1432,13 +1467,12 @@ mod tests {
                 })
                 .unwrap();
             let mut roles = heapless::Vec::new();
-            roles.push(Role::Running).unwrap();
             roles.push(Role::Selected).unwrap();
             let mut fields = heapless::Vec::new();
             fields.push(EntryField::Offset).unwrap();
             regions
                 .push(RegionInfo {
-                    region: Region::AppCurrent,
+                    region: Region::AppAlternate,
                     label: Some("ota_0".try_into().unwrap()),
                     partition: Some(PartitionKind {
                         kind: 0,
@@ -1447,12 +1481,32 @@ mod tests {
                     }),
                     offset: 0x1_0000,
                     size: 0x30_0000,
+                    expected: Some(ExpectedSpan {
+                        offset: 0x1_0000,
+                        size: 0x30_0000,
+                    }),
                     contents: Contents::Public,
-                    available: true,
+                    available: false,
                     layout: Some(LayoutMatch {
                         status: MatchStatus::Differs,
                         fields,
                     }),
+                    roles,
+                })
+                .unwrap();
+            let mut roles = heapless::Vec::new();
+            roles.push(Role::Running).unwrap();
+            regions
+                .push(RegionInfo {
+                    region: Region::AppCurrent,
+                    label: None,
+                    partition: None,
+                    offset: 0x40_0000,
+                    size: 0x4_0000,
+                    expected: None,
+                    contents: Contents::Public,
+                    available: true,
+                    layout: None,
                     roles,
                 })
                 .unwrap();
@@ -1529,6 +1583,19 @@ mod tests {
             value["regions"][0]["region"] = json!("bootloader");
             value["regions"][0]["label"] = json!("a".repeat(LABEL_MAX_LEN + 1));
             assert!(!schema_accepts::<Regions>(&value));
+            let mut value = serde_json::to_value(regions()).unwrap();
+            value["regions"][0]["expected"]["size"] = json!(-1);
+            assert!(!schema_accepts::<Regions>(&value));
+        }
+
+        #[test]
+        fn regions_name_their_expected_span() {
+            let value = serde_json::to_value(regions()).unwrap();
+            assert_eq!(
+                value["regions"][0]["expected"],
+                json!({"offset": 0, "size": 0x8000})
+            );
+            assert_eq!(value["regions"][2]["expected"], json!(null));
         }
     }
 }

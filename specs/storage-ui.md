@@ -1288,9 +1288,9 @@ expected layout is incomplete then, the page derives no Missing, Differs,
 Extra, Used or Overlap status in that case: the board's `ota_*` and
 `config_*` entries would otherwise all read as extra. Every partition region
 and gap is "Unknown" with the reason "The app did not boot from one of the
-expected layout's OTA app slots, so the board's table is not compared." The
-expected-span addition in "API the page needs" lifts this limit if it lists
-every entry of the expected layout, with its label, whatever the tier.
+expected layout's OTA app slots, so the board's table is not compared." `RegionInfo.expected` does not lift this limit: the regions list leaves out
+the slots and configurations then, because a region is named by its role and
+the app is not in a role.
 
 ### Decisions beyond the prototype
 
