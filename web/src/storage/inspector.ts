@@ -653,7 +653,9 @@ function otadataDetails(model: StorageModel): DetailsView {
     details.notes.push({ text: DETAILS.otadataNotRead, tone: "muted" });
     return details;
   }
-  const booting = bootingRecord(otadata);
+  const running = model.boot.boot?.running;
+  const rollback = model.boot.next === "rollback" && running !== undefined;
+  const booting = bootingRecord(otadata, (entry) => !rollback || entry.selects !== running);
   const states: string[] = [];
   for (const entry of otadata) {
     if (entry.state !== null && entry.state !== undefined && !states.includes(entry.state)) states.push(entry.state);
@@ -669,7 +671,7 @@ function otadataDetails(model: StorageModel): DetailsView {
       boots: entry === booting,
     })),
     states: states.map((state) => ({ state, text: otaStateText(state) })),
-    rule: DETAILS.otadataRule,
+    rule: rollback ? DETAILS.otadataRuleRollback : DETAILS.otadataRule,
   };
   details.hashes = { title: DETAILS.hashes, note: DETAILS.hashesOtadata, lead: false, rows: [] };
   return details;

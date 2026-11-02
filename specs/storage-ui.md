@@ -1367,7 +1367,9 @@ shows because the API differs:
   has not confirmed itself, so the next boot rolls back to `<slot>`."; the
   rollback target's reads "Not running. The app in `<running>` has not confirmed
   itself, so the next boot rolls back to this slot." The Details role boxes
-  follow the chips.
+  follow the chips. The otadata table marks "(next boot)" on the record with the
+  highest sequence number that doesn't select the running slot, and its rule
+  line says the bootloader rejects the running app's record at the next boot.
 - **Unknown values** from a newer firmware (region, label, state, fault) show
   as the API names them.
 - **Other storage devices** are one muted line each in the summary header.

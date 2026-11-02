@@ -578,6 +578,8 @@ export const DETAILS = {
   nextBoot: " (next boot)",
   otadataRule:
     "The bootloader boots the slot named by the record with a matching CRC and the highest sequence number (marked next boot).",
+  otadataRuleRollback:
+    "The record with the highest sequence number selects the running app, which has not confirmed itself. The bootloader rejects it at the next boot and boots the slot of the next valid record (marked next boot).",
   hashesOtadata:
     "Each record carries its own CRC, which the bootloader verifies. The device does not hash the region as a whole, so the download has no hash.",
   otadataNotRead: "The firmware does not read the otadata in the untrusted tier.",

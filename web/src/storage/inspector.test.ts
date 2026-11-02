@@ -375,6 +375,26 @@ test("the partition table's details: entries, MD5 check, where it was read, and 
   );
 });
 
+test("the otadata of an unconfirmed running app marks the record that boots after the rollback", () => {
+  const flash = internalFlash();
+  const m = model({
+    flash: {
+      boot: { running: "ota_1", selected: "ota_1", state: "pending_verify", rollback_target: true, needs_confirmation: true },
+      otadata: [
+        { sector: 0, validity: "valid", seq: 1, state: "valid", selects: "ota_0" },
+        { sector: 1, validity: "valid", seq: 2, state: "pending_verify", selects: "ota_1" },
+      ],
+      apps: flash.apps,
+    },
+  });
+  const otadata = view(m, "label:otadata").details?.otadata;
+  assert.deepEqual(otadata?.rows.map((r) => [r.sector, r.selects, r.boots]), [
+    ["0", "ota_0", true],
+    ["1", "ota_1", false],
+  ]);
+  assert.match(otadata?.rule ?? "", /rejects it at the next boot/);
+});
+
 test("the otadata's details: each record's CRC, the record that boots, and what its states mean", () => {
   const details = view(model(), "label:otadata").details;
   assert.deepEqual(details?.otadata?.columns, ["Sector", "CRC", "Seq", "State", "Selects"]);
