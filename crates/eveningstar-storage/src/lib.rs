@@ -35,6 +35,7 @@ pub mod hash;
 pub mod image;
 pub mod known;
 pub mod layout;
+mod md5;
 mod ota;
 pub mod otadata;
 pub mod pace;

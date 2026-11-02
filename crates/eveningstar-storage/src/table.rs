@@ -8,14 +8,17 @@
 //! MD5 entry (magic `0xEBEB`, with the MD5 of the preceding entries in its last
 //! 16 bytes) or at an erased entry (magic, type and subtype all `0xFF`).
 //!
-//! The MD5 isn't checked: the comparison with the layout is exact, so a table
-//! that matches is the table the layout describes whatever its MD5, and the
-//! discovery of a moved table relies on an app entry at the booted offset.
-//! What follows the MD5 entry is ignored.
+//! The MD5 is checked against the bytes of every entry before it and reported
+//! in [`End::Md5`], and decides nothing else: the comparison with the layout is
+//! exact, so a table that matches is the table the layout describes whatever
+//! its MD5, and the discovery of a moved table relies on an app entry at the
+//! booted offset. The bytes between the MD5 entry's magic and its digest, and
+//! what follows the MD5 entry, are ignored.
 
 use core::fmt;
 use core::ops::BitOr;
 
+use crate::md5::Md5;
 use crate::source::{Source, read_array};
 use crate::{Entry, ReadError, TYPE_APP, Text, layout};
 
@@ -188,12 +191,15 @@ impl fmt::Debug for Fields {
 /// How a well-formed list of entries ends.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum End {
-    /// At an MD5 entry, the entry at `index`, holding `digest` (not checked).
+    /// At an MD5 entry, the entry at `index`, holding `digest`.
     Md5 {
         /// Position of the MD5 entry, which is also the number of partitions.
         index: usize,
         /// The digest the entry stores.
         digest: [u8; 16],
+        /// Whether `digest` is the MD5 of the 32 bytes of each entry before
+        /// it, as stored.
+        matches: bool,
     },
     /// At an erased entry, the entry at `index`.
     Erased {
@@ -267,6 +273,7 @@ pub fn entries<S: Source + ?Sized>(source: &S, offset: u32) -> Entries<'_, S> {
         offset,
         index: 0,
         state: State::Reading,
+        md5: Md5::new(),
     }
 }
 
@@ -274,12 +281,15 @@ pub fn entries<S: Source + ?Sized>(source: &S, offset: u32) -> Entries<'_, S> {
 ///
 /// It yields each partition entry in order. At the end of the list it stops;
 /// at a malformed or unreadable entry it yields the error and then stops.
-/// [`end`](Self::end) then says which of the two it was.
+/// [`end`](Self::end) then says which of the two it was. It hashes each entry
+/// as it reads it, so an MD5 entry is checked without reading the table again.
 pub struct Entries<'s, S: ?Sized> {
     source: &'s S,
     offset: u32,
     index: usize,
     state: State,
+    /// The MD5 of the entries read so far.
+    md5: Md5,
 }
 
 #[derive(Clone, Copy)]
@@ -313,7 +323,8 @@ impl<S: Source + ?Sized> Entries<'_, S> {
         }
     }
 
-    fn read_slot(&self) -> Result<Slot, TableError> {
+    /// The slot at `index`, a partition entry's bytes hashed into `md5`.
+    fn read_slot(&mut self) -> Result<Slot, TableError> {
         let index = self.index;
         let read_error = |error| TableError::Read { index, error };
         let offset = u32::try_from(index)
@@ -322,7 +333,11 @@ impl<S: Source + ?Sized> Entries<'_, S> {
             .and_then(|at| self.offset.checked_add(at))
             .ok_or(read_error(ReadError::OutOfRange))?;
         let bytes = read_array(self.source, offset).map_err(read_error)?;
-        parse_slot(&bytes).map_err(|magic| TableError::Magic { index, magic })
+        let slot = parse_slot(&bytes).map_err(|magic| TableError::Magic { index, magic })?;
+        if let Slot::Partition(_) = slot {
+            self.md5.update(&bytes);
+        }
+        Ok(slot)
     }
 }
 
@@ -342,7 +357,11 @@ impl<S: Source + ?Sized> Iterator for Entries<'_, S> {
                     self.index += 1;
                     return Some(Ok(entry));
                 }
-                Ok(Slot::Md5(digest)) => Ok(End::Md5 { index, digest }),
+                Ok(Slot::Md5(digest)) => Ok(End::Md5 {
+                    index,
+                    digest,
+                    matches: self.md5.clone().finalize() == digest,
+                }),
                 Ok(Slot::Erased) if index == 0 => Err(TableError::Empty),
                 Ok(Slot::Erased) => Ok(End::Erased { index }),
                 Err(error) => Err(error),
@@ -391,7 +410,7 @@ pub struct Comparison<const N: usize> {
 
 impl<const N: usize> Comparison<N> {
     /// Whether the table is well formed and holds exactly the expected
-    /// partitions, in order.
+    /// partitions, in order, whatever its MD5.
     #[must_use]
     pub fn matches(&self) -> bool {
         self.end.is_ok() && self.extra == 0 && self.partitions.iter().all(|m| *m == Match::Matches)
