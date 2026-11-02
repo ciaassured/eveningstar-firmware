@@ -64,36 +64,6 @@ function listRow(item: Item): RegionRow {
   };
 }
 
-/** The bar at the top: the page's title, and the Refresh button with why the last reload failed. */
-function TitleBar() {
-  const { storage } = useServices();
-  const failure = storage.error.value;
-  const updated = storage.updatedAt.value;
-  const described = failure === undefined ? undefined : describeFailure(failure);
-  const refreshing = storage.refreshing.value;
-  return (
-    <div class={styles["titlebar"]}>
-      <h1 class={styles["title"]}>{PAGE.title}</h1>
-      <div class={styles["refresh"]}>
-        {described === undefined ? null : (
-          <span class={styles["failed"]} title={described.explanation}>
-            {PAGE.notRefreshed(described.title, updated === undefined ? "–" : formatClock(updated))}
-          </span>
-        )}
-        <Button
-          disabled={refreshing}
-          reason={refreshing ? PAGE.refreshing : undefined}
-          onClick={() => {
-            void storage.refresh("action");
-          }}
-        >
-          {PAGE.refresh}
-        </Button>
-      </div>
-    </div>
-  );
-}
-
 /** The DOM work a selection or a step back leaves for after the page has drawn it. */
 interface After {
   /** Where focus goes: the phone's Back button, or the selected row. */
@@ -103,7 +73,7 @@ interface After {
 }
 
 function Frame({ model, page }: { model: StorageModel; page: StoragePage }) {
-  const { downloads, clipboard } = useServices();
+  const { downloads, clipboard, storage } = useServices();
   const phone = useMedia(PHONE);
   const root = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
@@ -159,10 +129,26 @@ function Frame({ model, page }: { model: StorageModel; page: StoragePage }) {
   }, [phone]);
 
   const view = selected === undefined ? undefined : inspectorView(model, selected);
-  const summary = summaryView(model);
+  const base = summaryView(model);
+  const failure = storage.error.value;
+  const updated = storage.updatedAt.value;
+  const summary = {
+    ...base,
+    lines: [
+      ...base.lines,
+      ...(failure === undefined
+        ? []
+        : [
+            {
+              level: "warn" as const,
+              text: PAGE.notRefreshed(describeFailure(failure).title, updated === undefined ? "–" : formatClock(updated)),
+            },
+          ]),
+    ],
+  };
   return (
     <div ref={root} class={styles["frame"]}>
-      <TitleBar />
+      <h1 class="visually-hidden">{PAGE.title}</h1>
       <Strip
         label={STRIP.label(model.flashSize)}
         blocks={model.items.map(stripBlock)}

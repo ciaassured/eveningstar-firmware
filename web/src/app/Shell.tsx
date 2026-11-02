@@ -7,6 +7,7 @@ import { ConnectionIndicator } from "../ui/ConnectionIndicator.tsx";
 import { PopoverHost } from "../ui/Popover.tsx";
 import { useServices } from "./context.ts";
 import { DownloadsHeaderButton, DownloadsTray } from "./downloads-view.tsx";
+import { StorageRefreshButton } from "./refresh-view.tsx";
 import { cx } from "../lib/cx.ts";
 import { NAVIGATION, fillsFrame, pathOf } from "./router.ts";
 import styles from "./shell.module.css";
@@ -63,6 +64,7 @@ export function Shell({ children }: { children: ComponentChildren }) {
         <div class={styles["end"]}>
           <ConnectionIndicator state={connection.state.value} />
           <span class={styles["badge"]}>Operational</span>
+          {route.name === "storage" ? <StorageRefreshButton /> : null}
           <DownloadsHeaderButton />
         </div>
       </header>

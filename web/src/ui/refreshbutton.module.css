@@ -1,0 +1,63 @@
+/* The header's Refresh button, in the style of the Downloads button. */
+.button {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 5px 12px 5px 10px;
+  border: 1px solid var(--header-line);
+  border-radius: var(--radius-pill);
+  background: none;
+  color: var(--header-fg);
+  cursor: pointer;
+}
+
+.button:hover:not(:disabled) {
+  border-color: var(--header-muted);
+}
+
+.button:disabled {
+  color: var(--header-muted);
+  cursor: default;
+}
+
+.icon {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.icon[data-turning="true"] {
+  animation: turn 0.9s linear infinite;
+}
+
+@keyframes turn {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .icon[data-turning="true"] {
+    animation: none;
+  }
+}
+
+.label {
+  font-size: 13px;
+}
+
+@media (max-width: 759px) {
+  .button {
+    padding-right: 10px;
+  }
+
+  .label {
+    display: none;
+  }
+}

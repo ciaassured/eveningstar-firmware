@@ -39,8 +39,8 @@ verified.
 - The web UI verifies downloads only in a secure context, with
   `crypto.subtle`; there is no SHA-256 of its own. It queues downloads in an
   app-wide service and fetches each into memory before saving it.
-- The storage page is a single page: a title bar, a flash strip, a region list
-  and a region inspector. The boot chain and the firmware cards of the earlier
+- The storage page is a single page: a flash strip, a region list and a region
+  inspector, with its Refresh button in the shell's header. The boot chain and the firmware cards of the earlier
   page, and the Boot chain and Updates pages of the design prototypes, are not
   part of it.
 
@@ -65,7 +65,7 @@ a list item nor a strip block. Every region answers one question first:
 is it as the firmware expects? The answer is a status word, an icon and a
 colour, with the reason one click away.
 
-On a desktop the page is, top to bottom: the title bar, the flash strip with
+On a desktop the page is, top to bottom: the flash strip with
 its readout line, then two panes side by side: the region list (master) on the
 left and the region inspector (detail) on the right. On a phone the inspector
 slides over the list.
@@ -90,13 +90,13 @@ either.
   Storage current; on a phone the navigation is a bottom bar (icons of 20 px
   over 11 px labels, the current one `--fg` and 600) and the header hides the
   wordmark, the top navigation and the Downloads label.
-- The storage page fills the main area as a column: title bar, strip band and
-  panes. The title bar and the strip band never scroll. Only the panes scroll:
+- The storage page fills the main area as a column: the strip band and the
+  panes. The strip band never scrolls. Only the panes scroll:
   the region list and the inspector each scroll on their own, vertically, with
   `overscroll-behavior: contain`. Nothing scrolls horizontally at any width;
   the otadata table alone may scroll sideways inside its own container.
 - Side gutters are `max(16px, env(safe-area-inset-left/right))`, set on the
-  title bar, the strip band and the header. The list pane adds the left safe
+  strip band and the header. The list pane adds the left safe
   area inset, the inspector pane the right one.
 
 Breakpoints:
@@ -109,11 +109,24 @@ Breakpoints:
 
 ### Title bar
 
-A bar of `--surface` with a 1 px `--border` bottom border, holding the word
-"Storage" (600, padding 11 px top and 9 px bottom) at the left. The right end
-holds the Refresh button and the refresh failure note described under
-"Decisions beyond the prototype" (the prototype has neither; its demo chip sat
-there).
+The page has no bar of its own: the strip is the top of the page, directly
+under the shell's header. The page's heading, "Storage", is an `h1` that is
+visually hidden.
+
+The Refresh button is in the shell's header while the Storage page is shown,
+between the "Operational" badge and the Downloads button: a pill 34 px tall in
+the style of the Downloads button (padding 5 px 12 px 5 px 10 px, a 1 px
+`--header-line` border, `--header-fg` text, `--header-muted` border on hover),
+holding the 14 px reload icon (two arrows on a circle, 1.8 px stroke) and the
+label "Refresh" (13 px; hidden on a phone, where the pill is the icon alone).
+While the reload runs, the label reads "Refreshing…", the button is disabled
+with `--header-muted` text and the icon turns once every 0.9 s (still with
+`prefers-reduced-motion`). Its accessible name is the label.
+
+The refresh failure note is the last line of the region list's summary,
+under the other lines: a warning icon and "Not refreshed: `<why>`. Values from
+`<time>`." (see "Decisions beyond the prototype"). The prototype has neither the
+button nor the note; its demo chip sat in the title bar.
 
 ### The flash strip
 
@@ -1335,11 +1348,10 @@ shows because the API differs:
 - **Comparison table** gains the `flags` row; the "matches" reason names
   flags; "differing from the layout" became "differing from the expected
   layout".
-- **Refresh.** The title bar keeps a "Refresh" button at its right (the app's
-  ordinary button, disabled with the reason "Refreshing…" while it runs).
-  When a reload fails, a muted line beside it reads "Not refreshed:
-  `<failure title>`. Values from `<time>`.", with the failure's explanation
-  as its tooltip.
+- **Refresh.** The "Refresh" button is in the shell's header (see "Title
+  bar"), disabled and reading "Refreshing…" while it runs. When a reload
+  fails, the last line of the region list's summary, with a warning icon,
+  reads "Not refreshed: `<failure title>`. Values from `<time>`.".
 - **Image checks.** While a slot's image is `checking`, its Details, ruler and
   download read as "Usage summary" and "Details" say; the page polls until
   the checks finish.
