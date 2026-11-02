@@ -1,4 +1,4 @@
-/* The page fills the main area: the title bar and the strip stay, and only the panes scroll. */
+/* The page fills the main area: the strip stays, and only the panes scroll. */
 .page {
   flex: 1;
   min-height: 0;
@@ -16,39 +16,6 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
-}
-
-.titlebar {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 max(16px, env(safe-area-inset-right, 0px)) 0 max(16px, env(safe-area-inset-left, 0px));
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
-}
-
-.title {
-  padding: 11px 0 9px;
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.refresh {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  margin-left: auto;
-}
-
-.failed {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--muted);
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* The inspector. */
