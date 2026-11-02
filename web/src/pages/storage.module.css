@@ -99,6 +99,60 @@
   font-size: 13px;
 }
 
+.cols {
+  display: grid;
+  gap: 10px;
+}
+
+/* Expected state beside the details on a wide screen. */
+@media (min-width: 1100px) {
+  .cols {
+    grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+    align-items: start;
+    gap: 14px;
+  }
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The decimal or the human size under a value of the comparison. */
+.sub {
+  display: block;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+.note {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.states {
+  display: grid;
+  gap: 3px;
+  margin-top: 8px;
+  font-size: 12.5px;
+}
+
+.states b {
+  font-weight: 600;
+}
+
+.lines {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+
 @media (max-width: 759px) {
   .inspector {
     gap: 12px;

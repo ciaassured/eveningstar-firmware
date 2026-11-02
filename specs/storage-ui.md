@@ -57,7 +57,11 @@ prototype leaves a case open, the rule here is the one to build, and
 The page shows the board's internal flash as a set of **regions** in flash
 order: the bootloader, the partition table, each partition of the expected
 layout, the unallocated gaps between them, and any partition the board's table
-has that the expected layout doesn't. Every region answers one question first:
+has that the expected layout doesn't. A gap is at least one whole 4 KiB flash
+sector or crosses a sector boundary; space that lies inside one sector without
+filling it (the 1 KiB from 0x008c00 to 0x009000 after the 0xC00-byte partition
+table) is the remainder of the sector of the region beside it, and is neither
+a list item nor a strip block. Every region answers one question first:
 is it as the firmware expects? The answer is a status word, an icon and a
 colour, with the reason one click away.
 
@@ -893,7 +897,7 @@ rollback target, validation hash). No narration, no coaching, no "simply" or
 | SHA-256 of the image file   | The SHA-256 of the image file, appended digest included.                                                                                |
 | Usage summary               | The panel of a region's ruler and span table.                                                                                           |
 | End, exclusive              | The end of a range, the first byte after it.                                                                                            |
-| Unallocated                 | A gap: space no entry covers.                                                                                                           |
+| Unallocated                 | A gap: space no entry covers, at least a whole 4 KiB sector or crossing a sector boundary.                                              |
 | Extra entry                 | A board table entry the expected layout doesn't have.                                                                                   |
 
 Fixed sentences:
@@ -1113,7 +1117,7 @@ Downloads go through `GetRegionContent`
 | Flash size ("8 MiB flash", strip end)       | `InternalFlash.capacity`; when 0, `InternalFlash.layout_size` and the summary title reads "`<size>` flash (expected size; the chip's size is not known)". The strip spans the larger of that and the highest end of any block. |
 | Expected regions and their order            | `GetRegions.regions`: `region`, `label`, `partition` (type, subtype, flags), `contents`, `available`, `roles`.                                                         |
 | Expected span of a region                   | The layout's span, which the API has to supply (see "API the page needs"). Today `RegionInfo.offset` and `size`, which are the layout's span except where the firmware holds a handle with another span (the untrusted tier's bootloader, partition table and running app). |
-| Gaps                                        | Derived: the space no expected region and no extra entry covers ("Overlaps and shifted entries").                                                                     |
+| Gaps                                        | Derived: the space no expected region and no extra entry covers ("Overlaps and shifted entries"), except a remainder inside one sector.                               |
 | Board entries                               | `GetPartitionTable`: `BoardTable.table.entries` (label, type, subtype, offset, size, flags), `table.offset`, `table.truncated`, `table.end`, `search`, `offsets`.     |
 | Missing, Differs, Extra, Used, Overlap      | Derived from the board entries against the expected regions ("Matching entries"). `RegionInfo.layout` is not used for it.                                             |
 | Partition table status and MD5              | `TableRead.md5` of the board's table (`stored`, `matches`); `TableSummary.md5` when the board's table is not known; `TableSummary.matches` and `offset`; the derived findings. |
@@ -1212,9 +1216,11 @@ is the range from the later start to the earlier end (end exclusive).
   place in offset order, and an overlapping extra entry is its own block,
   with the warning icon, after the region it overlaps when they start
   together.
-- Gaps are the space covered by no expected region and no extra entry. An
-  extra entry that covers a whole gap of the expected layout so replaces it;
-  one that covers part of it leaves the uncovered parts as gaps.
+- Gaps are the space covered by no expected region and no extra entry, each
+  at least a whole 4 KiB sector or crossing a sector boundary; an uncovered
+  remainder inside one sector is not a gap. An extra entry that covers a whole
+  gap of the expected layout so replaces it; one that covers part of it leaves
+  the uncovered parts as gaps, under the same rule.
 - Both sides of an overlap state it. A region that is otherwise as expected
   gets the status "Overlap"; a missing, differing or extra one keeps its word
   and its reason gains the overlap.
@@ -1304,11 +1310,14 @@ shows because the API differs:
 - **Partition table region size.** The prototype draws the partition table
   as a 4 KiB region with a "Whole region, 4 KiB, raw bytes, with the erased
   padding" download. The firmware's region is the table's 0xC00 bytes
-  (`table::MAX_LEN`), so the table download is the whole region and the
-  space from 0x008c00 to 0x009000 is a 1 KiB gap.
+  (`table::MAX_LEN`), so the table download is the whole region. The space
+  from 0x008c00 to 0x009000 lies inside the table's sector, so it is not a
+  gap: the strip and the list show nothing there.
 - **Gap explanation.** The prototype's "…; the gap comes from alignment." is
-  not true of every gap (the 1 KiB after the table, a gap left by a shifted
-  entry), so the explanation stops at "Nothing is stored here."
+  not true of every gap (a gap left by a shifted or missing entry), so the
+  explanation stops at "Nothing is stored here."
+- **Sector remainders.** Uncovered space inside one 4 KiB sector, such as the
+  1 KiB after the partition table, is not a gap ("Overview").
 - **Label-matched comparison** ("Matching entries") in place of the API's
   positional `layout`.
 - **Identity by label**, so colours and codes don't swap when the other slot

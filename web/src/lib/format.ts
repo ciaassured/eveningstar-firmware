@@ -38,11 +38,6 @@ export function formatBytes(bytes: number, locale?: string): string {
   return `${number} ${BINARY_UNITS[unit] ?? ""}`;
 }
 
-/** An exact count of bytes, such as `1,203,456 bytes`. */
-export function formatExactBytes(bytes: number, locale?: string): string {
-  return `${new Intl.NumberFormat(locale).format(bytes)} ${bytes === 1 ? "byte" : "bytes"}`;
-}
-
 /** An offset in hexadecimal, padded to `digits`, such as `0x010000`. */
 export function formatHex(value: number, digits = 6): string {
   return `0x${value.toString(16).padStart(digits, "0")}`;

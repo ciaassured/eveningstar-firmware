@@ -14,3 +14,12 @@
   font-size: 13px;
   font-weight: 600;
 }
+
+.stack {
+  display: grid;
+  gap: 10px;
+}
+
+.stack > .title {
+  margin-bottom: 0;
+}

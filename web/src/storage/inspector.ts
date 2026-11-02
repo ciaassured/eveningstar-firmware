@@ -27,9 +27,6 @@ import type { DownloadTarget } from "./plan.ts";
 import type { ItemStatus } from "./status.ts";
 import type { EntryField, RegionInfo } from "./types.ts";
 
-/** An icon beside text. */
-export type Icon = "ok" | "warn" | "bad" | "lock" | "booted" | "next" | "rollback";
-
 /** How a run of text is set. */
 export type Tone = "plain" | "strong" | "muted" | "mono" | Level;
 
@@ -39,10 +36,10 @@ export interface Run {
   tone: Tone;
 }
 
-/** A fact: a label over a value, with an optional icon before the value. */
+/** A fact: a label over a value, with an optional status icon before the value. */
 export interface Cell {
   label: string;
-  icon?: Icon;
+  icon?: Level;
   runs: Run[];
 }
 
@@ -127,7 +124,7 @@ export interface RoleBox {
   label: string;
   value: "yes" | "no" | "unknown";
   text: string;
-  icon?: Icon;
+  icon?: "booted" | "next" | "rollback";
 }
 
 /** A hash with its label and what it covers. */
@@ -146,6 +143,8 @@ export interface HashRow {
 export interface HashesView {
   title: string;
   note: string;
+  /** Whether the note follows the title on its line, above the rows (an image's hashes), or follows the rows. */
+  lead: boolean;
   rows: HashRow[];
 }
 
@@ -501,15 +500,11 @@ function hashRow(key: HashRow["key"], label: string, under: string, value: strin
   return row;
 }
 
-function levelIcon(level: Level): Icon {
-  return level;
-}
-
 function appDetails(item: Item, info: RegionInfo, model: StorageModel): DetailsView {
   const { flash } = model.input;
   const known = model.boot.boot !== null;
   const has = (role: string): boolean => item.roles.some((chip) => chip.role === role);
-  const box = (label: string, icon: Icon, yes: boolean, isKnown: boolean): RoleBox =>
+  const box = (label: string, icon: NonNullable<RoleBox["icon"]>, yes: boolean, isKnown: boolean): RoleBox =>
     !isKnown
       ? { label, value: "unknown", text: ROLES.notKnown }
       : yes
@@ -552,7 +547,7 @@ function appDetails(item: Item, info: RegionInfo, model: StorageModel): DetailsV
         if (descriptor !== null && descriptor !== undefined) {
           rows.push(hashRow("elf_sha256", DETAILS.elf, DETAILS.elfUnder, descriptor.elf_sha256));
         }
-        details.hashes = { title: DETAILS.hashes, note: DETAILS.hashesApp, rows };
+        details.hashes = { title: DETAILS.hashes, note: DETAILS.hashesApp, lead: true, rows };
       }
       break;
     }
@@ -583,7 +578,7 @@ function appDetails(item: Item, info: RegionInfo, model: StorageModel): DetailsV
 function bootloaderDetails(item: Item, model: StorageModel): DetailsView {
   const { bootloader } = model.input.flash;
   const cells: Cell[] = [
-    { label: DETAILS.status, icon: levelIcon(item.status.level), runs: [run(item.status.word, item.status.level)] },
+    { label: DETAILS.status, icon: item.status.level, runs: [run(item.status.word, item.status.level)] },
     {
       label: DETAILS.knownAs,
       runs: [bootloader.name === null || bootloader.name === undefined ? run(DETAILS.notListed, "muted") : run(bootloader.name, "mono")],
@@ -601,6 +596,7 @@ function bootloaderDetails(item: Item, model: StorageModel): DetailsView {
     details.hashes = {
       title: DETAILS.hashes,
       note: DETAILS.hashesBootloader,
+      lead: true,
       rows: [
         hashRow("file_sha256", DETAILS.fileSha256, DETAILS.fileSha256Under(size), bootloader.file_sha256, "file_sha256"),
         hashRow("digest", DETAILS.digest, DETAILS.digestUnder(size), bootloader.digest, "stored_digest"),
@@ -643,6 +639,7 @@ function tableDetails(model: StorageModel): DetailsView {
     details.hashes = {
       title: DETAILS.hashes,
       note: DETAILS.hashesTable,
+      lead: false,
       rows: [hashRow("md5", DETAILS.storedMd5, DETAILS.storedMd5Under(count), md5.stored, "md5")],
     };
   }
@@ -674,7 +671,7 @@ function otadataDetails(model: StorageModel): DetailsView {
     states: states.map((state) => ({ state, text: otaStateText(state) })),
     rule: DETAILS.otadataRule,
   };
-  details.hashes = { title: DETAILS.hashes, note: DETAILS.hashesOtadata, rows: [] };
+  details.hashes = { title: DETAILS.hashes, note: DETAILS.hashesOtadata, lead: false, rows: [] };
   return details;
 }
 
@@ -702,7 +699,7 @@ function compareRows(item: Item): CompareRow[] {
   const partition = info?.partition;
   if (info === undefined || entry === undefined || partition === null || partition === undefined) return [];
   const text = (main: string): CompareValue => ({ main, mono: false });
-  const hex = (value: number): CompareValue => ({ main: formatHex(value, 0), mono: true });
+  const hex = (value: number): CompareValue => ({ main: formatHex(value, 0), mono: false });
   const offset = (value: number): CompareValue => ({ main: formatHex(value), sub: formatDecimal(value), mono: true });
   const size = (value: number): CompareValue => ({ main: formatHex(value), sub: formatSize(value), mono: true });
   const row = (field: EntryField, expected: CompareValue, board: CompareValue): CompareRow => ({
@@ -806,7 +803,7 @@ export function inspectorView(model: StorageModel, id: string): InspectorView | 
       break;
     case "extra": {
       const entry = item.entry;
-      const byte = (value: number): Run[] => [run(formatHex(value, 2), "mono")];
+      const byte = (value: number): Run[] => [run(formatHex(value, 2))];
       view.entryPanel = {
         title: EXTRA.panel,
         cells:

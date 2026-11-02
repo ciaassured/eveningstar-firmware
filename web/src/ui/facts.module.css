@@ -1,0 +1,92 @@
+.facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 30px;
+  margin: 0;
+}
+
+.fact {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+  font-size: 13px;
+}
+
+.label {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.value {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.flex {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 6px;
+}
+
+.mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 600;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
+.ok {
+  color: var(--x-ok);
+}
+
+.warn {
+  color: var(--x-warn);
+}
+
+.bad {
+  color: var(--x-bad);
+}
+
+.roles {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin: 0;
+}
+
+.role {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-height: 46px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.on {
+  border-color: var(--fg);
+}
+
+.rolelabel {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.rolevalue {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.on .rolevalue {
+  color: var(--fg);
+  font-weight: 600;
+}

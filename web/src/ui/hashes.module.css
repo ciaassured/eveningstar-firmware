@@ -1,0 +1,107 @@
+.section {
+  display: grid;
+  gap: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.title {
+  display: inline;
+  margin: 0 6px 0 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.note {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+/* Label, field and Copy on one row when there is room, else the label over the field and Copy. */
+.rows {
+  display: grid;
+  gap: 8px;
+  container-type: inline-size;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  gap: 3px 6px;
+}
+
+.key {
+  grid-column: 1 / -1;
+  display: grid;
+  font-size: 12.5px;
+  line-height: 1.35;
+}
+
+@container (min-width: 640px) {
+  .row {
+    grid-template-columns: minmax(170px, 270px) minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .key {
+    grid-column: auto;
+  }
+}
+
+.label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.label b {
+  font-weight: 600;
+}
+
+.under {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.field {
+  min-width: 0;
+  min-height: 30px;
+  padding: 5px 8px;
+  overflow: hidden;
+  resize: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--fg);
+  font: 11px/1.5 var(--font-mono);
+  word-break: break-all;
+  field-sizing: content;
+  cursor: text;
+}
+
+.field:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 0;
+}
+
+.copy {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 66px;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.copy:hover {
+  border-color: var(--fg);
+}
