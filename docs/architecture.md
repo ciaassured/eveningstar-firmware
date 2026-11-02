@@ -370,6 +370,50 @@ couldn't check the bytes before saving them. The largest region is 3 MiB.
 - Closing the tab loses the queue, so the page asks before unloading while it
   isn't empty.
 
+### The storage page
+
+The storage page shows the internal flash as a strip of blocks, a list of
+regions and an inspector for the selected one. What it shows and how it
+reads is specified in `specs/storage-ui.md`; this is how it is built.
+
+- **A model, then components.** `storage/` turns the API's answers into items,
+  statuses, overlaps and the data of each panel as pure functions
+  (`items.ts` and its neighbours), tested against fixtures of every layout the
+  specification lists. The components in `ui/` and `pages/Storage.tsx` only
+  draw it. The wording is data in `storage/copy.ts`.
+- **Expected regions are matched to the board's table by label.** The API's
+  per-region layout comparison is positional, so one missing entry makes every
+  later region differ, and an extra entry leaves every region matching. The
+  page reads the board's entries (`/storage/internal/table`) and finds missing,
+  extra, shifted and overlapping ones itself, and keeps the firmware's verdict
+  visible: the partition table never reads as expected while the firmware says
+  it doesn't match.
+- **The strip never draws blocks over each other.** Blocks stay in offset
+  order, an overlapping entry is its own block, and both sides state the
+  overlap as a range. A region is drawn at its expected span, which the API
+  reports beside the span of the handle (`RegionInfo.expected`), because in the
+  untrusted tier the handle's span is the board's. A gap inside one 4 KiB
+  sector, such as the 1 KiB after the table, is the rest of the neighbour's
+  sector and isn't shown.
+- **Roles and updates.** The orange "Next boot" marks an update only when the
+  selected slot isn't running and its otadata record is `new`; a fallback is
+  shown differently. During an update the page derives the rollback target (the
+  running slot) itself, because the firmware's role belongs to the running
+  app's point of view and the OTA planner relies on it.
+- **The frame.** The page fills the shell's frame and only its panes scroll;
+  the shell switches to its phone layout at 760 px, with the page. On a phone
+  the inspector slides over the list, drawn closed first so that entering
+  animates.
+- **Theming.** Region identity colours and the status colours are tokens with a
+  light and a dark value, and the token tests check the contrast of each
+  pair. Element sizes that depend on data are set through the CSSOM
+  (`ui/vars.ts`), as the content-security policy forbids `style` attributes.
+- **Hashes can be copied over HTTP.** The device serves HTTP, where the
+  clipboard API doesn't exist. A copy button writes to the clipboard inside
+  its click handler when it can and otherwise selects the field.
+- **The table's MD5** comes from the device (`md5` on the table summary and on
+  the board's table), as the browser has no MD5.
+
 ### Sessions, permissions and configuration
 
 The API has no authentication, permissions or configuration endpoints yet. The
