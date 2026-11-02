@@ -1453,15 +1453,17 @@ Not verified:
   MD5 (needs a bootloader built without the MD5 check), several tables, a
   `cargo run` board and a fallback to the other slot.
 
-Verified on the dev board with the redesigned page (served by the device and in
-headless Chromium, light and dark, 1280 px and 400 px): the matching layout,
-one missing entry (`ota_1`, `reserved`, `config_1`), an extra entry in the gap,
-in the reserved space and over `ota_0` and `ota_1`, a shifted `ota_1` and
-`diag`, a resized `config_0`, a renamed `diag`, a retyped `config_0`, two
-expected entries overlapping each other, and a missing `ota_1` with an extra
-entry on its space. The board booted with every one of those tables (the
-bootloader doesn't check overlaps), always in the untrusted tier, with the
-strip drawing no block over another. The downloads of every public region, by
-the API and by the tray, equal `esptool read-flash` byte for byte; the images'
+Verified on the dev board with the redesigned page, served by the device and
+rendered in headless Chromium (light and dark, 1280 px and 400 px): the
+matching layout, a missing `ota_1`, an extra entry in the gap and in the
+reserved space, an extra entry over `ota_0` and `ota_1`, a shifted `ota_1`,
+two expected entries overlapping each other, and a missing `ota_1` with an
+extra entry on its space. For a missing `reserved`, `config_1`, a shifted
+`diag`, a resized `config_0`, a renamed `diag` and a retyped `config_0` only
+the API's answers were read on the board, and the page's handling of those is
+covered by the model's tests. The board booted with every one of those tables
+(the bootloader doesn't check overlaps), always in the untrusted tier, and the
+strip drew no block over another. The downloads of every public region, by the
+API and by the tray, equal `esptool read-flash` byte for byte; the images'
 SHA-256 equal the device's `file_sha256`, and the table's stored MD5 equals the
 MD5 of its entries.
