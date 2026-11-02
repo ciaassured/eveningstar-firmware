@@ -55,6 +55,25 @@ test("an uptime that goes down counts as a restart and refreshes the reboot stat
   device.stop();
 });
 
+test("a restart nobody asked for is unexpected; one after a reboot from the reboot page isn't", async () => {
+  const plain = setup([5_000, 12]);
+  plain.device.start();
+  await plain.clock.advance(POLL_INTERVAL_MS);
+  await plain.clock.advance(POLL_INTERVAL_MS);
+  assert.equal(plain.device.restarts.value, 1);
+  assert.equal(plain.device.unexpectedRestarts.value, 1);
+  plain.device.stop();
+
+  const asked = setup([5_000, 12, 14, 14]);
+  asked.device.start();
+  await asked.clock.advance(POLL_INTERVAL_MS);
+  await asked.device.reboot.start("graceful", 5_000);
+  await asked.clock.advance(1);
+  assert.equal(asked.device.restarts.value, 1);
+  assert.equal(asked.device.unexpectedRestarts.value, 0);
+  asked.device.stop();
+});
+
 test("reset forgets what was fetched, and the next fetch isn't taken for a restart", async () => {
   const { clock, device } = setup([5_000, 12]);
   device.start();

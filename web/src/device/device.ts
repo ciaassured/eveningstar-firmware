@@ -29,6 +29,8 @@ export interface Device {
   readonly reboot: RebootFlow;
   /** How many restarts of the device the page has seen: the uptime went down. */
   readonly restarts: ReadonlySignal<number>;
+  /** How many of those the person didn't ask for: no reboot started on the reboot page was under way. */
+  readonly unexpectedRestarts: ReadonlySignal<number>;
   /** Forgets everything fetched, such as when another person signs in. */
   reset(): void;
   start(): void;
@@ -38,7 +40,10 @@ export interface Device {
 export function createDevice(deps: DeviceDeps): Device {
   const { api } = deps;
   const restarts = signal(0);
+  const unexpectedRestarts = signal(0);
   let lastUptime: number | undefined;
+  /** Whether a reboot the person started is under way and its restart hasn't been seen yet. */
+  let rebootAsked = false;
 
   const poller = { ...deps, intervalMs: POLL_INTERVAL_MS, maxIntervalMs: MAX_POLL_INTERVAL_MS };
 
@@ -50,6 +55,8 @@ export function createDevice(deps: DeviceDeps): Device {
         // An uptime that went down means the device started again.
         if (lastUptime !== undefined && result.value.uptime_s < lastUptime) {
           restarts.value += 1;
+          if (rebootAsked) rebootAsked = false;
+          else unexpectedRestarts.value += 1;
           void rebootStatus.load("poll");
         }
         lastUptime = result.value.uptime_s;
@@ -79,6 +86,11 @@ export function createDevice(deps: DeviceDeps): Device {
 
   // The device is back: show its new uptime now rather than at the next poll.
   reboot.progress.subscribe((progress) => {
+    rebootAsked =
+      progress.kind === "requesting" ||
+      progress.kind === "waiting" ||
+      progress.kind === "restarting" ||
+      progress.kind === "restarted";
     if (progress.kind !== "restarted") return;
     void system.load("action");
     void rebootStatus.load("action");
@@ -89,8 +101,10 @@ export function createDevice(deps: DeviceDeps): Device {
     rebootStatus,
     reboot,
     restarts,
+    unexpectedRestarts,
     reset() {
       lastUptime = undefined;
+      rebootAsked = false;
       system.reset();
       rebootStatus.reset();
       reboot.reset();

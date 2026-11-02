@@ -29,13 +29,13 @@ function Notices() {
           </div>
         </Banner>
       ) : null}
-      {device.restarts.value > dismissedRestarts.value ? (
+      {device.unexpectedRestarts.value > dismissedRestarts.value ? (
         <Banner level="caution" title="The device restarted">
-          <p>Its uptime started again, so the values on this page were fetched again.</p>
+          <p>Device uptime reset, meaning the device rebooted. The values on this page have been refreshed.</p>
           <div>
             <Button
               onClick={() => {
-                dismissedRestarts.value = device.restarts.value;
+                dismissedRestarts.value = device.unexpectedRestarts.value;
               }}
             >
               Dismiss
