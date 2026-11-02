@@ -1,6 +1,6 @@
 import { downloadFilename } from "./filenames.ts";
 import { lockReason } from "./labels.ts";
-import type { InternalFlash, Region, RegionInfo, SlotName, Span } from "./types.ts";
+import type { BoardTable, InternalFlash, Region, RegionInfo, SlotName, Span } from "./types.ts";
 
 /** What of a region to download. */
 export type DownloadWhat = { kind: "whole" } | { kind: "image" } | { kind: "range"; span: Span };
@@ -32,6 +32,12 @@ export interface DownloadPlan {
   check?: DigestCheck;
   /** The SHA-256 of the image the download starts with, for checking by hand: `head -c <bytes> <file> | sha256sum`. */
   expected?: { sha256: string; bytes: number };
+  /**
+   * For the whole partition table, the MD5 its MD5 entry stores, over the
+   * entries before it, as read when the download was planned. The device
+   * doesn't hash the file as a whole.
+   */
+  md5?: string;
 }
 
 export type PlanResult =
@@ -87,7 +93,7 @@ export function holdsImage(region: Region): boolean {
  */
 export function planDownload(
   target: DownloadTarget,
-  facts: { flash: InternalFlash; regions: readonly RegionInfo[]; device: string },
+  facts: { flash: InternalFlash; regions: readonly RegionInfo[]; device: string; table?: BoardTable | undefined },
 ): PlanResult {
   const { flash } = facts;
   const info = facts.regions.find((region) => region.region === target.region);
@@ -147,7 +153,23 @@ export function planDownload(
       }
     }
   }
+  if (target.region === "partition_table" && span === undefined) {
+    const md5 = tableMd5(info, flash, facts.table);
+    if (md5 !== undefined) plan.md5 = md5;
+  }
   return { ok: true, plan };
+}
+
+/**
+ * The MD5 stored in the table the region holds: the board's table when the
+ * region is at its offset, else the table at the expected offset when the
+ * region is there.
+ */
+function tableMd5(info: RegionInfo, flash: InternalFlash, table: BoardTable | undefined): string | undefined {
+  const board = table?.table;
+  if (board !== null && board !== undefined && board.offset === info.offset) return board.md5?.stored;
+  if (flash.table.offset === info.offset) return flash.table.md5?.stored;
+  return undefined;
 }
 
 /** A short name for what is downloaded, such as `app_current image`. */

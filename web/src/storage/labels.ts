@@ -1,3 +1,4 @@
+import { joinWords } from "../lib/format.ts";
 import type { StatusLevel } from "../ui/StatusIcon.tsx";
 import type {
   BootloaderStatus,
@@ -213,11 +214,7 @@ export function fieldLabel(field: Open<EntryField>): string {
   }
 }
 
-/** Words joined as a list, such as `offset and size`. */
-export function joinWords(words: readonly string[]): string {
-  if (words.length <= 1) return words[0] ?? "";
-  return `${words.slice(0, -1).join(", ")} and ${words[words.length - 1] ?? ""}`;
-}
+export { joinWords };
 
 export function matchLabel(status: Open<MatchStatus>, fields: readonly Open<EntryField>[]): Labelled {
   switch (status) {
