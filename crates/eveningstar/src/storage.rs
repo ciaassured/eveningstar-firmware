@@ -230,6 +230,12 @@ fn log(storage: &Storage<'_>, capacity: u32) {
     } else {
         log_comparison(report);
     }
+    if let Ok(table::End::Md5 { matches: false, .. }) = report.table.end {
+        warn!(
+            "Partition table at {=u32:#x}: its MD5 doesn't match its entries",
+            layout::TABLE_OFFSET
+        );
+    }
     if let Some(found) = report.found_table {
         log_found_table(report, found, storage.boot.table);
     }
@@ -289,7 +295,14 @@ fn log_found_table(report: &Report, found: Found, table: Option<Partition<'_, Pa
         return;
     }
     info!("Partition table found at {=u32:#x}:", offset);
-    for entry in table::entries(&table, 0).map_while(Result::ok) {
+    log_entries(&table);
+}
+
+/// Logs the entries of `table`, and whether its MD5 matches them.
+#[inline(never)]
+fn log_entries(table: &Partition<'_, PartitionTable>) {
+    let mut entries = table::entries(table, 0);
+    for entry in entries.by_ref().map_while(Result::ok) {
         info!(
             "  {}: type {=u8:#x}, subtype {=u8:#x}, {=u32:#x}..{=u32:#x}, flags {=u32:#x}",
             Fmt(entry.label),
@@ -299,6 +312,9 @@ fn log_found_table(report: &Report, found: Found, table: Option<Partition<'_, Pa
             entry.offset.saturating_add(entry.size),
             entry.flags,
         );
+    }
+    if let Ok(table::End::Md5 { matches: false, .. }) = entries.finish() {
+        warn!("  its MD5 doesn't match its entries");
     }
 }
 

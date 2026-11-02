@@ -6,7 +6,8 @@
 use super::*;
 use crate::layout::{PARTITIONS, TABLE_OFFSET};
 use crate::test_support::{
-    ESPFLASH_TABLE, Rng, TABLE, entry_bytes, flash_with, md5_entry, table_of, table_with_md5,
+    ESPFLASH_TABLE, Rng, TABLE, entry_bytes, flash_with, md5_entry, md5_entry_for, table_of,
+    table_with_md5,
 };
 use crate::{FLAG_READONLY, TYPE_DATA};
 
@@ -49,11 +50,17 @@ fn the_nix_table_matches_the_layout() {
     let comparison = compare(TABLE, 0, &PARTITIONS);
     assert_eq!(comparison.partitions, [Match::Matches; N]);
     assert_eq!(comparison.extra, 0);
-    let Ok(End::Md5 { index, digest }) = comparison.end else {
+    let Ok(End::Md5 {
+        index,
+        digest,
+        matches,
+    }) = comparison.end
+    else {
         panic!("{:?}", comparison.end);
     };
     assert_eq!(index, N);
     assert_eq!(&digest[..], &TABLE[N * 32 + 16..N * 32 + 32]);
+    assert!(matches, "ESP-IDF's MD5 checks");
     assert!(comparison.matches());
 }
 
@@ -113,7 +120,14 @@ fn the_espflash_table_differs_from_the_layout() {
         ]
     );
     assert_eq!(comparison.extra, 0);
-    assert!(matches!(comparison.end, Ok(End::Md5 { index: 3, .. })));
+    assert!(matches!(
+        comparison.end,
+        Ok(End::Md5 {
+            index: 3,
+            matches: true,
+            ..
+        })
+    ));
     assert!(!comparison.matches());
 
     let flash = flash_with(0x1_0000, &[(TABLE_OFFSET, ESPFLASH_TABLE)]);
@@ -290,12 +304,77 @@ fn bytes_after_the_md5_entry_are_ignored() {
     assert!(compare(&table[..], 0, &PARTITIONS).matches());
 }
 
+/// Whether the table ends at an MD5 entry whose digest matches.
+fn md5_matches(table: &[u8]) -> bool {
+    match entries(table, 0).finish() {
+        Ok(End::Md5 { matches, .. }) => matches,
+        end => panic!("{end:?}"),
+    }
+}
+
 #[test]
-fn the_md5_digest_and_padding_are_not_checked() {
+fn the_md5_padding_is_not_checked() {
     let mut table = TABLE.to_vec();
     table[0x102] = 0;
-    table[0x110] ^= 0xFF;
+    table[0x10F] = 0;
     assert!(compare(&table[..], 0, &PARTITIONS).matches());
+    assert!(md5_matches(&table));
+}
+
+#[test]
+fn a_wrong_md5_is_reported_and_the_table_still_matches() {
+    for at in [0x110, 0x11F] {
+        let mut table = TABLE.to_vec();
+        table[at] ^= 0x01;
+        let comparison = compare(&table[..], 0, &PARTITIONS);
+        assert!(comparison.matches(), "{at:#x}");
+        let Ok(End::Md5 {
+            digest, matches, ..
+        }) = comparison.end
+        else {
+            panic!("{:?}", comparison.end);
+        };
+        assert!(!matches, "{at:#x}");
+        assert_eq!(&digest[..], &table[0x110..0x120]);
+    }
+}
+
+#[test]
+fn the_md5_covers_every_byte_of_every_entry() {
+    // Type, label, a label byte past its NUL that no field shows, flags, the
+    // next entry's offset, and the last entry's last byte.
+    for at in [0x02, 0x0C, 0x14, 0x1F, 0x24, 0xFF] {
+        let mut table = TABLE.to_vec();
+        table[at] ^= 0x01;
+        assert!(!md5_matches(&table), "{at:#x}");
+    }
+}
+
+#[test]
+fn an_md5_entry_of_the_entries_before_it_matches() {
+    for count in [0, 1, 2, 3, N, 40, MAX_ENTRIES - 1] {
+        let mut slots: Vec<[u8; 32]> = (0..count)
+            .map(|i| {
+                entry_bytes(&Entry {
+                    offset: 0x1_0000 * (i as u32 + 1),
+                    ..PARTITIONS[i % N]
+                })
+            })
+            .collect();
+        slots.push(md5_entry_for(&slots));
+        assert!(md5_matches(&table_of(&slots)), "{count}");
+    }
+    // The MD5 of nothing, for a table of only an MD5 entry.
+    let empty = md5_entry_for(&[]);
+    assert_eq!(
+        empty[16..],
+        [
+            0xd4, 0x1d, 0x8c, 0xd9, 0x8f, 0x00, 0xb2, 0x04, 0xe9, 0x80, 0x09, 0x98, 0xec, 0xf8,
+            0x42, 0x7e
+        ]
+    );
+    assert!(md5_matches(&table_of(&[empty])));
+    assert!(!md5_matches(&table_of(&[md5_entry()])));
 }
 
 #[test]

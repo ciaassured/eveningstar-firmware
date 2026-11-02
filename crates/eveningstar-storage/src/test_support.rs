@@ -21,6 +21,7 @@ use sha2::{Digest as _, Sha256};
 use std::sync::Mutex;
 
 use crate::Entry;
+use crate::md5::Md5;
 use crate::table::ENTRY_LEN;
 
 /// The table Nix builds from `nix/board.nix`.
@@ -80,13 +81,25 @@ pub(crate) fn entry_bytes(entry: &Entry) -> [u8; 32] {
     bytes
 }
 
-/// An MD5 entry. The digest is a fixed pattern, as nothing checks it.
+/// An MD5 entry whose digest is a fixed pattern, the MD5 of no entries the
+/// tests build.
 pub(crate) fn md5_entry() -> [u8; 32] {
     let mut bytes = [0xFF; 32];
     bytes[..2].copy_from_slice(&0xEBEB_u16.to_le_bytes());
     for (i, b) in bytes[16..].iter_mut().enumerate() {
         *b = i as u8;
     }
+    bytes
+}
+
+/// The MD5 entry ESP-IDF writes after `slots`: their MD5 as its digest.
+pub(crate) fn md5_entry_for(slots: &[[u8; 32]]) -> [u8; 32] {
+    let mut md5 = Md5::new();
+    for slot in slots {
+        md5.update(slot);
+    }
+    let mut bytes = md5_entry();
+    bytes[16..].copy_from_slice(&md5.finalize());
     bytes
 }
 
@@ -101,10 +114,10 @@ pub(crate) fn table_of(slots: &[[u8; 32]]) -> Vec<u8> {
     table
 }
 
-/// A table holding `entries`, then an MD5 entry, as ESP-IDF writes one.
+/// A table holding `entries`, then their MD5 entry, as ESP-IDF writes one.
 pub(crate) fn table_with_md5(entries: &[Entry]) -> Vec<u8> {
     let mut slots: Vec<[u8; 32]> = entries.iter().map(entry_bytes).collect();
-    slots.push(md5_entry());
+    slots.push(md5_entry_for(&slots));
     table_of(&slots)
 }
 
