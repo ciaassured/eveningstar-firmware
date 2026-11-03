@@ -5,12 +5,14 @@ storage layer described in `docs/architecture.md` ("Storage") and
 `specs/storage.md`; once it is implemented, both are rewritten to match and
 `CLAUDE.md` ("Storage") is updated with it.
 
-> **Two rules keep secrets on the device.** A raw region read is never
-> exported: bytes leave the device only through a published view, which a
-> content module makes over bytes its parser verified. And a published view
-> never covers a span that the compiled layout gives to sensitive data. Don't
-> relax either rule, add a route from a raw reader to a response, or hand out a
-> writer outside the tiers below without asking the user.
+> **Publication is an allow list.** A raw region read is never exported.
+> Bytes leave the device only through a published view, and a view exists
+> only over bytes that were located from a known point (the bootloader at
+> 0x0, the table the chain locates, an entry of that table, the image at the
+> booted offset) and that a parser verified with a check covering every one of
+> them. Bytes nothing verifies, such as the space after an image in its slot,
+> never leave. Don't relax this, add a route from a raw reader to a response,
+> or hand out a writer outside the tiers below without asking the user.
 
 ## Why
 
@@ -21,10 +23,12 @@ writes, and those carry over. Four things change:
    downloaded its whole span: the bootloader's 0x0–0x8000 around an image of
    about 22 KiB, the table's 0xC00 bytes, the otadata's 8 KiB around two
    32-byte entries, and each 3 MiB app slot. Neither an update nor esptool
-   erases past the image, so those spans hold whatever was there before.
+   erases past the image, so those spans hold whatever was there before,
+   possibly data from an earlier layout.
 2. **OTA lived in the storage crate:** the update typestate, the otadata
    planners, image verification, the full tier (which existed to gate `Ota`),
-   the descriptor and project checks, and the T7 reboot.
+   the descriptor and project checks, and the reboot that rolls back an image
+   that can't be confirmed.
 3. **The writer bypassed the types.** `Ota` held raw spans of the other slot
    and the otadata beside `Copy` read handles over the same spans.
 4. **The device layer was internal NOR only.** The `Flash` trait, the
@@ -42,17 +46,28 @@ writes, and those carry over. Four things change:
   state. It knows no file format beyond what the verification chain needs.
 - Content modules own region handles and decide what leaves the device.
   Parsed models are constructed only by their parser.
+- Publication is an allow list, not a deny list: located from a known point,
+  and verified by a check that covers every published byte. A compiled deny
+  list of the sensitive spans stays as a second check only.
+- Formats that can hold secrets (configuration, diag, factory data) get a
+  strong integrity check per record, so their parsers can tell a record from
+  leftover data before exposing anything, and expose only sanitized fields.
 - Reading and writing run concurrently. Readers read through snapshots, which
   fail once the region is written; the writer always wins. While a write
   session is open, no snapshot of the region can be taken.
 - The write state is a type, not an even or odd number checked in several
   places.
-- A table's raw bytes are public up to the end its parser found. The
-  discovered table is always reported, beside the expected layout in the same
-  shape, with how it was located.
+- The table is published only when it is certain to be the table, and the
+  only one. It is reported beside the expected layout, in the same shape,
+  with how it was located.
+- The table is judged exactly as the bootloader judges it: no check of the
+  MD5 or of the entries is stricter than the bootloader's.
+- A bootloader image with a verifying SHA-256 is published whether or not it
+  is a known one; being known only decides the tier.
 - The boot writers (alternate slot and otadata) are handed out only at the
-  end of the verification chain: a known bootloader, so the table's offset is
-  certain, then the table, its MD5 and the layout.
+  end of the verification chain: a known bootloader that supports rollback, so
+  the table's offset is certain, then the table and the layout.
+- No writes in the unverified tier. Recovery is a reflash over USB.
 - No whole-slot downloads. No zeroize capability: wiping is an erase by the
   region's owner.
 - Hashes are two separate things: integrity fields that formats store (app and
@@ -61,8 +76,11 @@ writes, and those carry over. Four things change:
 - Secrets may leave the device later through protected paths: a configuration
   backup, and a clone export of the whole chip. Both need authentication,
   which isn't built.
-- Separate crates. The storage, OTA and other system components are meant to
-  be reusable by other firmware, so they don't depend on the application.
+- Separate crates. The storage, OTA, reboot, watchdog and other system
+  components are meant to be reusable by other firmware, so they don't depend
+  on the application.
+- Code comments, docs and messages describe each check by what it does; the
+  check labels of the first spec (T1–T7, O3–O8) aren't used outside specs.
 
 ## Crates
 
@@ -73,8 +91,8 @@ eveningstar-storage       devices, roles, write state, Reader/Writer/WriteSessio
         ↑                 layout, known bootloaders, verification chain, split
 eveningstar-boot          content modules: bootloader, partition table, otadata, current and alternate app
         ↑
-eveningstar-ota           updates, activation, confirmation, rollback, T7
-        ↑
+eveningstar-ota  ──→  eveningstar-system   reboot service, reboot holds, watchdog supervisor
+        ↑                   ↑
 eveningstar               the firmware: the device implementations, the services, the API
 ```
 
@@ -88,14 +106,26 @@ eveningstar               the firmware: the device implementations, the services
   bootloader, the power-cut harness) behind a feature, for the crates above.
 - **`eveningstar-boot`** turns readers into views. It holds no writer.
 - **`eveningstar-ota`** holds the boot writers and reads through them; it asks
-  `eveningstar-boot` for views of the slots and the otadata.
+  `eveningstar-boot` for views of the slots and the otadata, and requests
+  reboots through `eveningstar-system`.
+- **`eveningstar-system`** takes the reboot service and its holds
+  (`services/reboot.rs`) and the watchdog supervisor (`watchdog.rs`) out of
+  the firmware. Today their reasons, holders and supervised tasks are closed
+  enums naming firmware parts (`Reason::LinkDown`, `Reason::Api`,
+  `Holder::…`, the `wd::` markers). In the crate they are declared by the
+  firmware: the reboot service is generic over a reason type, each system
+  crate defines its own reasons (`eveningstar_ota::RebootReason`), and the
+  firmware's reason type converts from them with `From`. The crate depends on
+  esp-hal for the reset and the hardware watchdogs, so it builds for the chip
+  only; its chip-independent parts can be tested on the host later.
 - The configuration store, diag store and factory data module own their
   regions later. Each may be its own crate or a firmware module.
 - Crate names keep the `eveningstar-` prefix for now; system crates never
   depend on application crates (`morningstar`, the charge-controller service),
   so they can be renamed and moved out later.
-- Every crate stays `no_std`, allocation-free and buildable on the host, and
-  is added to `host_crates` in `nix/checks.nix`.
+- Every crate stays `no_std` and allocation-free. All but
+  `eveningstar-system` build on the host and are added to `host_crates` in
+  `nix/checks.nix`.
 
 ## Devices
 
@@ -157,7 +187,8 @@ pub trait LayoutSize: Role {
 pub trait Placed: LayoutSize {
     const OFFSET: u32;
 }
-/// A role whose verified contents may be published.
+/// A role located from a known point, whose verified contents may be
+/// published.
 pub trait Publishable: Role {}
 ```
 
@@ -180,14 +211,14 @@ The internal flash's roles:
 the current and alternate roles are `LayoutSize` only; `Chip` is neither, as
 the flash's size is read at runtime.
 
-The roles of the unverified tier have their spans set at runtime, from what
-was found, and are neither:
+The unverified tier's roles have spans set at runtime, each located from a
+known point, and are neither `Placed` nor `LayoutSize`:
 
-| Role              | Span                                                            | Class       |
-|-------------------|-----------------------------------------------------------------|-------------|
-| `FoundTable`      | the sector of the one table found by the search                 | publishable |
-| `FoundApp`        | an app entry of the found table, or the image at the booted offset when no table was found | publishable |
-| `FoundOtadata`    | the found table's `data`/`ota` entry                            | publishable |
+| Role           | Located by                                                                                  | Class       |
+|----------------|---------------------------------------------------------------------------------------------|-------------|
+| `FoundTable`   | the search, when it finds exactly one table (the sector of that table)                      | publishable |
+| `FoundApp`     | an app entry of the located table; or MMU entry 0 (the booted offset) when no table is located, spanning the image its header describes | publishable |
+| `FoundOtadata` | the located table's `data`/`ota` entry                                                      | publishable |
 
 - `reserved` has no role. Space without a role has no handle.
 - Each role has at most one reader and one writer per boot. Neither is
@@ -253,8 +284,9 @@ pub enum WriteState {
   a session, and a session that writes anything ends with a new epoch. A read
   whose two loads both see `Stable(e)` either ran entirely outside every
   session or overlapped only sessions that wrote nothing, so its bytes are
-  those of epoch `e`. Epochs never return to an earlier value. Epochs grow by one per session in a 31-bit counter, which no
-  boot exhausts, and the entity tag adds the random value drawn at boot.
+  those of epoch `e`. Epochs never return to an earlier value: they grow by
+  one per session in a 31-bit counter, which no boot exhausts, and the entity
+  tag adds the random value drawn at boot.
 - Compared with the borrow checker's shared-xor-mutable rule: memory safety
   doesn't depend on this, as the flash isn't Rust memory and every device call
   is serialized. What the borrow checker would guarantee at compile time
@@ -280,8 +312,7 @@ Bytes leave the device only through a `Published<'_, R>` view.
 
 ```rust
 impl<'r, R: Publishable> Snapshot<'r, R> {
-    /// The bytes `range` of the snapshot, for export. Refused when the range
-    /// overlaps a span the compiled layout gives to sensitive data.
+    /// The bytes `range` of the snapshot, for export.
     pub fn publish(self, range: Range<u32>) -> Result<Published<'r, R>, PublishError>;
 }
 
@@ -293,29 +324,57 @@ pub trait PublicRead {
 }
 ```
 
-Three rules decide what is published; the first two are the storage crate's,
-the third the content module's:
+A byte is published only when all three allow rules hold. The first two are
+enforced by the storage crate, the third by the content module.
 
 1. **Type.** Only `Publishable` roles have `publish`. A configuration, diag,
    factory or `Chip` snapshot has no such method, whatever the tier.
-2. **Deny list.** `publish` refuses a range overlapping a span the compiled
-   layout gives to sensitive data (`factory`, both configurations, `diag`),
-   with absolute offsets, in every tier. The list is compiled in, so nothing
-   read from the flash can move it. This is what stops a corrupt or forged
-   table from turning a configuration's span into a "found app" and
-   publishing it.
-3. **Proof.** A content module publishes only bytes its parser verified, and
-   in the unverified tier only bytes a cryptographic check covers:
-   - an app or bootloader image: its checksum and the SHA-256 it stores,
-     which covers every byte before it;
-   - a partition table: its MD5, which covers the entries before it. The MD5
-     entry's 14 bytes between its magic and its digest, and the 28 bytes of
-     the end entry after its magic, type and subtype, are covered by nothing;
-     the table publishes them only when every one of them is `0xFF`, else
-     its view ends at the MD5 digest;
-   - otadata entries, whose CRC covers only the sequence number: published as
-     raw bytes only for the `Otadata` role, at the compiled span; a
-     `FoundOtadata` is reported as parsed fields only.
+2. **Location.** Every `Publishable` role is located from a known point: the
+   bootloader at 0x0, where the ROM loads it; the table at the offset a known
+   bootloader reads, or the single table the search finds; an entry of the
+   located table; or the image at the booted offset, from MMU entry 0. No
+   region is located by scanning other flash for something that looks like a
+   format, so nothing elsewhere can be published.
+3. **Verification.** The content module publishes only bytes its parser
+   verified with a check that covers each of them:
+   - **An image** (app or bootloader): its segments, its checksum, and the
+     SHA-256 appended to it, which covers every byte before it. The view is
+     the image, the digest included. An image without an appended SHA-256,
+     which the ROM accepts on its checksum alone, isn't published: an XOR
+     checksum proves nothing about what the bytes are. The space after an
+     image in its region is never published.
+   - **The partition table**, when it is the located table. Its entries are
+     covered by their equality with the compiled layout in the layout and
+     boot tiers, and by the table's MD5 entry in the unverified tier. The
+     bytes no check covers are published only when every one of them is
+     `0xFF`: the MD5 entry's 14 bytes between its magic and its digest, and
+     the end entry's 28 bytes after its magic, type and subtype. Otherwise the
+     view ends before them. Entries after the MD5 entry, which the bootloader
+     accepts but the MD5 doesn't cover, end the view at the MD5 entry in the
+     unverified tier. With no MD5 entry in the unverified tier, nothing is
+     published. When the search finds several tables, none is the located
+     table: their offsets are reported, and neither their entries nor their
+     bytes.
+   - **The otadata**: parsed fields only, in every tier. For each entry: its
+     validity (blank, valid, corrupt, invalid, aborted), its sequence number
+     and the slot it selects when its CRC matches, and its state when the
+     state is a value ESP-IDF defines. The CRC covers only the sequence
+     number, so the 20-byte label and an unknown state value are never
+     published, nor any raw byte.
+   - **Configuration, diag and factory data** are never published raw. Their
+     formats (not built yet) give every record a strong integrity check, so
+     the parser can tell a record of its own from leftover data. A store may
+     publish sanitized fields of a record that verifies, and nothing of one
+     that doesn't. A stored digest of secret data is never published, as it
+     lets weak secrets be guessed offline; where a digest has to be visible
+     to anything outside the store, it is a MAC keyed by a device secret.
+
+As a second check, `publish` also refuses a range that overlaps a span the
+compiled layout gives to sensitive data (`factory`, both configurations,
+`diag`), in every tier. It catches a parser that verifies something it
+shouldn't at the spans this firmware writes secrets to. It doesn't cover
+secrets left elsewhere by another layout, which is why the allow rules above
+are the ones relied on.
 
 Holding the reader is the permission to publish, so a content module never
 hands its reader or its snapshots to anything else; it hands out views and
@@ -326,12 +385,12 @@ parsed models.
 Each module owns one or more readers and offers parsed models and published
 views. A model's constructor is its parser.
 
-| Module           | Owns                                      | Parsed model                                                                                     | Published view                                       |
-|------------------|-------------------------------------------|--------------------------------------------------------------------------------------------------|------------------------------------------------------|
-| `Bootloader`     | `Reader<Bootloader>`                      | header, descriptor, length, stored digest, file SHA-256, known entry                              | the image                                            |
-| `PartitionTable` | `Reader<PartitionTable>`, `Option<Reader<FoundTable>>` | entries, MD5 stored and computed, end, how it was located                           | entries, MD5 entry and end entry                     |
-| `Otadata`        | `Reader<Otadata>` or `Reader<FoundOtadata>` | both entries, validity, the active entry, boot state                                           | both 32-byte entries (`Otadata` only)                |
-| `App`            | `Reader<CurrentApp>`, `Reader<AlternateApp>`, or `Reader<FoundApp>`s | header, descriptor, length, stored digest, file SHA-256, verification result | the image, once verified                             |
+| Module           | Owns                                      | Parsed model                                                                                     | Published view                                         |
+|------------------|-------------------------------------------|--------------------------------------------------------------------------------------------------|--------------------------------------------------------|
+| `Bootloader`     | `Reader<Bootloader>`                      | header, descriptor, length, stored digest, file SHA-256, known entry                              | the image, when its SHA-256 verifies, known or not     |
+| `PartitionTable` | `Reader<PartitionTable>`, `Option<Reader<FoundTable>>` | entries, MD5 stored and computed, end, how it was located, other candidates' offsets | the located table's verified bytes                     |
+| `Otadata`        | `Reader<Otadata>` or `Reader<FoundOtadata>` | both entries, validity, the active entry, boot state                                           | none; parsed fields only                               |
+| `App`            | `Reader<CurrentApp>`, `Reader<AlternateApp>`, or `Reader<FoundApp>`s | header, descriptor, length, stored digest, file SHA-256, verification result | the image, once verified                               |
 
 - The app checks run in `App`, as the storage service's check task does now:
   background, paced, with their own watchdog handle fed per chunk, and run
@@ -357,7 +416,7 @@ views. A model's constructor is its parser.
   a read. One generic function serves every `PublicRead`.
 - A digest is published under the same rules as the bytes: no digest of a
   range that couldn't be published. Sensitive regions are hashed only inside
-  the firmware (a store's own checksums).
+  the firmware (a store's own checks).
 - The file SHA-256 of an app or bootloader image (the one `sha256sum`
   prints) is kept from the verification pass, as now; it costs nothing.
 
@@ -368,26 +427,26 @@ unverified tier, in which the firmware runs on its default configuration
 without saving it.
 
 1. **Bootloader.** The ROM loads it from 0x0. Its image is verified (header,
-   segments, checksum, stored SHA-256) up to the compiled table offset, and
-   its stored digest is looked up in `known.rs`.
+   segments, checksum, appended SHA-256) up to the compiled table offset. The
+   image's length comes from its header and segment headers. Its stored digest
+   is looked up in `known.rs`.
 2. **Table offset.** A known bootloader's entry gives the offset it reads the
    table from: `TableSource::KnownBootloader`. Otherwise the board is
    searched (`table::find`, as now), and the table counts only as the single
    candidate: `TableSource::Searched`.
-3. **Table.** The table at that offset is entries, then an MD5 entry whose
-   digest matches the entries, then the end entry. This is stricter than the
-   bootloader (`esp_partition_table_verify` in ESP-IDF 5.5), which accepts a
-   table without an MD5 entry, accepts entries after the MD5 entry that the
-   MD5 doesn't cover, and checks only the end entry's magic, type and
-   subtype. Every table the firmware's layout produces passes; anything else
-   fails closed. The current crate ignores what follows the MD5 entry.
+3. **Table.** The table at that offset is valid as the bootloader judges it
+   (`esp_partition_table_verify` in ESP-IDF 5.5), no more strictly: entries
+   whose spans lie inside the flash, at most one MD5 entry, whose digest
+   matches the entries before it, and an end entry (magic, type and subtype
+   `0xFF`) that isn't the first. The search judges each candidate the same
+   way.
 4. **Layout.** The entries equal the compiled layout's, field by field.
 5. **Flash and booted slot.** The flash is at least the layout's size, and
    the booted offset (MMU entry 0, read by the firmware) is a slot's offset.
 
 | Tier         | Reached when                                                                                    | Hands out                                                                                   |
 |--------------|-------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------|
-| `Unverified` | step 2 finds no single table, or any of steps 3–5 fails                                          | readers: `Bootloader`, `PartitionTable`, `Chip`, and the `Found*` roles of what was found     |
+| `Unverified` | step 2 locates no single table, or any of steps 3–5 fails                                        | readers: `Bootloader`, `PartitionTable`, `Chip`, and the `Found*` roles of what was located   |
 | `Layout`     | steps 2–5 pass, with the table found by search or a known bootloader without rollback            | + readers of every layout role; `Store`s for the configurations and diag                    |
 | `Boot`       | steps 2–5 pass with `TableSource::KnownBootloader`, and the known entry supports rollback        | + `BootWriters { alternate_app: Writer<AlternateApp>, otadata: Writer<Otadata> }`            |
 
@@ -396,16 +455,14 @@ A bootloader that doesn't verify in step 1 is unknown, so step 2 searches.
 - `known.rs` entries gain two facts: the table offset the bootloader reads
   and whether it supports rollback. The list still only grows once boards
   have shipped.
-- The MD5 adds no new failure from bit rot in the bytes it covers: the
-  bootloader already refuses a table whose MD5 entry doesn't match, whatever
-  the build's configuration (`flash_partitions.c` checks it whenever the
-  entry is present), and the table is never rewritten. The stricter checks
-  of step 3 add failures only for bytes the bootloader ignores (a flipped bit
-  in the end entry's last 28 bytes) and for a table without an MD5 entry;
-  both drop to the unverified tier. The Nix table always has an MD5 entry
-  (`PARTITION_TABLE_MD5` defaults to on).
-- The `Found*` readers are cut so that none overlaps a compiled sensitive
-  span: a found entry that does gets no reader, and is reported only.
+- Matching the bootloader's judgement adds no failure from bit rot: a flipped
+  bit the bootloader would reject stops the board before the firmware runs,
+  and one it ignores is ignored here too. The table is never rewritten. The
+  Nix table always has an MD5 entry (`PARTITION_TABLE_MD5` defaults to on),
+  and `flash_partitions.c` checks it whenever it is present, whatever the
+  build's configuration.
+- The `Found*` readers aren't handed out over a compiled sensitive span: a
+  found entry that overlaps one gets no reader, and is reported only.
 - No writer in the unverified tier. The layout the bootloader boots isn't
   known there, so the protected spans aren't either, and the firmware has
   nothing to save. Recovery is a reflash over USB (`flash-all`).
@@ -419,10 +476,10 @@ A bootloader that doesn't verify in step 1 is unknown, so step 2 searches.
   (for example confirmed with the user button) is a later decision.
 
 The `Report` records each step: the bootloader's identity and known entry,
-the table source and offset, the found tables, the table's parse result and
-MD5, the label-matched comparison, the booted offset and slot, the tier, and
-the first step that failed. It holds nothing about OTA readiness, which
-`eveningstar-ota` reports.
+the table source and offset, the other candidates' offsets, the table's
+parse result and MD5, the label-matched comparison, the booted offset and
+slot, the tier, and the first step that failed. It holds nothing about OTA
+readiness, which `eveningstar-ota` reports.
 
 ## OTA (`eveningstar-ota`)
 
@@ -442,12 +499,18 @@ where the checks live.
   the slot at the new stable epoch. `VerifiedImage` holds that epoch;
   `activate` refuses it once the slot's epoch has moved, and hashes the slot
   again, as now.
-- **T7** is the check, from the first storage spec, that an image booted
-  `PendingVerify` can be confirmed. Where it can't (no boot writers), the
-  firmware requests a graceful reboot so the bootloader rolls the image back.
-  It moves to `eveningstar-ota`, which reads the boot state from the
-  `Otadata` module in every tier that has one and tells the firmware to
-  reboot.
+- **Rolling back an image that can't be confirmed.** The bootloader starts a
+  newly activated image once in the state `PendingVerify` and rolls it back at
+  the next boot unless the firmware confirms it. Confirming writes the
+  otadata, which needs the boot writers. When the firmware boots such an image
+  without them (the layout tier), it requests a graceful reboot, so the
+  bootloader rolls the image back instead of leaving it running unconfirmed.
+  This moves from the storage glue to `eveningstar-ota`, which reads the boot
+  state from the `Otadata` module in every tier that has one and requests the
+  reboot through `eveningstar-system` with its own reason, which the
+  firmware's reason type converts from.
+- The OTA service's confirmation window (10 minutes, then a graceful reboot)
+  is built on the same reboot handle, as `specs/storage.md` describes.
 
 ## Protected paths (later)
 
@@ -475,8 +538,10 @@ crates land. In outline:
   from the boot's random value, the region and the epoch. `SlotOf` and
   whole-region downloads go.
 - A transport digest endpoint hashes any range of a published view.
-- `/storage/internal/table` gives the expected and found entries and the
-  table source; the positional `layout` field per region goes.
+- `/storage/internal/table` gives the expected and found entries, the table
+  source and the other candidates' offsets; the positional `layout` field per
+  region goes.
+- The otadata is served as parsed fields, not bytes.
 
 ## Order of work
 
@@ -485,18 +550,25 @@ Each step is a PR on a stack, each passing `nix run .#checks`:
 1. **Formats crate:** move the pure modules out of `eveningstar-storage`,
    with their tests and fixtures. No behaviour change.
 2. **Storage core:** roles, `Reader`, `Writer`, `WriteSession`, `Snapshot`,
-   `WriteState`, publication and the deny list, the `NorDevice` trait, and
+   `WriteState`, publication and its second check, the `NorDevice` trait, and
    `test-support`. Tests for each rule here, including the `compile_fail`
    doctests for the type rules.
 3. **Chain and split:** the five steps, the three tiers, the `Found*` roles,
-   `known.rs` with table offset and rollback, the label-matched comparison.
+   `known.rs` with table offset and rollback, the table judged as the
+   bootloader judges it, the label-matched comparison.
 4. **`eveningstar-boot`:** the four content modules and the transport digest.
-5. **`eveningstar-ota`:** `Ota` on `BootWriters`, with the OTA and otadata
-   power-cut tests moved over; T7.
-6. **Firmware:** the storage glue without write counting, the check task in
-   `App`, the reboot for T7.
-7. **Docs:** `docs/architecture.md` ("Storage") rewritten, `CLAUDE.md`
-   ("Storage") updated, `specs/storage.md` folded into this file or removed.
+5. **`eveningstar-system`:** the reboot service, its holds and the watchdog
+   supervisor moved out of the firmware, generic over the firmware's reasons,
+   holders and tasks.
+6. **`eveningstar-ota`:** `Ota` on `BootWriters`, with the OTA and otadata
+   power-cut tests moved over; the reboot that rolls back an image that can't
+   be confirmed.
+7. **Firmware:** the storage glue without write counting, the check task in
+   `App`, the system crate wired in.
+8. **Docs:** `docs/architecture.md` ("Storage", and the reboot and watchdog
+   sections) rewritten, `CLAUDE.md` ("Storage") updated, `specs/storage.md`
+   folded into this file or removed. The check labels (`(T1)`…`(T7)`,
+   `(O3)`…`(O8)`) leave the code's comments in the steps that touch them.
 
 ## Tests
 
@@ -504,14 +576,18 @@ Each step is a PR on a stack, each passing `nix run .#checks`:
   snapshot taken during a session is `Busy`; a read that straddles a session
   is `Stale`; a dropped session, including one dropped mid-erase by
   cancelling its future, leaves a new epoch; a session that wrote nothing
-  leaves the old epoch; `publish` refuses each sensitive span.
+  leaves the old epoch; the second check refuses each sensitive span.
 - `compile_fail` doctests: a sensitive snapshot has no `publish`; `Writer`
   has no `program` outside a session; a `Writer<AlternateApp>` isn't a
   `Writer<CurrentApp>`; no handle is `Clone`.
-- The chain's tests reuse today's fixtures and board captures, plus: a table
-  without an MD5 entry, a table with a bad MD5, a table followed by garbage
-  instead of the end entry, a table whose uncovered bytes aren't `0xFF`, and
-  a found table whose app entry overlaps `config_0`.
+- Publication: an app slot publishes its image and not the bytes after it; an
+  image without an appended SHA-256 publishes nothing; a found app entry over
+  leftover data whose SHA-256 doesn't verify publishes nothing; a table's
+  uncovered bytes that aren't `0xFF` end its view; several candidate tables
+  publish nothing; the otadata publishes no label and no unknown state value.
+- The chain: today's fixtures and board captures, plus a table without an MD5
+  entry, a table with a bad MD5, entries after the MD5 entry, and an end entry
+  whose last 28 bytes aren't `0xFF`, each judged as the bootloader judges it.
 - A clone export snapshot fails when any region it covers enters a write
   session.
 - The OTA power-cut tests keep running against the simulated bootloader.
@@ -520,6 +596,6 @@ Each step is a PR on a stack, each passing `nix run .#checks`:
 
 1. Whether `Factory` gets a reader before anything reads it, or no handle at
    all until the factory module exists.
-2. Whether `FoundOtadata` is worth handing out, or the unverified tier
-   reports the otadata as raw entries only through the clone export.
-3. Whether the formats crate is one crate or three (image, table, otadata).
+2. Whether the formats crate is one crate or three (image, table, otadata).
+3. Whether `eveningstar-system` takes the reasons, holders and supervised
+   tasks as type parameters, or as values registered at start-up.
