@@ -273,6 +273,23 @@ fn a_verification_hashes_with_the_hasher_and_pauses_with_the_pace_given() {
 }
 
 #[test]
+fn a_bootloader_hashes_with_the_hasher_and_pauses_with_the_pace_given() {
+    let mut pace = Counting(0);
+    let verify = block_on(verify_bootloader_with(
+        BOOTLOADER,
+        Bytewise::default(),
+        &mut pace,
+    ));
+    let verified = verify.output.unwrap();
+    assert_eq!(Ok(verified), run(verify_bootloader(BOOTLOADER)));
+    assert_eq!(
+        pace.0,
+        (verified.size() - DIGEST_LEN) as usize / YIELD_INTERVAL as usize
+    );
+    assert_eq!((verify.polls, verify.wakes), (1, 0));
+}
+
+#[test]
 fn every_hasher_finds_the_same() {
     same_with_another_hasher(APP);
     same_with_another_hasher(&in_partition(APP, APP.len() + 4096));
