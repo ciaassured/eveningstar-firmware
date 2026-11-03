@@ -73,6 +73,7 @@ mod wd {
         // Tolerates two missed checks.
         link: LinkMonitor = Duration::from_ticks(crate::ethernet::LINK_CHECK_INTERVAL.as_ticks() * 3),
         reboot: Reboot = crate::services::reboot::WATCHDOG_TIMEOUT,
+        app_check: AppCheck = crate::storage::WATCHDOG_TIMEOUT,
     }
 }
 
@@ -123,12 +124,15 @@ async fn main(spawner: Spawner) {
         wd_handles.blinky
     )));
 
-    // Nothing takes a storage handle yet, so the handles are dropped when
-    // `main` returns. They can't be made again: the flash is split once per
-    // boot.
-    let _storage = storage::start(board.internal_flash, board.flash_cache).await;
-    // Nothing hashes yet; the handle is `Copy`, so dropping it is harmless.
-    let _sha = sha::start(board.sha);
+    let sha = sha::start(board.sha);
+    storage::start(
+        spawner,
+        board.internal_flash,
+        board.flash_cache,
+        sha,
+        wd_handles.app_check,
+    )
+    .await;
 
     let seed = random_seed(board.rng.reborrow(), board.adc1.reborrow());
     match ethernet::start(
