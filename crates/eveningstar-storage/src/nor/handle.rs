@@ -13,7 +13,7 @@ use crate::state::{Spans, WriteState};
 use crate::{AccessError, ReadError, Slot, Source};
 
 /// The absolute address of the `len` bytes at `offset` in `span`.
-fn address(span: Span, offset: u32, len: usize) -> Result<u32, ReadError> {
+pub(super) fn address(span: Span, offset: u32, len: usize) -> Result<u32, ReadError> {
     let len = u32::try_from(len).map_err(|_| ReadError::OutOfRange)?;
     span.inner(Span::new(offset, len))
         .map(|inner| inner.offset)
@@ -68,8 +68,8 @@ pub(super) async fn read_chunked(
     result
 }
 
-/// What every handle holds: the device, its state table, and the region's
-/// absolute span and the physical spans it covers.
+/// What every handle holds: the device, its state table, an absolute span,
+/// and the physical spans of the region it belongs to.
 #[derive(Clone, Copy)]
 pub(super) struct Extent<'f> {
     pub(super) device: &'f dyn NorDevice,
