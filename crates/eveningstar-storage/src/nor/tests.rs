@@ -205,6 +205,22 @@ fn a_session_that_issued_a_call_ends_at_a_new_epoch() {
 }
 
 #[test]
+fn a_finished_session_returns_the_state_it_leaves() {
+    let flash = flash();
+    let (reader, mut writer) = alternate(&flash);
+    let before = reader.write_state();
+    // Nothing issued: the epoch it started from.
+    assert_eq!(writer.begin().finish(), before);
+    let mut session = writer.begin();
+    run(session.program(0, &[0; 4])).unwrap();
+    let after = session.finish();
+    assert!(after.is_stable());
+    assert_ne!(after, before);
+    assert_eq!(reader.write_state(), after);
+    assert_eq!(writer.write_state(), after);
+}
+
+#[test]
 fn a_session_dropped_mid_erase_ends_at_a_new_epoch() {
     let flash = flash();
     let (reader, mut writer) = alternate(&flash);
