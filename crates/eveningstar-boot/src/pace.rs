@@ -5,8 +5,8 @@ use eveningstar_esp_formats::pace::Pace;
 
 /// A hook a long job calls once per step, such as once per KiB hashed.
 ///
-/// Every `FnMut()` closure is one, so a caller passes `&mut || handle.feed()`
-/// or `&mut || {}`.
+/// Every `FnMut()` closure is one. A job calls it only while it works, not
+/// while it waits.
 pub trait Progress {
     /// Runs after a step, before the job pauses.
     fn advance(&mut self);
