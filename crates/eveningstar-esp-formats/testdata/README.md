@@ -1,7 +1,9 @@
 # Test fixtures
 
-Real binaries the tests read with `include_bytes!`: this crate's through
-`src/test_support.rs`, which the storage crate's tests use too.
+Real binaries the tests read with `include_bytes!`, through
+`src/test_support.rs`: this crate's, and those of `eveningstar-storage`,
+`eveningstar-boot` and `eveningstar-ota`, which take it through the
+`test-support` feature.
 
 | File | Bytes | What it is |
 |---|---|---|
@@ -18,8 +20,9 @@ Real binaries the tests read with `include_bytes!`: this crate's through
 the `build` check group fails when they don't, and the `storage-testdata`
 dev-shell command rewrites them. The tests also hold the bootloader's
 SHA-256 digests (the one the image stores, and the `sha256sum` of the file),
-which change with it, and a new bootloader needs its entry
-in `crates/eveningstar-storage/src/known.rs`, which the `build` group prints.
+which change with it, and a new bootloader needs its entry, with the table
+offset it reads and whether it supports rollback, in
+`crates/eveningstar-storage/src/known.rs`, which the `build` group prints.
 
 ## Snapshots
 
