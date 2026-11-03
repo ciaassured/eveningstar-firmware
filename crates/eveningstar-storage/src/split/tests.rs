@@ -235,7 +235,9 @@ fn a_corrupt_bootloader_gives_the_data_tier() {
     let flash = patched(&nix_board(), &[(0, &erased)]);
     let storage = split_on(&flash, OTA_0.offset);
     assert_eq!(storage.report.bootloader, Err(ImageError::Magic(0xFF)));
-    assert_eq!(storage.report.limit, Some(Limit::BootloaderInvalid));
+    // Its flash size code is unknown, which is 2 MiB, so the search finds no
+    // table the bootloader would accept.
+    assert_eq!(storage.report.limit, Some(Limit::OtherTable));
 }
 
 #[test]
