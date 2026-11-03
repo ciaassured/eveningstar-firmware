@@ -55,7 +55,6 @@ fn reason(reason: Reason) -> v1::RebootReason {
     match reason {
         Reason::LinkDown => v1::RebootReason::LinkDown,
         Reason::Api => v1::RebootReason::Api,
-        Reason::CannotConfirm => v1::RebootReason::CannotConfirm,
     }
 }
 

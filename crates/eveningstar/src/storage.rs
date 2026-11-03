@@ -8,9 +8,12 @@
 //! the firmware runs on its default configuration without saving it.
 //!
 //! An image the bootloader started as `PendingVerify` can only be confirmed in
-//! the boot tier. In the layout tier, [`start`] requests a graceful reboot, so
-//! the bootloader rolls the image back to the previous one. Nothing reboots in
-//! the unverified tier, where the otadata isn't read.
+//! the boot tier. In the layout tier, [`start`] logs it and requests no
+//! reboot: that tier's bootloader isn't known to roll back, and one that
+//! doesn't would start the same image after every reboot, so a reboot there
+//! could repeat for good on a board with no reset button. A rollback
+//! bootloader rolls the image back at the next boot, whatever causes it.
+//! Nothing is read or requested in the unverified tier.
 //!
 //! [`InternalFlash`] is the one `FlashStorage`: every read, erase and program
 //! of the internal flash goes through it, one at a time. Its state table
@@ -38,8 +41,6 @@ use eveningstar_storage::{
 };
 use static_cell::{ConstStaticCell, StaticCell};
 
-use crate::services::reboot::{GracefulReboot, Reason};
-
 /// The booted offset `split` is given when MMU entry 0 maps no page: past the
 /// end of any flash, so no partition starts there and the tier is
 /// unverified.
@@ -52,9 +53,8 @@ const MMU_MAX_PAGE_SIZE: u32 = 0x1_0000;
 /// Splits the internal flash into handles, logs the report, and returns the
 /// handles.
 ///
-/// When the running image is `PendingVerify` in the layout tier, it requests
-/// a graceful reboot through `reboot`, so the bootloader rolls the image
-/// back.
+/// When the running image is `PendingVerify` in the layout tier, where it
+/// can't be confirmed, it logs a warning.
 ///
 /// # Panics
 ///
@@ -64,11 +64,7 @@ const MMU_MAX_PAGE_SIZE: u32 = 0x1_0000;
     clippy::large_stack_frames,
     reason = "runs once at boot; the frame holds split's future and the handles on their way to the caller"
 )]
-pub(crate) async fn start(
-    flash: FLASH<'static>,
-    cache: SPI0<'static>,
-    reboot: GracefulReboot,
-) -> Storage<'static> {
+pub(crate) async fn start(flash: FLASH<'static>, cache: SPI0<'static>) -> Storage<'static> {
     static INTERNAL_FLASH: StaticCell<InternalFlash> = StaticCell::new();
     static STATE: ConstStaticCell<StateTable> = ConstStaticCell::new(StateTable::new());
 
@@ -88,14 +84,14 @@ pub(crate) async fn start(
     );
     log(&storage);
     if let Handles::Layout(handles) = &storage.handles {
-        reboot_unconfirmed(&handles.otadata, report, reboot);
+        warn_unconfirmed(&handles.otadata, report);
     }
     storage
 }
 
-/// Requests a reboot when the running image is `PendingVerify` in the layout
-/// tier, where it can't be confirmed: the bootloader then rolls it back.
-fn reboot_unconfirmed(otadata: &Reader<'_, Otadata>, report: &Report, reboot: GracefulReboot) {
+/// Warns when the running image is `PendingVerify` in the layout tier, where
+/// it can't be confirmed.
+fn warn_unconfirmed(otadata: &Reader<'_, Otadata>, report: &Report) {
     let Some(slot) = report.slot else {
         return;
     };
@@ -105,9 +101,8 @@ fn reboot_unconfirmed(otadata: &Reader<'_, Otadata>, report: &Report, reboot: Gr
     if otadata.boot_state(slot).state == Some(State::PendingVerify) {
         warn!(
             "The running image is unconfirmed and can't be confirmed in the layout tier; \
-             requesting a reboot, so the bootloader rolls it back"
+             a bootloader that supports rollback starts the previous image at the next boot"
         );
-        reboot.graceful(Reason::CannotConfirm);
     }
 }
 
