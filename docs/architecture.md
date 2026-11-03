@@ -8,12 +8,15 @@ documentation (`//!` comments), which this document links to by name.
 
 The workspace's crates live flat under `crates/`.
 
-| Crate                 | Holds                                                     | Builds for        |
-|-----------------------|-----------------------------------------------------------|-------------------|
-| `eveningstar-board`   | Board support: the chip's pins and flash, named by role   | ESP32-C6          |
-| `eveningstar-api`     | The API contract: endpoints, request and response types   | ESP32-C6 and host |
-| `eveningstar-storage` | The internal flash: layout, formats, handles and OTA      | ESP32-C6 and host |
-| `eveningstar`         | The firmware: services, transports, drivers and watchdogs | ESP32-C6          |
+| Crate                     | Holds                                                                 | Builds for        |
+|---------------------------|-----------------------------------------------------------------------|-------------------|
+| `eveningstar-board`       | Board support: the chip's pins and flash, named by role               | ESP32-C6          |
+| `eveningstar-api`         | The API contract: endpoints, request and response types               | ESP32-C6 and host |
+| `eveningstar-esp-formats` | The ESP-IDF formats: images, the partition table, the otadata         | ESP32-C6 and host |
+| `eveningstar-storage`     | The flash devices, their regions and handles, the verification chain  | ESP32-C6 and host |
+| `eveningstar-boot`        | The content modules of the boot regions: parsed models and views      | ESP32-C6 and host |
+| `eveningstar-ota`         | The OTA mechanism: updates, activation, confirmation and rollback     | ESP32-C6 and host |
+| `eveningstar`             | The firmware: services, transports, drivers and watchdogs             | ESP32-C6          |
 
 ### `eveningstar-board`
 
@@ -40,14 +43,20 @@ The crate is `no_std` and allocation-free, so the firmware can use it. The
 need `alloc` and are only built on the host. The crate is listed in
 `host_crates` in `nix/checks.nix`, so its tests run on the host.
 
-### `eveningstar-storage`
+### The storage crates
 
-Everything about the internal flash that doesn't need the chip: the partition
-layout, the formats on the flash, the checks of what the board holds, the typed
-handles to the partitions and the OTA mechanism. It has no Espressif
-dependencies and reaches the flash through its `Flash` trait, so its tests run
-on the host against a RAM flash that can lose power at any write. It is listed
-in `host_crates` in `nix/checks.nix`. See [Storage](#storage).
+`eveningstar-esp-formats`, `eveningstar-storage`, `eveningstar-boot` and
+`eveningstar-ota` hold everything about the internal flash that doesn't need
+the chip: the formats on the flash, the regions and their handles, the
+verification chain, the content modules and the OTA mechanism. They have no
+Espressif dependencies and reach the flash through the storage crate's
+`NorDevice` trait, so their tests run on the host against a RAM flash that can
+lose power at any erase or program. They are listed in `host_crates` in
+`nix/checks.nix`. See [Storage](#storage).
+
+They are system crates, meant to be reusable by other firmware: none depends
+on the application, the `eveningstar` crate or the charge-controller code, so
+they can be renamed and moved out of the workspace.
 
 ### `eveningstar`
 
@@ -398,12 +407,48 @@ binary, on the host and unsandboxed. That risk is accepted.
 ## Storage
 
 The ESP32-C6 module's internal flash (8 MiB) holds the bootloader, the
-partition table, two copies of the app, and the data that outlives a boot. The
+partition table, two app slots, and the data that outlives a boot. The
 external NAND is separate and isn't covered here. The storage layer exists so
-that code which needs a partition can't also write the boot chain, the running
-app or space the board gives to something else, and can't send secrets off the
-device by passing the wrong handle. The crate's documentation (`lib.rs`,
-`partitions.rs`, `otadata.rs`) has the details.
+that code which needs a region can't also write the boot chain, the running
+app or space the board gives to something else, and so that no byte leaves
+the device unless a check covers it. The crate documentation has the details:
+`chain.rs`, `nor.rs`, `roles.rs` and `state.rs` in `eveningstar-storage`, the
+modules of `eveningstar-boot`, and `eveningstar-ota`.
+
+### The crates
+
+```
+eveningstar-esp-formats   images, partition table, otadata: parsers and write planners
+        ↑
+eveningstar-storage       devices, roles, write state, handles, snapshots, publication,
+        ↑                 layout, known bootloaders, verification chain, split
+eveningstar-boot          content modules: bootloader, partition table, otadata, app slots
+        ↑
+eveningstar-ota           updates, activation, confirmation, rollback
+        ↑
+eveningstar               the internal flash's device, the app check task, the services
+```
+
+Each crate uses only the crates above it.
+
+- `eveningstar-esp-formats` reads the formats from any `Source` and touches
+  no flash. Its parsers read with buffers of at most 256 bytes on the stack
+  and return an error rather than panic on any input. The otadata planners
+  compute the erases and programs ESP-IDF's rules call for, and the caller
+  carries them out. `ReadError::Stale` tells a read of a region written under
+  it from a failed device read.
+- `eveningstar-storage` owns the flash devices and splits them into region
+  handles. It enforces bounds, protected spans, capabilities and write state,
+  and reads no format beyond what the verification chain needs. Its
+  `test-support` feature gives the crates above it a NOR flash in RAM that
+  takes power cuts and runs a hook on any call, and a simulated ESP-IDF
+  bootloader run on it.
+- `eveningstar-boot` turns readers into parsed models and published views. It
+  holds no writer.
+- `eveningstar-ota` holds the writers of the boot selection and reads the
+  verification of the slots and the boot state from the content modules.
+
+Nothing in these crates reboots.
 
 ### The layout
 
@@ -411,16 +456,19 @@ device by passing the wrong handle. The crate's documentation (`lib.rs`,
 The layout can't change over OTA, as the partition table and bootloader aren't
 updated from the firmware, so nothing is left for `gen_esp32part` to place. The
 partitions are `factory` (4 KiB, read-only, reserved for durable factory data),
-`otadata`, the app slots `ota_0` and `ota_1` (3 MiB each), a `config` partition
-per slot, `diag` and `reserved`. A slot is sized for about twice the firmware
-expected once WiFi and TLS are in, as slots can't grow later.
+`otadata`, the app slots `ota_0` and `ota_1` (3 MiB each), a configuration
+partition per slot (`config_0` and `config_1`, 128 KiB each), `diag` (256 KiB)
+and `reserved`. A slot is sized for about twice the firmware expected once
+WiFi and TLS are in, as slots can't grow later.
 
 - Configuration is per slot, so after a rollback the old firmware finds its
   configuration as it left it, whatever the newer firmware wrote. The new
-  firmware migrates from the old slot's partition after an update. A shared
-  partition would undo that.
+  firmware migrates from the alternate slot's partition after an update. A
+  shared partition would undo that.
 - `factory` and `reserved` are space that later firmware can claim only because
-  the table already has it. No handle exists for them.
+  the table already has it. `factory` has a role, so its span is known and
+  protected, but no handle until a module owns it; `reserved` has no role and
+  no handle.
 - There is no `nvs` partition, as nothing uses that format.
 
 `nix/_storage-layout.nix` turns the board into `layout.rs`, which is committed
@@ -430,143 +478,491 @@ size. The `lint` group fails when `layout.rs` is stale, and the `build` group
 checks that the table ESP-IDF builds resolves to the same partitions, which
 checks the numeric type, subtype and flag values against `gen_esp32part`.
 
-### Trust tiers
+### Devices
 
-`split` runs once per boot and returns the handles of the tier the board
-reaches, with a `Report` of what it found. It never fails: the worst outcome is
-the untrusted tier, so storage never stops the device from booting.
+A device is one flash chip. The storage crate has one trait and one module per
+kind of flash; NOR (`nor`) is the only kind so far. A `NorDevice` reads at any
+alignment, erases 4 KiB sectors and programs 4-byte words, and programming only
+clears bits. Each call is atomic with respect to every other call on the same
+device and is a compiler and hardware barrier. A power cut during an erase or
+a program may leave any subset of that call's bits changed, and none of a later
+call's. The trait has no associated constants, so the crate reaches the device
+as a `&dyn NorDevice` and never names the firmware's type.
 
-| Tier      | Reached when                                                                                                                                                          | Handles                                    |
-|-----------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------|
-| Untrusted | the table at 0x8000 isn't the layout, the flash is smaller, the app didn't boot from a slot, or the bootloader isn't known and another table could be the one it read | the boot chain, read only                  |
-| Data      | otherwise                                                                                                                                                             | + config, diag, otadata and the other slot |
-| Full      | + the bootloader is known and the running app's descriptor can be read                                                                                                | + `Ota`                                    |
+The crate calls a device only with ranges inside its capacity, aligned, and
+erases at most one sector or programs at most 4 KiB per call, so no call keeps
+interrupts off for longer than one sector erase. Long operations yield
+between calls.
 
-The table is compared entry by entry with the layout. It is slightly more
-lenient than the bootloader, which also requires the entry after the MD5 entry
-to be erased, and the MD5 isn't checked. When the table at 0x8000 isn't the
-layout, `split` looks for the one the bootloader used, so the boot-chain
-handles describe what is on the board: a well-formed table below the running
-app with an app entry at the booted offset. A table left over from an earlier
-layout looks the same, so when two qualify the board's table is unknown and
-there is no table handle. The same leftover can make 0x8000 look right while
-the bootloader reads another table, so with a bootloader that isn't known,
-`split` also searches, and any table besides the one at 0x8000 drops the board
-to the untrusted tier. A known bootloader reads 0x8000, so with one nothing
-more is searched. In the untrusted tier the running app's handle is its image,
-cut to its entry in the table, so a wrong table can't widen it. The running
-slot comes from the flash MMU, which says which page the CPU runs, not from the
-otadata, which says only what was selected.
+The firmware's `InternalFlash` (`storage.rs`) is the one
+`esp_storage::FlashStorage`, behind a critical-section mutex: each call runs
+with interrupts disabled, as a ROM flash call needs while code runs from the
+flash it changes. It also reads the booted offset from MMU entry 0 of the
+flash cache. `.clippy.toml` disallows `FlashStorage::new` everywhere else, so
+the internal flash has no route around the handles.
 
-The full tier needs a bootloader in `known.rs`, identified by the SHA-256 its
-image stores. Only a bootloader known to support rollback is trusted with the
-boot selection, since an update under any other could leave a board that boots
-nothing. The list grows and doesn't shrink once boards have shipped, so no
-update takes a board out of the full tier.
+### Regions, roles and handles
 
-A board flashed by `cargo run` gets the untrusted tier: probe-rs writes its own
-bootloader and table. The firmware then runs on default configuration that it
-doesn't save, and logs why.
+A region is any extent of a flash the firmware knows about; the bootloader and
+the table are regions but not partitions. A handle is a `nor::Reader<'f, R>` or
+a `nor::Writer<'f, R>`, where `R` is the region's role: an uninhabited marker
+type that names its device and its class, publishable or sensitive. A role of
+the compiled layout also has its size at compile time (`LayoutSize`), so a
+store can assert its needs, and its offset when that doesn't depend on the slot
+that booted (`Placed`). App slots and configurations are named by role,
+current (the slot that booted) and alternate, with the slot (`ota_0`, `ota_1`)
+reported beside them.
 
-### Handles
+| Role              | Span                                                                                                                     | Class       | Handles                                                      |
+|-------------------|--------------------------------------------------------------------------------------------------------------------------|-------------|--------------------------------------------------------------|
+| `Bootloader`      | 0x0 up to the located table, or up to the compiled table offset when none is located                                     | publishable | reader, every tier                                           |
+| `PartitionTable`  | the compiled table's sector, 0x8000 to 0x9000                                                                            | publishable | reader, every tier                                           |
+| `Otadata`         | `otadata`                                                                                                                | sensitive   | reader in the layout and boot tiers; writer in the boot tier |
+| `CurrentApp`      | the slot that booted                                                                                                     | publishable | reader in the layout and boot tiers                          |
+| `AlternateApp`    | the other slot                                                                                                           | publishable | reader in the layout and boot tiers; writer in the boot tier |
+| `CurrentConfig`   | the current slot's configuration                                                                                         | sensitive   | writer in the layout and boot tiers                          |
+| `AlternateConfig` | the alternate slot's configuration                                                                                       | sensitive   | erase-only writer in the layout and boot tiers               |
+| `Diag`            | `diag`                                                                                                                   | sensitive   | writer in the layout and boot tiers                          |
+| `Factory`         | `factory`                                                                                                                | sensitive   | none                                                         |
+| `Chip`            | the whole flash                                                                                                          | sensitive   | none                                                         |
+| `FoundTable`      | the sector of the one table the search finds                                                                             | publishable | reader in the unverified tier                                |
+| `FoundApp`        | the located table's app partition at the booted offset, or the image at the booted offset when no valid table is located | publishable | reader in the unverified tier                                |
+| `FoundOtadata`    | the located table's last `data`/`ota` partition                                                                          | sensitive   | reader in the unverified tier                                |
 
-A handle is a `Partition<'f, R>`, with `R` an uninhabited role. What it can do
-is a set of sealed traits it implements, so a misuse fails to compile (the
-`compile_fail` doctests in `partitions.rs` show each).
+- Each role has at most one reader and one writer per boot. Neither is `Clone`
+  or `Copy`, only the crate makes them, and `split` takes the device and its
+  state table as `&'f mut`, so no handle outlives them or is made twice.
+- A function takes the role it needs: a function of a `Writer<AlternateApp>`
+  can't be given a configuration, the current slot or a region of another
+  device. The `compile_fail` doctests in `nor.rs`, `roles.rs` and `chain.rs`
+  show each rule.
+- A writer reads its region at any time, as nothing else writes it. A
+  sensitive role's owner therefore gets only the writer.
+- No reader of a `Found*` role is made over a span that shares a byte with
+  `factory`, a configuration or `diag` of the compiled layout; such a partition
+  is reported only.
 
-- `SensitiveRead` is the read every handle has. `Read` adds permission for the
-  contents to leave the device, and only public handles (the boot chain, the
-  app slots, the otadata) have it. A function that exports data takes
-  `impl Read` and so can't be given a configuration or diag handle; one that
-  handles secrets takes `impl SensitiveRead` and accepts both.
-- `Erasable` and `Writable` are separate. The other slot's configuration can be
-  erased but not programmed: erasing is the secure wipe, as NOR flash keeps no
-  old copies elsewhere.
-- Public handles are `Copy`, so a download and the OTA code can read the same
-  slot. Sensitive and writable handles are made once, by `split`, and holding
-  one is the permission. `split` takes the flash as `&mut dyn Flash`, so a
-  second call can't make a second copy.
-- A role's size (`FixedSize`) comes from the layout and is a constant, so a
-  store can assert its needs at compile time. The boot-chain spans are found at
-  runtime and have none.
-- Sensitive handles don't implement the NOR flash traits. `into_nor_flash`
-  consumes a handle and returns an adapter for the store that owns the
-  partition. Erase sets 4 KiB sectors to `0xFF`, and program only clears bits,
-  with no read-modify-write that would erase what the caller didn't ask for.
-- Every erase and program also checks its absolute range against the protected
-  regions: the bootloader, the table's sector, `factory`, `reserved` and the
-  running app. A mistake in the crate's own arithmetic still can't reach them.
+A writer erases and programs only inside a write session: `Writer::begin`
+borrows the writer mutably and returns a `nor::Session`, so a region has one
+session at a time. A session erases, and also programs for every role but
+`AlternateConfig`, whose erase is the secure wipe, as NOR flash keeps no old
+copies elsewhere. A session of a role that programs is an
+`embedded-storage-async` `NorFlash` and `MultiwriteNorFlash` over its region,
+for a store's own format. It erases one sector per device call and programs at
+most 4 KiB per call, yielding after each.
 
-A flash operation runs with interrupts disabled for up to a sector erase, so
-no call erases more than a sector or programs more than 4 KiB, and long
-operations yield between them. `.clippy.toml` disallows `FlashStorage::new`
-everywhere but `storage.rs`, so the internal flash has no route around the
-handles.
+Every erase and program checks its absolute range against the protected spans
+before it reaches the device: everything below the first partition (the
+bootloader and the table's sector), `factory`, `reserved` and the current slot,
+from the compiled layout. A range that touches one is refused whole, so a
+mistake in a caller's arithmetic still can't reach them.
+
+### Write state and snapshots
+
+Each physical span of the compiled layout (the bootloader's span up to the
+table offset, the table's sector and each partition) has a write state: one
+atomic word in the device's state table (`nor::State`, which the firmware
+places in a `static` and `split` borrows). Only the `state` module encodes and
+decodes the words. Everything else sees a `WriteState`: `Stable(epoch)` while
+no write session is open, `Writing(epoch)`, the epoch it started from, while
+one is.
+
+The word is a sequence lock (seqlock), as used in the Linux kernel for data
+read far more often than written. It is even while no session is open and odd
+while one is, and its upper 31 bits count the sessions that issued a device
+call. A session stores the odd word before its first device call. It counts as
+written from just before its first device call: a call the guard refuses marks
+nothing, and a call the device fails counts, as it may have changed bits.
+Dropping the session, on any path (an error, a cancelled future, an abandoned
+update), stores the next count when it was written, else the count it started
+from. A session leaked rather than dropped leaves the region written to for the
+rest of the boot.
+
+A reader reads only through a snapshot. `Reader::snapshot` refuses (`Busy`)
+while a session is open on the region, and (`OutOfRange`) a span outside it;
+otherwise the snapshot holds the region's epoch. Every read of a snapshot loads
+the state, reads the device and loads the state again, and fails `Stale`, with
+its buffer zeroed, unless both loads see the region stable at the snapshot's
+epoch. A snapshot is a `Source`, so the parsers read through it.
+
+Reads and writes therefore run concurrently and safely. The loads and stores
+are `SeqCst`, every device call is a critical section, which no load or store
+moves across, and one core reaches the flash. A read whose two loads agree ran
+outside every session that issued a device call on its spans, so its bytes are
+those of one epoch, never a mix. Memory safety doesn't depend on this, as the
+flash isn't Rust memory and the device serializes its calls. What the borrow
+checker's shared-xor-mutable rule would guarantee at compile time, that bytes
+don't change under a reader, is checked at runtime instead, and its failure is
+an error, not wrong data.
+
+The writer always wins. A session never waits for a reader; a reader of a
+region being written fails and tries again later, and a busy writer can starve
+readers. An update or a store's write is never held up by a download or a
+check.
+
+A region's epoch is the sum of its spans' counts together with which spans they
+are, so epochs of regions over different spans never compare equal, and a
+region over several spans (a `Found*` region across the layout's spans, or a
+later export of the whole chip) has each of them checked. Counts only grow, so
+two loads of the same spans that agree on the sum saw every span at the same
+count. A counter that would wrap leaves its span written to for good: every
+snapshot of it then fails rather than an epoch repeating. No boot runs that
+many sessions.
+
+`Reader::changed` completes once the region is stable at a state other than the
+one it was in when `changed` was called: after a session on it ends at a new
+epoch or, when a session was open at the call, after that session ends, even
+without a write. Several tasks may wait on one device, the app check, OTA and
+later the API among them. A device holds at most 16 waiters at once; with more,
+they wake each other in turn until the region changes.
+
+### Publication
+
+Publication is an allow list. Bytes leave the device only through a published
+view (`nor::Published`, behind the sealed `PublicRead` trait: its length, its
+epoch, its sanitized spans and its reads). A byte is published only when three
+rules hold. The storage crate enforces the first two, the content module the
+third.
+
+1. **Type.** Only readers of `Publishable` roles have `publish`. An otadata,
+   configuration, diag, factory or whole-chip handle has no such method,
+   whatever the tier.
+2. **Location.** Every publishable role is located from a known point: the
+   bootloader at 0x0, where the ROM loads it; the table at the compiled offset,
+   which a known bootloader reads, or the table the search finds; a partition
+   of the located table; or the image at the booted offset, from MMU entry 0.
+   The search is the one scan, and it is bounded: it looks only at sector
+   boundaries below the booted offset, and a candidate counts only when it is a
+   valid table with an app partition at the booted offset, and the only such
+   table. Nothing else is located by scanning the flash for something that
+   looks like a format.
+3. **Verification.** A content module publishes only bytes its parser verified
+   with a check that covers each of them:
+   - An image, app or bootloader: its segments, its checksum and the SHA-256
+     appended to it, which covers every byte before it. The view is the image,
+     the digest included. An image without an appended SHA-256, which the ROM
+     accepts on its checksum alone, isn't published, as an XOR checksum proves
+     nothing about what the bytes are. The space after an image in its region
+     is never published.
+   - The partition table: the entries, the MD5 entry and the end entry, as the
+     bootloader read them. Equality with the compiled layout covers the entries
+     in the layout and boot tiers, and the table's MD5 entry covers them in the
+     unverified tier. In the unverified tier, entries between the MD5 entry and
+     the end entry, which the bootloader accepts but the MD5 doesn't cover, end
+     the view after the MD5 entry. A table with no MD5 entry publishes no bytes
+     and no labels; its partitions' types, subtypes, offsets, sizes and flags
+     are still reported, as they say where regions lie, not what they hold.
+     When the search finds several tables, only their offsets are reported.
+   - The otadata: parsed fields only, in every tier. For each entry its
+     validity and, only when its CRC matches, its sequence number, the slot it
+     selects, and its state when that is a value ESP-IDF defines. The 20-byte
+     label, an unknown state value and the region's epoch never leave the
+     device.
+   - Configuration, diag and factory data are never published raw. Their
+     formats will give each record a strong integrity check, so a store can
+     tell a record of its own from leftover data, and a store may publish
+     sanitized fields of a record that verifies. A stored digest of secret data
+     is never published, as it lets weak secrets be guessed offline; where a
+     digest has to be visible outside the store, it is a MAC keyed by a device
+     secret.
+
+`publish` takes the epoch of the model the content module parsed, not a fresh
+one, so a view never labels spans computed at one epoch with another, and it is
+refused unless the region is stable at that epoch. A view's reads are checked
+like a snapshot's and fail `Stale` once the region is written. Each content
+module makes its views fresh from a model on each request.
+
+As a second check, `publish` also refuses a span that overlaps a span the
+compiled layout gives to sensitive data (`factory`, both configurations and
+`diag`), in every tier. It catches a parser that verifies something it
+shouldn't at the spans this firmware writes secrets to. It doesn't cover
+secrets left elsewhere by another layout, which is why the allow rules are the
+ones relied on.
+
+**Sanitized bytes.** A view may serve bytes that lie between verified values,
+which nothing reads or checks, as `0xFF`, the value of erased flash: in the
+table, the MD5 entry's 14 bytes between its magic and its digest, and the end
+entry's 28 bytes after its magic, type and subtype. `publish` reads those spans
+once and records each whose flash bytes aren't all `0xFF` already, so a
+download that differs from a dump of the flash says where and why; the list
+reveals only that the bytes weren't erased, never their values. Unused space
+that isn't between verified values, such as the space after an image, is cut,
+not sanitized.
+
+**Digests follow the bytes.** The integrity fields that formats store (an
+image's SHA-256, the table's MD5, each otadata entry's CRC, the app
+descriptor's ELF SHA-256) are parsed facts of a model, and a client verifies a
+download with them. A transport digest is the SHA-256 of any range of a
+published view as it is served, sanitized bytes as `0xFF`, computed on request
+and returned with the epoch it was read at; it fails `Stale` like a read. No
+digest the device publishes covers a sanitized byte's value on the flash, as a
+digest over a few unknown bytes would give them away to anyone trying every
+value, and no digest covers a range that couldn't be published. Sensitive
+regions are hashed only inside the firmware.
+
+A failure carries no value read from the flash: an image that doesn't verify
+keeps its reason without the magic, chip ID, length or checksum it read
+(`ImageFailure`), and a table the bootloader refuses keeps its reason without
+its digests or entries (`TableFailure`).
+
+Holding the reader is the permission to publish, so a content module never
+hands out its reader or a snapshot; it hands out views and parsed models.
+
+### Content modules
+
+`eveningstar-boot` holds one content module per boot region. Each owns the
+readers of its regions and offers parsed models, which only its parser makes
+and which carry the epoch they were parsed at, and published views.
+
+| Module           | Owns                                                        | Model                                                                                                                             | Published view                                     |
+|------------------|-------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------|----------------------------------------------------|
+| `Bootloader`     | the bootloader's region                                     | header (read whether or not the image verifies), length, stored digest, file SHA-256, known entry; the descriptor on request      | the image, once its SHA-256 verifies, known or not |
+| `PartitionTable` | the compiled table's sector, and the table the search found | the table as the bootloader judges it, the partitions it loads, the MD5 entry, the comparison with the layout, how it was located | the covered bytes, the ignored ones sanitized      |
+| `Otadata`        | the otadata, the compiled layout's or the located table's   | both entries, the active one, the boot state                                                                                      | none; `OtadataFields` only                         |
+| `AppSlot`        | one app region: current, alternate or found                 | header, length, stored digest, file SHA-256, per epoch; the descriptor on request                                                 | the image, once verified at the region's epoch now |
+
+- Every module is `Sync` and takes `&self`, so it lives in a `static` and is
+  shared between tasks. Results that cost a hash are kept behind a
+  critical-section mutex, held only to copy them in or out; the others are
+  parsed again on each request.
+- `PartitionTable` reports the compiled layout (`EXPECTED`) in the same shape as
+  the found partitions, with the bootloader's and the table's regions, so
+  clients compare them themselves. The comparison matches partitions by label:
+  each expected one matches, differs in named fields or is missing, and any
+  other is extra.
+- `App` refers to the slots of the tier: current and alternate, or the found
+  app. `App::run` verifies each slot (`AppSlot::check`), the current one first,
+  then waits until a session on one of them ends at a new epoch, and verifies
+  again. A check that a session interrupts keeps no result and runs again at
+  the new epoch. `AppSlot::verdict` waits for a slot's result at a given epoch
+  and fails `Stale` once the slot leaves it, so a slot is hashed once per epoch
+  and OTA never hashes it itself.
+- Long jobs take the caller's hasher (`Sha256Hasher`), pace (`Pace`) and
+  progress hook (`Progress`): the hook is called and the pace run after each KiB
+  hashed, and `Progress::idle` is called before each wait for a change only
+  something else brings about.
+
+### The verification chain and the tiers
+
+`split` runs once per boot. It never fails: the worst outcome is the unverified
+tier, in which the firmware runs on its default configuration without saving
+it. Its `Report` records each step, the tier, and the step that kept the board
+below the boot tier.
+
+1. **Bootloader.** The header at 0x0 is read whether or not the image verifies:
+   its flash size code is the chip size the bootloader checks the table against
+   (an unknown code is 2 MiB, as in ESP-IDF). The image is verified (header,
+   segments, checksum, appended SHA-256) at the length its headers describe,
+   within the flash, and its stored digest is looked up in `known.rs`.
+2. **Table offset.** A known bootloader's entry gives the offset it reads the
+   table from. Otherwise, when the header reads and the booted offset lies
+   inside the flash, the flash below the booted offset is searched, and only a
+   single candidate counts. The bootloader's image has to end at or before the
+   located offset, or the compiled one when none is located. One that doesn't
+   is reported; its region ends at the table, so it doesn't verify within it
+   and isn't published.
+3. **Table.** The table at that offset is valid as the bootloader judges it
+   (`esp_partition_table_verify` in ESP-IDF 5.5), and no more strictly:
+   partition entries whose offset and end, in wrapping 32-bit arithmetic, lie
+   within the chip size of step 1, at most one MD5 entry, whose digest matches
+   the entries before it, and an end entry (magic, type and subtype `0xFF`)
+   that isn't the first. The search judges each candidate the same way.
+4. **Partitions.** The partitions are the ones the bootloader loads
+   (`bootloader_utility_load_partition_table`): the entries up to the end
+   entry, less one when there is an MD5 entry. With entries between the MD5
+   entry and the end entry, they include the MD5 entry read as a partition and
+   leave out the last entry, as the bootloader does, and such a table doesn't
+   match the layout. Of several app partitions at the booted offset, or several
+   `data`/`ota` partitions, the one the bootloader keeps is the one used.
+5. **Layout.** The table is at the compiled offset, and its partitions equal
+   the compiled layout's, field by field.
+6. **Flash and booted slot.** The flash holds at least the layout, and the
+   booted offset is a slot's. The current slot comes from the flash MMU, which
+   says which page the CPU runs, not from the otadata, which says only what was
+   selected.
+
+| Tier         | Reached when                                                                                 | Handles                                                                                            |
+|--------------|----------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------|
+| `Unverified` | step 2 locates no single table, or any of steps 3 to 6 fails                                 | readers of the bootloader, the compiled table's sector, and the `Found*` roles of what was located |
+| `Layout`     | steps 2 to 6 pass, with the table found by the search or a known bootloader without rollback | + readers of the slots and the otadata; writers of the configurations and `diag`                   |
+| `Boot`       | steps 2 to 6 pass, with the table located by a known bootloader that supports rollback       | + the boot writers: the alternate slot's and the otadata's                                         |
+
+- Matching the bootloader's judgement adds no failure from bit rot: a flipped
+  bit the bootloader would reject stops the board before the firmware runs, and
+  one it ignores is ignored here too. The table is never rewritten. The Nix
+  table always has an MD5 entry, and the bootloader checks one whenever it is
+  present.
+- Image verification reads the app descriptor's MMU page size for the check of
+  where mapped segments lie, as ESP-IDF 5.5 does on the ESP32-C6.
+- `known.rs` lists the known bootloaders by the SHA-256 their image stores,
+  each with the table offset it reads and whether it supports rollback. The
+  offset is for the report and for refusing a table elsewhere: it never moves
+  a region of the compiled layout. A known bootloader whose offset isn't the
+  compiled one fails step 5, and its table has no reader. Only a bootloader
+  known to support rollback is trusted with the boot selection, since an
+  update under any other could leave a board starting a failing image for
+  good. The list grows and doesn't shrink once boards have shipped, so no
+  update takes a board out of the boot tier.
+- A known bootloader is recognized by its exact digest, so the flash commands
+  write it byte for byte. esptool rewrites the flash mode, frequency and size
+  bytes of a bootloader's header when given values that differ from the
+  image's, which is why the ESP-IDF bootloader's SHA-256 isn't checked at boot.
+  `flash-boot` and `flash-all` pass no such options, so esptool keeps the
+  header. A changed header shows as an unknown bootloader and the layout tier,
+  not silently.
+- The unverified tier has no writer: the layout the bootloader boots isn't
+  known there, so the protected spans aren't either, and the firmware has
+  nothing to save. Recovery is a reflash over USB (`flash-all`).
+- No tier has a writer of the bootloader or the table, and there is no
+  administrative write: a raw write would bypass the checks an update passes,
+  and neither region can be rewritten safely across a power cut.
+- The layout tier has no OTA, not even behind a warning: with a bootloader not
+  known to roll back, an image that fails after an update keeps booting, and
+  the board has no reset button.
+
+A board flashed by `cargo run` gets the unverified tier: probe-rs writes
+espflash's bootloader, which isn't known, and espflash's table, which the
+search finds and which isn't the layout. The firmware then runs on its default
+configuration and logs why.
 
 ### Updates and rollback
 
-`Ota`, in the full tier, is the only code that writes the other app slot and
-the otadata, so the typestate API is the only public way to change the boot
-selection. The otadata format and selection rules are ESP-IDF's, so the
-bootloader, built with app rollback, reads what the firmware writes. The crate
-has its own otadata code because `esp-bootloader-esp-idf`'s fails every
-operation when one entry is corrupt, can name an aborted image as current, and
-activates in two writes, between which a power cut boots the new image with no
-rollback.
+`Ota`, in `eveningstar-ota`, holds the boot writers, which only the boot tier
+has, so it alone writes the alternate slot and the otadata. It reads the
+verification of the slots from their `AppSlot`s and the boot state from the
+`Otadata` module. The otadata format and selection rules are ESP-IDF's, so the
+bootloader, built with app rollback, reads what the firmware writes. The
+formats crate has its own otadata code because `esp-bootloader-esp-idf`'s fails
+every operation when one entry is corrupt, can name an aborted image as
+current, and activates in two writes, between which a power cut boots the new
+image with no rollback.
 
 - Each entry is judged on its own, so a corrupt sector never hides the other.
-- An entry is written as an erase, then label and state, then the CRC, then the
-  sequence number last. A power cut during a NOR program can leave any subset
-  of the bits programmed, so a single 32-byte program can tear into an entry
-  that validates and boots the new image without arming the rollback. Until the
-  sequence number is written the entry reads as blank, and a torn sequence
-  number never matches the CRC, as the CRC is one to one on 32 bits.
-- `begin_update` first makes both entries select the running slot, cancelling a
-  pending activation in place, so no valid entry selects the slot being
-  rewritten. `Update::write` takes the image in parts of any size, and
-  `finish` verifies it as the bootloader will: chip, segments, checksum, the
-  required SHA-256, a project name equal to the running app's, and exactly the
-  image's length.
-- `finish` and `verify_other` return a `VerifiedImage`, the only thing
-  `activate` takes. It comes from the latest update, borrows the flash so it
-  can't outlive its `split`, and `activate` hashes the slot again. Activation
+- An entry is written in a session of its own as an erase, then the label and
+  state, then the CRC, then the sequence number last. A power cut during a NOR
+  program can leave any subset of the bits programmed, so a single 32-byte
+  program can tear into an entry that validates and boots the new image without
+  arming the rollback. Until the sequence number is written the entry reads as
+  blank, and a torn sequence number never matches the CRC, as the CRC is one to
+  one on 32 bits.
+- `Ota::new` waits for the current slot's check. OTA is ready once the running
+  image verified and its descriptor reads, which gives the project name an
+  update has to match; until then it refuses every write, `confirm` included,
+  with the reason (`Unavailable`). A change of a slot's bytes that no session
+  makes, such as flash decay, goes unseen until the next session on it or the
+  next boot, at which the bootloader verifies the image it starts and falls
+  back when it fails.
+- `begin_update` first makes both entries select the running slot, cancelling
+  a pending activation in place, so no valid entry selects the slot being
+  rewritten. It then opens a session on the alternate slot, which the `Update`
+  holds for its whole life, so no snapshot of the slot can be taken while an
+  image is written; dropping the `Update` abandons it and ends the session.
+  `Update::write` takes the image in parts of any size and erases each sector
+  just before its first bytes are programmed.
+- `Update::finish` programs the last word, ends the session at a new epoch of
+  the slot, and waits for the slot's check to verify the slot at that epoch:
+  chip, segments, checksum and the appended SHA-256. It then requires the image
+  to be exactly the bytes written and its project name to be the running
+  app's, and returns a `VerifiedImage` of that epoch.
+- `activate` takes only a `VerifiedImage` from the latest update, or from
+  `verify_other` since; it borrows the flash, so it can't outlive its `split`.
+  It refuses one whose slot's epoch has moved, and doesn't hash the slot again:
+  the epoch proves no session wrote the slot since it verified, and the
+  bootloader verifies the image at boot and falls back if it fails. Activation
   writes one `New` entry to the sector that isn't active, so a power cut leaves
-  the old selection. It means the image is intact and meant for this board; it
-  doesn't mean authentic.
+  the old selection. A verified image is intact and meant for this board; it
+  isn't known to be authentic.
 - Any booted image that isn't `Valid` needs confirming
   (`BootState::needs_confirmation`): one booted `PendingVerify`, with no state,
   or as the bootloader's fallback when the selected slot failed to load.
   `Ota::confirm` makes it `Valid` in every case, writing a new entry for a
   fallback. `begin_update` and `activate` refuse (`Unconfirmed`) until the
-  running image is `Valid`, and never write `Valid` for an image that wasn't.
-- Nothing in storage reboots. Below the full tier, `storage.rs` requests a
-  graceful reboot for a `PendingVerify` image, which can't be confirmed there,
-  so the bootloader rolls it back.
+  running image is `Valid`, and nothing writes `Valid` for an image that wasn't.
+  `roll_back` marks the running image `Invalid`, once the alternate slot is a
+  rollback target holding an image that verifies.
+- A power cut at any point leaves a selection that boots the running image, or
+  an activated image that verified, started once with its rollback armed.
 
-The OTA service, not built yet, will give a user 10 minutes after boot to
-confirm an image that needs it. On timeout it requests a graceful reboot in
-every case, including when no rollback target exists. A board then reboots every
-10 minutes until someone confirms, which is accepted so that a user can confirm
-whichever image comes up.
+Nothing reboots below the boot tier. An image the bootloader started as
+`PendingVerify` can be confirmed only in the boot tier. In the layout tier the
+firmware logs it: that tier's bootloader isn't known to roll back, and one that
+doesn't would start the same image after every reboot, so a reboot there could
+repeat for good on a board with no reset button. A bootloader that rolls back
+does so at the next boot, whatever causes it. Nothing is logged or requested
+in the unverified tier, where the otadata read may come from a leftover table.
+
+The firmware builds `Ota` in a `static` last at boot, as it waits for the
+running slot's check. Nothing takes it yet, and the configuration and diag
+writers are dropped at boot, as no store owns them yet. The OTA service, not
+built yet, will decide how updates arrive and are authenticated, and give a
+user 10 minutes after a boot whose image needs confirming to confirm it; on
+timeout it requests a graceful reboot in every case, including when no rollback
+target exists, so that a user can confirm whichever image comes up.
+
+### The app check task
+
+`storage/check.rs` runs `App::run` over the tier's slots in the background of
+everything else. It hashes with the SHA accelerator (`sha.rs`), whose
+operations busy-wait on the peripheral, and pauses for 4 ms after every KiB
+hashed: the Ethernet controller's driver yields after every SPI transaction, so
+a job that holds the executor for milliseconds at a time takes it from the
+network, and with the pause HTTP requests keep their pace while a slot is
+checked. The task has its own watchdog handle, fed after every KiB hashed and
+never on a timer, so a check that hangs while the rest of the system runs is
+caught. The handle is paused while the checks wait for a slot to change, and
+the results kept since the last wait are logged before each.
 
 ### Checks
 
-- `check-images` (an example of the crate) runs the firmware's own table
-  comparison, image verification and `split` on files. The `build` group runs it
-  on the Nix bootloader and table and on the release app, and fails on a
-  bootloader missing from `known.rs` (printing its entry), a table that isn't
-  the layout, or an app over 75% of its slot.
-- The tests of the crate and of `eveningstar-esp-formats` read fixtures built
-  by Nix and real captures in `crates/eveningstar-esp-formats/testdata/` (see
-  its README). The `build` group
-  fails when the Nix-built ones are stale.
+- `check-images` (an example of the storage crate) runs the firmware's own code
+  on files: the table judged as the bootloader judges it, with an MD5 entry and
+  no entry after it, and compared with the layout by label; the bootloader
+  verified and looked up in `known.rs`, with its entry's table offset and
+  rollback; the app verified as an ESP32-C6 image of the `eveningstar` project;
+  and the three, as `flash-all` writes them, taken through `split` to the boot
+  tier. The `build` group runs it on the Nix bootloader and table and on the
+  release app, and fails on a bootloader missing from `known.rs` (printing its
+  entry), a table that isn't the layout, or an app over 75% of its slot.
+- The tests of the four storage crates read fixtures built by Nix and real
+  captures in `crates/eveningstar-esp-formats/testdata/` (see its README). The
+  `build` group fails when the Nix-built ones are stale.
+- The snapshot and publication tests interleave tasks at device calls: the RAM
+  device runs a hook on its n-th call that opens a session, writes and ends
+  it. Every rule of the write state and of publication has a test, and the
+  type rules have `compile_fail` doctests.
 - The OTA tests cut the power after any erase or program, in each way a NOR
   program can be cut, and boot a simulated bootloader afterwards, from a first
   boot, a rollback target, a pending activation and a fallback.
 
-At boot, `storage.rs` reads the booted offset, wraps `esp_storage::FlashStorage`
-behind a critical-section mutex as the `Flash`, and logs the tier, the table,
-the bootloader, the running slot and the boot state.
+### On the board
+
+On a dev board, after `flash-all`, the board reaches the boot tier: `split`
+takes about 17 ms, loading the content modules 12 ms, and the checks of both
+slots about 3.2 s in the background, with the SHA-256 digests computed on the
+device equal to those computed on the host. The bootloader's first boot on
+blank otadata writes entry 0 with sequence 1 and `Valid`
+(`testdata/otadata-first-boot.bin`). Tables written at 0x8000 over USB give the
+tier the bootloader's judgement and the layout call for, with readers of what
+was located in the unverified tier; a table the bootloader refuses doesn't
+boot, and rewriting the table over USB recovers the board. Bytes written after
+an image in a slot over USB are never published.
+
+A real update through `Ota`, copying the running image to the alternate slot,
+was activated and then rolled back (booted `PendingVerify`, then its entry
+`Aborted`) and, in a second run, confirmed, which lasts across reboots. A chip
+reset in the middle of the copy leaves the board booting the running slot, and
+the half-written slot fails its check on the checksum. An image in `ota_1` with
+one byte flipped, selected as `New`, is refused by the bootloader, which starts
+`ota_0`; the firmware logs that the bootloader fell back and that the boot
+state needs confirming, and the alternate slot's check fails on the checksum.
+
+The ESP-IDF bootloader skips an image's checksum and SHA-256 while a debugger
+is attached (`esp_cpu_dbgr_is_attached()` in
+`bootloader_support/src/esp_image_format.c`), so with probe-rs attached during
+a boot it starts a corrupt image. The firmware's own check still fails the
+image, and OTA refuses every write (`Descriptor(Checksum)`). Board tests of
+image corruption attach the debugger a few seconds after the reset; the RTT
+buffer keeps the early boot lines.
 
 ## Faults and reboots
 
