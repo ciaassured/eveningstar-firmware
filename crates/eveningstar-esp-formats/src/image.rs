@@ -11,9 +11,15 @@
 //! a bootloader.
 //!
 //! The source is the partition: offsets are relative to its start, and the
-//! image has to lie inside it. The partition is taken to start on a 64 KiB
-//! boundary, as app partitions and the bootloader at 0x0 do, for the check of
-//! where mapped segments lie.
+//! image has to lie inside it. The check of where mapped segments lie uses
+//! the MMU page size an app's descriptor names (`mmu_page_size`, the base-2
+//! logarithm of the size, 0 for [`MMU_PAGE_SIZE`]), as ESP-IDF 5.5 does on the
+//! ESP32-C6, and [`MMU_PAGE_SIZE`] for a bootloader. It takes the partition to
+//! start on a boundary of that page size, as app partitions and the
+//! bootloader at 0x0 do for the page sizes the chip has (8 to 64 KiB).
+//!
+//! The header's flash size code gives the chip size the bootloader checks the
+//! partition table against ([`flash_size`]).
 //!
 //! The chip revision range in the header isn't checked against the chip, and
 //! neither are the load addresses of segments copied to RAM.
@@ -48,9 +54,43 @@ pub const DIGEST_LEN: u32 = 32;
 /// The number of bytes hashed between two yields to the executor.
 pub const YIELD_INTERVAL: u32 = 1024;
 
-/// The flash MMU's page size: a segment mapped from flash has to lie at the
-/// same offset within a page in the flash as in the address space.
+/// The flash MMU's default page size: the one an app descriptor's
+/// `mmu_page_size` of 0 selects, and the one a bootloader's segments are
+/// checked with. A segment mapped from flash has to lie at the same offset
+/// within a page in the flash as in the address space.
 pub const MMU_PAGE_SIZE: u32 = 0x1_0000;
+
+/// The flash size a header's flash size code selects, in bytes: 1 MiB for
+/// code 0, doubling with each code up to 128 MiB for code 7, and 2 MiB for
+/// any other code. The ESP-IDF bootloader sets the chip size it checks the
+/// partition table against this way, from its own header
+/// (`bootloader_flash_config_esp32c6.c`).
+#[must_use]
+pub const fn flash_size(code: u8) -> u32 {
+    match code {
+        0..=7 => 0x10_0000 << code,
+        _ => 0x20_0000,
+    }
+}
+
+/// The flash size code of a header's 24 bytes, the high four bits of its
+/// fourth byte, whether or not the rest of the header is valid.
+#[must_use]
+pub const fn flash_size_code(header: &[u8; HEADER_LEN as usize]) -> u8 {
+    header[3] >> 4
+}
+
+/// The MMU page size, in bytes, that an app descriptor's `mmu_page_size`
+/// names: [`MMU_PAGE_SIZE`] for 0, else 2 to the power of the value. `None`
+/// for a value of 32 or more, whose page size doesn't fit in 32 bits.
+#[must_use]
+pub const fn mmu_page_size(log2: u8) -> Option<u32> {
+    match log2 {
+        0 => Some(MMU_PAGE_SIZE),
+        1..=31 => Some(1 << log2),
+        _ => None,
+    }
+}
 
 /// The address range the flash MMU maps (`SOC_IROM_LOW` to `SOC_IROM_HIGH` on
 /// the ESP32-C6, 256 pages); segments loaded there are mapped, not copied.
@@ -61,8 +101,11 @@ const CHUNK_LEN: usize = 256;
 
 const APP_DESC_MAGIC: u32 = 0xABCD_5432;
 const APP_DESC_LEN: u32 = 256;
-/// The part of `esp_app_desc_t` read: up to the ELF's SHA-256.
-const APP_DESC_READ: usize = 176;
+/// The part of `esp_app_desc_t` read: up to the MMU page size and the three
+/// reserved bytes after it.
+const APP_DESC_READ: usize = 184;
+/// Offset of `mmu_page_size` in `esp_app_desc_t`.
+const APP_DESC_MMU_PAGE_SIZE: u32 = 180;
 
 const BOOTLOADER_DESC_MAGIC: u8 = 0x50;
 const BOOTLOADER_DESC_LEN: u32 = 80;
@@ -101,6 +144,9 @@ pub enum ImageError {
         /// Position of the segment.
         index: u8,
     },
+    /// The app descriptor's `mmu_page_size` names a page size that doesn't
+    /// fit in 32 bits: the value stored, 32 or more.
+    MmuPageSize(u8),
     /// The checksum stored doesn't match the segment data.
     Checksum {
         /// The checksum in the image.
@@ -261,6 +307,15 @@ impl AppDescriptor {
         field(&self.0, 144)
     }
 
+    /// The MMU page size the image is built for, as stored: the base-2
+    /// logarithm of the size in bytes, or 0 for [`MMU_PAGE_SIZE`]
+    /// ([`mmu_page_size`]).
+    #[must_use]
+    pub fn mmu_page_size(&self) -> u8 {
+        let [log2] = field(&self.0, APP_DESC_MMU_PAGE_SIZE as usize);
+        log2
+    }
+
     /// Whether a first segment `segment_len` bytes long that starts with
     /// `start` holds an app descriptor.
     fn marks(start: [u8; 4], segment_len: u32) -> bool {
@@ -278,6 +333,7 @@ impl fmt::Debug for AppDescriptor {
             .field("date", &self.date())
             .field("idf_version", &self.idf_version())
             .field("elf_sha256", &self.elf_sha256())
+            .field("mmu_page_size", &self.mmu_page_size())
             .finish()
     }
 }
@@ -468,17 +524,14 @@ impl Bootloader {
 pub fn inspect_app<S: Source + ?Sized>(source: &S) -> Result<AppInfo, ImageError> {
     let (header, _) = read_header(source)?;
     let mut at = HEADER_LEN;
+    let mut page_size = MMU_PAGE_SIZE;
     for index in 0..header.segment_count {
         let (segment, _) = read_segment(source, at, index)?;
         if index == 0 {
-            if segment.len < APP_DESC_LEN {
-                return Err(ImageError::MissingDescriptor);
-            }
-            let start: [u8; 4] = read_array(source, segment.data)?;
-            if !AppDescriptor::marks(start, segment.len) {
-                return Err(ImageError::MissingDescriptor);
-            }
+            // Checks the descriptor's magic too.
+            page_size = app_page_size(source, &segment)?;
         }
+        segment.check_mapping(index, page_size)?;
         at = segment.end;
     }
     if header.segment_count == 0 {
@@ -497,9 +550,8 @@ pub fn inspect_app<S: Source + ?Sized>(source: &S) -> Result<AppInfo, ImageError
 /// first segment's header, and [`ImageError::MissingDescriptor`].
 pub fn app_descriptor<S: Source + ?Sized>(source: &S) -> Result<AppDescriptor, ImageError> {
     let segment = first_segment(source)?;
-    if segment.len < APP_DESC_LEN {
-        return Err(ImageError::MissingDescriptor);
-    }
+    let page_size = app_page_size(source, &segment)?;
+    segment.check_mapping(0, page_size)?;
     // Read in place: the descriptor is the largest value on the stack.
     let mut descriptor = AppDescriptor([0; APP_DESC_READ]);
     source.read(segment.data, &mut descriptor.0)?;
@@ -526,6 +578,7 @@ pub fn bootloader_descriptor<S: Source + ?Sized>(
         return Ok(None);
     }
     let (segment, _) = read_segment(source, HEADER_LEN, 0)?;
+    segment.check_mapping(0, MMU_PAGE_SIZE)?;
     if segment.len < BOOTLOADER_DESC_LEN {
         return Ok(None);
     }
@@ -534,7 +587,7 @@ pub fn bootloader_descriptor<S: Source + ?Sized>(
 }
 
 /// The first segment of the image in `source`, after checking the header and
-/// the segment's header.
+/// the segment's header, but not where the segment is mapped.
 fn first_segment<S: Source + ?Sized>(source: &S) -> Result<Segment, ImageError> {
     let (header, _) = read_header(source)?;
     if header.segment_count == 0 {
@@ -593,11 +646,52 @@ pub async fn verify_bootloader<S: Source + ?Sized>(source: &S) -> Result<Bootloa
 
 /// A segment, from its header.
 struct Segment {
+    /// The address the segment is loaded or mapped at.
+    load_addr: u32,
     /// Offset of the data in the source.
     data: u32,
     len: u32,
     /// Offset of the first byte after the data.
     end: u32,
+}
+
+impl Segment {
+    /// Checks that the segment, number `index`, lies at the same offset
+    /// within a page of `page_size` bytes in the source as at its load
+    /// address, when it is mapped from flash.
+    fn check_mapping(&self, index: u8, page_size: u32) -> Result<(), ImageError> {
+        let mapped = MAPPED.contains(&self.load_addr);
+        if mapped && self.data % page_size != self.load_addr % page_size {
+            return Err(ImageError::SegmentMapping { index });
+        }
+        Ok(())
+    }
+}
+
+/// The MMU page size the descriptor of an app names, read from `segment`, the
+/// first segment of the app image in `source`, once its magic is checked, as
+/// ESP-IDF checks it before taking the page size.
+///
+/// # Errors
+///
+/// [`ImageError::MissingDescriptor`] when the segment doesn't start with a
+/// descriptor, [`ImageError::Read`] when reading fails, and
+/// [`ImageError::MmuPageSize`] for a value of 32 or more.
+fn app_page_size<S: Source + ?Sized>(source: &S, segment: &Segment) -> Result<u32, ImageError> {
+    if segment.len < APP_DESC_LEN {
+        return Err(ImageError::MissingDescriptor);
+    }
+    let start: [u8; 4] = read_array(source, segment.data)?;
+    if !AppDescriptor::marks(start, segment.len) {
+        return Err(ImageError::MissingDescriptor);
+    }
+    // Inside the segment, which holds at least the descriptor's 256 bytes.
+    let at = segment
+        .data
+        .checked_add(APP_DESC_MMU_PAGE_SIZE)
+        .ok_or(ImageError::PastEnd)?;
+    let [log2] = read_array(source, at)?;
+    mmu_page_size(log2).ok_or(ImageError::MmuPageSize(log2))
 }
 
 /// Where an image ends, from the end of its last segment.
@@ -619,7 +713,9 @@ fn read_header<S: Source + ?Sized>(
 }
 
 /// Reads and checks the header of segment `index` at `at`, and returns it with
-/// its bytes.
+/// its bytes: its length, and that its data lies inside the source. Where it
+/// is mapped is checked apart ([`Segment::check_mapping`]), as an app's page
+/// size comes from the descriptor in its first segment's data.
 fn read_segment<S: Source + ?Sized>(
     source: &S,
     at: u32,
@@ -641,10 +737,15 @@ fn read_segment<S: Source + ?Sized>(
     if end > source.size() {
         return Err(past_end);
     }
-    if MAPPED.contains(&load_addr) && data % MMU_PAGE_SIZE != load_addr % MMU_PAGE_SIZE {
-        return Err(ImageError::SegmentMapping { index });
-    }
-    Ok((Segment { data, len, end }, bytes))
+    Ok((
+        Segment {
+            load_addr,
+            data,
+            len,
+            end,
+        },
+        bytes,
+    ))
 }
 
 /// Where the image whose segments end at `at` ends, checked to fit the source.
@@ -692,6 +793,9 @@ struct Verifier<'s, S: ?Sized, H> {
     /// The first bytes of the first segment, and the segment's length.
     descriptor: [u8; BOOTLOADER_DESC_READ],
     descriptor_len: u32,
+    /// The MMU page size mapped segments are checked with: the one an app's
+    /// descriptor names, from its first segment's header on.
+    page_size: u32,
 }
 
 impl<'s, S: Source + ?Sized, H: Sha256Hasher> Verifier<'s, S, H> {
@@ -723,6 +827,7 @@ impl<'s, S: Source + ?Sized, H: Sha256Hasher> Verifier<'s, S, H> {
             end: HEADER_LEN,
             descriptor: [0; BOOTLOADER_DESC_READ],
             descriptor_len: 0,
+            page_size: MMU_PAGE_SIZE,
         }
     }
 
@@ -784,10 +889,11 @@ impl<'s, S: Source + ?Sized, H: Sha256Hasher> Verifier<'s, S, H> {
         let (segment, bytes) = read_segment(self.source, self.end, index)?;
         if index == 0 {
             self.descriptor_len = segment.len;
-            if self.kind == Kind::App && segment.len < APP_DESC_LEN {
-                return Err(ImageError::MissingDescriptor);
+            if self.kind == Kind::App {
+                self.page_size = app_page_size(self.source, &segment)?;
             }
         }
+        segment.check_mapping(index, self.page_size)?;
         self.segments += 1;
         self.offset = segment.data;
         self.end = segment.end;

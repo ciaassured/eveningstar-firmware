@@ -478,6 +478,116 @@ fn a_mapped_segment_off_its_page_offset_is_rejected() {
     assert!(app(&builder.build()).is_ok());
 }
 
+/// An app built by `edit`ed [`app_image`] whose third segment is mapped
+/// 32 KiB past where a 64 KiB page would put it: in place for a 32 KiB page,
+/// not for a 64 KiB one.
+fn app_off_a_64_kib_page(mmu_page_size: u8) -> Vec<u8> {
+    let mut builder = app_image();
+    builder.segments[0].1[180] = mmu_page_size;
+    let data_at = (segment_at(&builder.build(), 2) + 8) as u32;
+    builder.segments[2].0 = 0x4201_0000 + data_at % 0x8000 + 0x8000;
+    builder.build()
+}
+
+#[test]
+fn mapped_segments_are_checked_with_the_descriptor_s_page_size() {
+    // The firmware's image names 64 KiB pages, as 2^16.
+    assert_eq!(app_descriptor(APP).unwrap().mmu_page_size(), 16);
+    assert_eq!(mmu_page_size(16), Some(MMU_PAGE_SIZE));
+
+    // A 32 KiB page, as 2^15.
+    let image = app_off_a_64_kib_page(15);
+    assert_eq!(app(&image).unwrap().size() as usize, image.len());
+    assert!(inspect_app(&image[..]).is_ok());
+    assert_eq!(app_descriptor(&image[..]).unwrap().mmu_page_size(), 15);
+    // A bootloader's segments are checked with 64 KiB pages, whatever its
+    // first segment holds.
+    assert_eq!(
+        bootloader(&image).map(|_| ()),
+        Err(ImageError::SegmentMapping { index: 2 })
+    );
+
+    // 0 and 16 both select 64 KiB.
+    for log2 in [0, 16] {
+        let image = app_off_a_64_kib_page(log2);
+        let error = ImageError::SegmentMapping { index: 2 };
+        assert_eq!(app(&image).map(|_| ()), Err(error), "{log2}");
+        assert_eq!(inspect_app(&image[..]).map(|_| ()), Err(error), "{log2}");
+    }
+
+    // Smaller pages pass whatever lies at the same offset within them.
+    for log2 in [1, 2, 13, 14] {
+        let image = app_off_a_64_kib_page(log2);
+        assert!(app(&image).is_ok(), "{log2}");
+    }
+}
+
+#[test]
+fn the_first_segment_is_checked_with_its_own_page_size() {
+    // Mapped 4 KiB past where a page puts it: in place for 4 KiB pages, not
+    // for 8 KiB ones.
+    let mut builder = app_image();
+    builder.segments[0].0 = 0x4200_1020;
+    builder.segments[0].1[180] = 12;
+    assert!(app(&builder.build()).is_ok());
+    builder.segments[0].1[180] = 13;
+    let image = builder.build();
+    let error = ImageError::SegmentMapping { index: 0 };
+    assert_eq!(app(&image).map(|_| ()), Err(error));
+    assert_eq!(inspect_app(&image[..]).map(|_| ()), Err(error));
+    assert_eq!(app_descriptor(&image[..]).map(|_| ()), Err(error));
+}
+
+#[test]
+fn a_page_size_past_32_bits_is_rejected() {
+    for log2 in [32, 33, 0x80, 0xFF] {
+        assert_eq!(mmu_page_size(log2), None);
+        let mut builder = app_image();
+        builder.segments[0].1[180] = log2;
+        let image = builder.build();
+        let error = ImageError::MmuPageSize(log2);
+        assert_eq!(app(&image).map(|_| ()), Err(error), "{log2}");
+        assert_eq!(inspect_app(&image[..]).map(|_| ()), Err(error), "{log2}");
+        assert_eq!(app_descriptor(&image[..]).map(|_| ()), Err(error), "{log2}");
+    }
+    assert_eq!(mmu_page_size(31), Some(0x8000_0000));
+    assert_eq!(mmu_page_size(1), Some(2));
+}
+
+#[test]
+fn the_flash_size_code_gives_the_chip_size() {
+    let mib = 0x10_0000;
+    let sizes: Vec<u32> = (0..=7).map(flash_size).collect();
+    assert_eq!(
+        sizes,
+        [
+            mib,
+            2 * mib,
+            4 * mib,
+            8 * mib,
+            16 * mib,
+            32 * mib,
+            64 * mib,
+            128 * mib
+        ]
+    );
+    // An unknown code is 2 MiB.
+    for code in 8..=0xFF {
+        assert_eq!(flash_size(code), 2 * mib, "{code}");
+    }
+    // The fixtures name 8 MiB, as `nix/board.nix` sets.
+    for image in [BOOTLOADER, ESPFLASH_BOOTLOADER, APP] {
+        let header: [u8; 24] = image[..24].try_into().unwrap();
+        assert_eq!(flash_size_code(&header), 3);
+        assert_eq!(Header::parse(&header).unwrap().spi_size, 3);
+    }
+    // The code is read from the byte whatever the rest of the header holds.
+    let mut header = [0; 24];
+    header[3] = 0x5F;
+    assert_eq!(flash_size_code(&header), 5);
+    assert!(Header::parse(&header).is_err());
+}
+
 #[test]
 fn a_wrong_checksum_is_rejected() {
     for (image, digest) in [(APP, true), (BOOTLOADER, true)] {
