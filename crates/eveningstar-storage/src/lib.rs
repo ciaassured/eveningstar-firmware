@@ -31,6 +31,8 @@ pub mod nor;
 mod ota;
 pub mod partitions;
 mod region;
+pub mod roles;
+mod span;
 mod split;
 #[cfg(test)]
 mod test_support;
@@ -40,6 +42,7 @@ pub use eveningstar_esp_formats::{Entry, ReadError, Slot, Source, Text, image, o
 pub use nor::{DeviceError, SECTOR_SIZE, WORD_SIZE};
 pub use ota::{Ota, OtaError, Update, VerifiedImage};
 pub use region::AccessError;
+pub use span::Span;
 pub use split::{AppId, BootChain, BootloaderId, Data, Limit, Report, Storage, Tier, split};
 
 // The otadata partition holds the otadata's two sectors.
