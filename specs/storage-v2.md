@@ -137,19 +137,25 @@ capabilities are device-independent and are shared with it.
 
 ## Regions and roles
 
-A handle is a `Reader<'f, R>`, a `Writer<'f, R>` or an `Exporter<'f, R>` (later), where
-`R` is a role: an uninhabited marker type. A role knows its device and its
-class. A role of the compiled layout also knows its span at compile time.
+A handle is a `Reader<'f, R>`, a `Writer<'f, R>` or an `Exporter<'f, R>`
+(later), where `R` is a role: an uninhabited marker type. A role knows its
+device and its class. A role of the compiled layout also knows its size at
+compile time; its offset is known at compile time only when it doesn't depend
+on the slot that booted (`Placed`).
 
 ```rust
 pub trait Role: Sealed {
     type Device;
     const NAME: &'static str;
 }
-/// A role whose span comes from the compiled layout.
-pub trait Fixed: Role {
-    const OFFSET: u32;
+/// A role whose size comes from the compiled layout. The current and
+/// alternate roles have one, though their offset depends on the slot booted.
+pub trait LayoutSize: Role {
     const SIZE: u32;
+}
+/// A role at a fixed offset of the compiled layout, whatever slot booted.
+pub trait Placed: LayoutSize {
+    const OFFSET: u32;
 }
 /// A role whose verified contents may be published.
 pub trait Publishable: Role {}
@@ -170,8 +176,12 @@ The internal flash's roles:
 | `Diag`            | `diag`                                  | sensitive   | layout, boot | layout, boot             | diag store                |
 | `Chip`            | the whole flash                         | sensitive   | every tier   | never                    | export service (later)    |
 
+`Bootloader`, `PartitionTable`, `Factory`, `Otadata` and `Diag` are `Placed`;
+the current and alternate roles are `LayoutSize` only; `Chip` is neither, as
+the flash's size is read at runtime.
+
 The roles of the unverified tier have their spans set at runtime, from what
-was found, and have no `Fixed`:
+was found, and are neither:
 
 | Role              | Span                                                            | Class       |
 |-------------------|-----------------------------------------------------------------|-------------|
@@ -222,8 +232,10 @@ pub enum WriteState {
   only, for `AlternateConfig`). `Writer` itself only reads. `begin` stores
   `Writing(e)` with release ordering before the session's first operation.
   Dropping the session, on any path (an error, a cancelled future, an
-  abandoned update), stores `Stable(e')` with `e' != e` if anything was
-  erased or programmed, else `Stable(e)` again. A session borrows the writer
+  abandoned update), stores `Stable(e')` with `e' != e` if any erase or
+  program was attempted, else `Stable(e)` again. The session marks itself
+  written before each device call, not after it succeeds, as a failed erase
+  or program may still have changed bits. A session borrows the writer
   mutably, so there is one session per region at a time.
 - **The writer reads at any time**, inside or outside a session: it is the
   region's only writer.
@@ -249,6 +261,12 @@ pub enum WriteState {
   (bytes don't change under a reader) is checked at runtime instead, and its
   failure is an error, not wrong data. Readers can be starved by a busy
   writer, which is intended: the writer always wins.
+- **A reader whose span covers several regions** has no write state of its
+  own. `Chip` is one, and so is a `Found*` role whose span crosses regions of
+  the compiled layout. Its snapshot requires every region it overlaps to be
+  `Stable`, records each of their epochs, and checks all of them before and
+  after every read, so a clone export taken during an update fails rather
+  than returning torn bytes.
 - A content module's parsed model is valid for the epoch it was parsed at. It
   carries that epoch and is invalid once a snapshot at that epoch would fail.
 - A content module rereads after a session ends; a module that needs to know
@@ -290,8 +308,11 @@ the third the content module's:
    in the unverified tier only bytes a cryptographic check covers:
    - an app or bootloader image: its checksum and the SHA-256 it stores,
      which covers every byte before it;
-   - a partition table: its MD5, which covers its entries, and the end entry,
-     whose bytes the bootloader checks;
+   - a partition table: its MD5, which covers the entries before it. The MD5
+     entry's 14 bytes between its magic and its digest, and the 28 bytes of
+     the end entry after its magic, type and subtype, are covered by nothing;
+     the table publishes them only when every one of them is `0xFF`, else
+     its view ends at the MD5 digest;
    - otadata entries, whose CRC covers only the sequence number: published as
      raw bytes only for the `Otadata` role, at the compiled span; a
      `FoundOtadata` is reported as parsed fields only.
@@ -353,11 +374,13 @@ without saving it.
    table from: `TableSource::KnownBootloader`. Otherwise the board is
    searched (`table::find`, as now), and the table counts only as the single
    candidate: `TableSource::Searched`.
-3. **Table.** The table at that offset parses as the bootloader parses it
-   (`esp_partition_table_verify` in ESP-IDF 5.5): entries, then an MD5 entry
-   whose digest matches the entries, then the end entry. The current crate
-   ignores what follows the MD5 entry; this tightens it to match the
-   bootloader.
+3. **Table.** The table at that offset is entries, then an MD5 entry whose
+   digest matches the entries, then the end entry. This is stricter than the
+   bootloader (`esp_partition_table_verify` in ESP-IDF 5.5), which accepts a
+   table without an MD5 entry, accepts entries after the MD5 entry that the
+   MD5 doesn't cover, and checks only the end entry's magic, type and
+   subtype. Every table the firmware's layout produces passes; anything else
+   fails closed. The current crate ignores what follows the MD5 entry.
 4. **Layout.** The entries equal the compiled layout's, field by field.
 5. **Flash and booted slot.** The flash is at least the layout's size, and
    the booted offset (MMU entry 0, read by the firmware) is a slot's offset.
@@ -373,12 +396,14 @@ A bootloader that doesn't verify in step 1 is unknown, so step 2 searches.
 - `known.rs` entries gain two facts: the table offset the bootloader reads
   and whether it supports rollback. The list still only grows once boards
   have shipped.
-- The MD5 adds no new failure from bit rot: the bootloader already refuses a
-  table whose MD5 entry doesn't match, whatever the build's configuration
-  (`flash_partitions.c` checks it whenever the entry is present), and the
-  table is never rewritten. A table without an MD5 entry, which the
-  bootloader accepts, drops to the unverified tier; the Nix table always has
-  one (`PARTITION_TABLE_MD5` defaults to on).
+- The MD5 adds no new failure from bit rot in the bytes it covers: the
+  bootloader already refuses a table whose MD5 entry doesn't match, whatever
+  the build's configuration (`flash_partitions.c` checks it whenever the
+  entry is present), and the table is never rewritten. The stricter checks
+  of step 3 add failures only for bytes the bootloader ignores (a flipped bit
+  in the end entry's last 28 bytes) and for a table without an MD5 entry;
+  both drop to the unverified tier. The Nix table always has an MD5 entry
+  (`PARTITION_TABLE_MD5` defaults to on).
 - The `Found*` readers are cut so that none overlaps a compiled sensitive
   span: a found entry that does gets no reader, and is reported only.
 - No writer in the unverified tier. The layout the bootloader boots isn't
@@ -413,8 +438,10 @@ where the checks live.
   session for its whole life, so no snapshot of the slot can be taken while
   an image is written, and dropping it ends the session and starts the slot's
   check again.
-- `VerifiedImage` holds the epoch it was verified at; `activate` refuses it
-  once the slot's epoch has moved, and hashes the slot again, as now.
+- `Update::finish` programs the last word, ends the session, then verifies
+  the slot at the new stable epoch. `VerifiedImage` holds that epoch;
+  `activate` refuses it once the slot's epoch has moved, and hashes the slot
+  again, as now.
 - **T7** is the check, from the first storage spec, that an image booted
   `PendingVerify` can be confirmed. Where it can't (no boot writers), the
   firmware requests a graceful reboot so the bootloader rolls the image back.
@@ -483,8 +510,10 @@ Each step is a PR on a stack, each passing `nix run .#checks`:
   `Writer<CurrentApp>`; no handle is `Clone`.
 - The chain's tests reuse today's fixtures and board captures, plus: a table
   without an MD5 entry, a table with a bad MD5, a table followed by garbage
-  instead of the end entry, and a found table whose app entry overlaps
-  `config_0`.
+  instead of the end entry, a table whose uncovered bytes aren't `0xFF`, and
+  a found table whose app entry overlaps `config_0`.
+- A clone export snapshot fails when any region it covers enters a write
+  session.
 - The OTA power-cut tests keep running against the simulated bootloader.
 
 ## Open questions for review
