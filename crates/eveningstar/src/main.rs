@@ -7,6 +7,7 @@
 mod ethernet;
 mod http;
 mod services;
+mod sha;
 mod shared_spi;
 mod storage;
 mod watchdog;
@@ -120,6 +121,7 @@ async fn main(spawner: Spawner) {
         reboot.graceful_only(),
     )
     .await;
+    let _sha = sha::start(board.sha);
     // Nothing reads the view yet; the check task runs and logs on its own.
     let _storage = services::storage::start(spawner, internal, boot, wd_handles.storage_check);
 
