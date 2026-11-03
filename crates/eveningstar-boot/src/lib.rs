@@ -10,12 +10,26 @@
 //! for each call from a model, so a view never serves bytes of an epoch other
 //! than the one its model was parsed at.
 //!
+//! | Module | Owns | Model | Published |
+//! |---|---|---|---|
+//! | [`Bootloader`] | the bootloader's region | header, length, stored digest, file SHA-256, known entry; the descriptor on request | the image, once its SHA-256 verifies, known or not |
+//! | [`PartitionTable`] | the compiled table's sector, the table the search found | the table as the bootloader judges it, its partitions, MD5 entry and comparison with the layout, how it was located | the entries, the MD5 entry and the end entry a check covers, with the bytes the bootloader ignores sanitized |
+//! | [`Otadata`] | the otadata | both entries, the active one, the boot state | no byte; [`otadata::OtadataFields`] only |
+//! | [`AppSlot`] | one app region | header, length, stored digest, file SHA-256, per epoch; the descriptor on request | the image, once verified at the region's epoch now |
+//!
+//! [`App`] refers to the slots of a tier and runs their checks in the
+//! background; [`AppSlot::verdict`] waits for a slot's result at an epoch.
 //! [`digest`] gives the SHA-256 of any range of a published view as served,
 //! the transport digest.
 //!
-//! Every method takes `&self`. Results that cost a hash to compute are kept
-//! behind a critical-section mutex, held only to copy them in or out, never
-//! across an `.await`, so a module in a `static` is shared between tasks.
+//! A failed verification keeps its reason without the values it read
+//! ([`ImageFailure`], [`table::TableFailure`]), as they are bytes nothing
+//! verified.
+//!
+//! Every method takes `&self`, and every module is `Sync`, so a module in a
+//! `static` is shared between tasks. Results that cost a hash to compute are
+//! kept behind a critical-section mutex, held only to copy them in or out,
+//! never across an `.await`; the others are parsed again on each request.
 //!
 //! Long jobs, hashing an image or a digest, take the caller's hasher
 //! ([`Sha256Hasher`]), pace ([`Pace`]) and progress hook ([`Progress`]): the
@@ -29,6 +43,7 @@
 
 #![cfg_attr(not(test), no_std)]
 
+pub mod app;
 pub mod bootloader;
 mod digest;
 mod error;
@@ -38,6 +53,7 @@ pub mod table;
 #[cfg(test)]
 mod test_support;
 
+pub use app::{App, AppSlot};
 pub use bootloader::Bootloader;
 pub use digest::{Digest, PAUSE_INTERVAL, digest};
 pub use error::{ImageFailure, LoadError, Unpublished};

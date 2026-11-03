@@ -1,10 +1,12 @@
 //! Fixtures shared by the crate's tests: boards in RAM split by the storage
-//! crate, and a pace that counts.
+//! crate, a pace that counts, and a loop that polls two futures.
 
 extern crate alloc;
 
 use alloc::boxed::Box;
 use core::future::Future;
+use core::pin::pin;
+use core::task::{Context, Poll, Waker};
 
 use eveningstar_esp_formats::pace::Pace;
 use eveningstar_esp_formats::test_support::{APP, BOOTLOADER, OTADATA_FIRST_BOOT, TABLE};
@@ -71,4 +73,32 @@ pub(crate) fn nix_board() -> RamNor {
             (layout::OTA_0.offset, APP),
         ],
     )
+}
+
+/// The most polls [`drive`] makes before it gives up.
+const MAX_POLLS: usize = 10_000_000;
+
+/// Polls `background` and `foreground` in turn, with a waker that does
+/// nothing, until `foreground` completes, and returns its output. Panics
+/// when `background` completes first or after [`MAX_POLLS`] polls, which
+/// stand for a deadlock.
+pub(crate) fn drive<B: Future, F: Future>(background: B, foreground: F) -> F::Output {
+    let mut cx = Context::from_waker(Waker::noop());
+    let mut background = pin!(background);
+    let mut foreground = pin!(foreground);
+    for _ in 0..MAX_POLLS {
+        if let Poll::Ready(output) = foreground.as_mut().poll(&mut cx) {
+            return output;
+        }
+        assert!(
+            background.as_mut().poll(&mut cx).is_pending(),
+            "the background future completed"
+        );
+    }
+    panic!("no progress after {MAX_POLLS} polls");
+}
+
+/// Polls `future` once with a waker that does nothing.
+pub(crate) fn poll_once<F: Future + ?Sized>(future: core::pin::Pin<&mut F>) -> Poll<F::Output> {
+    future.poll(&mut Context::from_waker(Waker::noop()))
 }
