@@ -22,6 +22,26 @@ fn sha() -> sha2::Sha256 {
     sha2::Sha256::default()
 }
 
+/// What a progress hook was told.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Event {
+    Advance,
+    Idle,
+}
+
+/// A progress hook that records what it is told, in order.
+struct Recorder<'a>(&'a RefCell<Vec<Event>>);
+
+impl Progress for Recorder<'_> {
+    fn advance(&mut self) {
+        self.0.borrow_mut().push(Event::Advance);
+    }
+
+    fn idle(&mut self) {
+        self.0.borrow_mut().push(Event::Idle);
+    }
+}
+
 /// Runs `slot`'s check to completion.
 fn check<R: AppRole>(slot: &AppSlot<'_, R>) {
     run(slot.check(&sha(), &mut Yield, &mut || {}));
@@ -336,12 +356,15 @@ fn the_check_waits_out_an_open_session() {
     let (slot, mut writer, _flash) = alternate_over(&image);
     let mut session = writer.begin();
     run(session.erase(0, SECTOR_SIZE)).unwrap();
-    let (sha, mut pace, mut progress) = (sha(), Yield, || {});
+    let events = RefCell::new(Vec::new());
+    let (sha, mut pace, mut progress) = (sha(), Yield, Recorder(&events));
     let mut check = pin!(slot.check(&sha, &mut pace, &mut progress));
     for _ in 0..10 {
         assert!(poll_once(check.as_mut()).is_pending());
     }
     assert_eq!(slot.model(), None);
+    // Told once, before the wait.
+    assert_eq!(*events.borrow(), [Event::Idle]);
     drop(session);
     let mut polls = 0;
     while poll_once(check.as_mut()).is_pending() {
@@ -352,6 +375,18 @@ fn the_check_waits_out_an_open_session() {
     // The first sector is erased now.
     assert_eq!(model.image(), Err(ImageFailure::Magic));
     assert_eq!(Some(model.epoch()), Some(slot.reader.write_state().epoch()));
+    assert_eq!(*events.borrow(), [Event::Idle]);
+}
+
+#[test]
+fn the_check_advances_and_never_idles_while_it_hashes() {
+    let image = image();
+    let (slot, _writer, _flash) = alternate_over(&image);
+    let events = RefCell::new(Vec::new());
+    run(slot.check(&sha(), &mut Counting::default(), &mut Recorder(&events)));
+    let events = events.into_inner();
+    assert_eq!(events.len(), (image.len() - 32) / 1024);
+    assert!(events.iter().all(|&event| event == Event::Advance));
 }
 
 #[test]
@@ -407,7 +442,8 @@ fn run_checks_every_slot_and_again_after_a_write() {
     let current = app.current().unwrap();
     let alternate = app.alternate().unwrap();
     let mut pace = Yield;
-    let mut progress = || {};
+    let events = RefCell::new(Vec::new());
+    let mut progress = Recorder(&events);
     let (before, after) = drive(app.run(sha(), &mut pace, &mut progress), async {
         let epoch = current.reader.write_state().epoch();
         let current = current.verdict(epoch).await.unwrap();
@@ -416,6 +452,8 @@ fn run_checks_every_slot_and_again_after_a_write() {
             .verdict(alternate.reader.write_state().epoch())
             .await
             .unwrap();
+        // Both slots are checked: the checks wait for a change.
+        assert_eq!(events.borrow().last(), Some(&Event::Idle));
         rewrite(&mut writer, &second);
         let after = alternate
             .verdict(writer.write_state().epoch())
@@ -426,6 +464,21 @@ fn run_checks_every_slot_and_again_after_a_write() {
     assert_eq!(before.image().unwrap().file_sha256(), &sha256(&first));
     assert_eq!(after.image().unwrap().file_sha256(), &sha256(&second));
     assert_ne!(before.epoch(), after.epoch());
+    // Each round of checks advances while it hashes, then idles once: the
+    // second round hashes the rewritten slot only.
+    let events = events.into_inner();
+    let rounds: Vec<_> = events
+        .split_inclusive(|&event| event == Event::Idle)
+        .collect();
+    assert_eq!(rounds.len(), 2);
+    let per_image = (first.len() - 32) / 1024;
+    assert_eq!(rounds[0].len(), 2 * per_image + 1);
+    assert_eq!(rounds[1].len(), (second.len() - 32) / 1024 + 1);
+    for round in rounds {
+        let (idle, advances) = round.split_last().unwrap();
+        assert_eq!(*idle, Event::Idle);
+        assert!(advances.iter().all(|&event| event == Event::Advance));
+    }
 }
 
 #[test]
@@ -433,11 +486,14 @@ fn run_with_no_slot_waits_for_good() {
     let app = App::found(None);
     assert!(app.found_app().is_none());
     let mut pace = Yield;
-    let mut progress = || {};
+    let events = RefCell::new(Vec::new());
+    let mut progress = Recorder(&events);
     let mut run = pin!(app.run(sha(), &mut pace, &mut progress));
     for _ in 0..10 {
         assert!(poll_once(run.as_mut()).is_pending());
     }
+    // Told once, at once, and never advanced.
+    assert_eq!(*events.borrow(), [Event::Idle]);
 }
 
 #[test]

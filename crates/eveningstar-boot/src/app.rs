@@ -11,7 +11,8 @@
 //! by [`App::run`]): through a snapshot, at the region's epoch, the image's
 //! header, segments, checksum and appended SHA-256, hashed with the caller's
 //! hasher and paced by the caller's pace, with the caller's progress hook
-//! called after each KiB. The check runs at boot and again after each write
+//! called after each KiB, and told before each wait for the slot to change
+//! ([`Progress::idle`]). The check runs at boot and again after each write
 //! session on the slot that ends at a new epoch. A check a session
 //! interrupts keeps no result and runs again at the new epoch. The slot
 //! keeps the last result, its model ([`AppModel`]), for the epoch it was
@@ -276,10 +277,11 @@ impl<'f, R: AppRole> AppSlot<'f, R> {
     /// now, and keeps the result. Hashes with a clone of `sha`, a hash not
     /// yet fed, and after each KiB hashed calls `progress`, then `pace`.
     ///
-    /// While a session is open on the region, it waits for the session to
-    /// end. When a session writes the region during the verification, the
-    /// verification keeps no result and runs again at the new epoch. It
-    /// completes once a result of the region's epoch is kept.
+    /// While a session is open on the region, it calls `progress`'s
+    /// [`idle`](Progress::idle) and waits for the session to end. When a
+    /// session writes the region during the verification, the verification
+    /// keeps no result and runs again at the new epoch. It completes once a
+    /// result of the region's epoch is kept.
     pub async fn check<H, P, G>(&self, sha: &H, pace: &mut P, progress: &mut G)
     where
         H: Sha256Hasher,
@@ -288,7 +290,10 @@ impl<'f, R: AppRole> AppSlot<'f, R> {
     {
         loop {
             match self.reader.write_state() {
-                WriteState::Writing(_) => self.settle().await,
+                WriteState::Writing(_) => {
+                    progress.idle();
+                    self.settle().await;
+                }
                 WriteState::Stable(epoch) => {
                     if self.has(epoch) {
                         return;
@@ -527,7 +532,10 @@ impl<'a, 'f> App<'a, 'f> {
     /// ([`AppSlot::check`]), the current one first, then waits until a
     /// session on one of them ends at a new epoch, and verifies again.
     /// Hashes with clones of `sha`, a hash not yet fed, and after each KiB
-    /// hashed calls `progress`, then `pace`.
+    /// hashed calls `progress`, then `pace`. Before each wait, for a change
+    /// or for an open session to end, it calls `progress`'s
+    /// [`idle`](Progress::idle): once every slot's result of its epoch is
+    /// kept, and with no slot, at once.
     pub async fn run<H, P, G>(&self, sha: H, pace: &mut P, progress: &mut G) -> !
     where
         H: Sha256Hasher,
@@ -543,14 +551,19 @@ impl<'a, 'f> App<'a, 'f> {
                     let alternate_changed = alternate.reader.changed();
                     current.check(&sha, pace, progress).await;
                     alternate.check(&sha, pace, progress).await;
+                    progress.idle();
                     either(current_changed, alternate_changed).await;
                 }
                 Slots::Found(Some(found)) => {
                     let changed = found.reader.changed();
                     found.check(&sha, pace, progress).await;
+                    progress.idle();
                     changed.await;
                 }
-                Slots::Found(None) => core::future::pending().await,
+                Slots::Found(None) => {
+                    progress.idle();
+                    core::future::pending::<()>().await;
+                }
             }
         }
     }
