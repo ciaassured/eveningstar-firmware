@@ -344,8 +344,12 @@ pub trait PublicRead {
 which nothing reads or checks, as `0xFF`, the value of erased flash. The view
 records every such range whose flash bytes aren't `0xFF` already
 (`sanitized`), and the API reports them, so a download that differs from a
-dump of the flash says where and why. A transport digest covers the bytes as
-served. Unused space that isn't between verified values, such as the space
+dump of the flash says where and why; the list reveals only that those bytes
+weren't erased, never their values. No digest the device publishes covers a
+sanitized byte's value on the flash: a transport digest covers the bytes as
+served, and a format's own check (the table's MD5) is published only when it
+doesn't cover them. A digest over a few unknown bytes would give them away, as
+they can be found by trying every value. Unused space that isn't between verified values, such as the space
 after an image, is cut, not sanitized.
 
 A byte is published only when all three allow rules hold. The first two are
