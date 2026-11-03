@@ -242,8 +242,8 @@ impl BootloaderReport {
     }
 }
 
-/// What [`split`] found: every step's result, the tier, and the first step
-/// that failed.
+/// What [`split`] found: every step's result, the tier, and the step that
+/// kept it below the boot tier.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Report {
     /// Size of the flash in bytes, as the device gives it.
@@ -258,7 +258,10 @@ pub struct Report {
     pub slot: Option<Slot>,
     /// The tier reached: the one whose handles [`split`] made.
     pub tier: Tier,
-    /// The first step that failed, `None` in the boot tier.
+    /// The step that kept the tier below the boot tier: in the unverified
+    /// tier, the first of steps 2 to 6 that failed; in the layout tier, the
+    /// bootloader's; `None` in the boot tier. [`passed`](Self::passed) gives
+    /// every step's result.
     pub failed: Option<Step>,
 }
 
@@ -305,20 +308,18 @@ impl Report {
         }
     }
 
-    /// The tier the steps reach, and the first step that failed.
+    /// The tier the steps reach, and the step that kept it below the boot
+    /// tier: the first of steps 2 to 6 that failed, else the bootloader's.
     fn evaluate(&self) -> (Tier, Option<Step>) {
-        let failed = Step::ALL.into_iter().find(|step| !self.passed(*step));
-        let layout = Step::ALL[1..].iter().all(|step| self.passed(*step));
-        let tier = if !layout {
-            Tier::Unverified
-        } else if self.passed(Step::Bootloader)
-            && self.table.source == Some(TableSource::KnownBootloader)
+        if let Some(step) = Step::ALL[1..].iter().find(|step| !self.passed(**step)) {
+            return (Tier::Unverified, Some(*step));
+        }
+        if self.passed(Step::Bootloader) && self.table.source == Some(TableSource::KnownBootloader)
         {
-            Tier::Boot
+            (Tier::Boot, None)
         } else {
-            Tier::Layout
-        };
-        (tier, failed)
+            (Tier::Layout, Some(Step::Bootloader))
+        }
     }
 }
 

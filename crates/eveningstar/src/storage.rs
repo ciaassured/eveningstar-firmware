@@ -452,16 +452,12 @@ fn log_flash_and_slot(report: &Report) {
     }
 }
 
-/// Logs the tier and the first step that failed.
+/// Logs the tier and the step that kept it below the boot tier.
 fn log_tier(report: &Report) {
     match report.failed {
         None => info!("Storage: boot tier"),
         Some(step) => {
-            warn!(
-                "Storage: {} tier; first step failed: {}",
-                Fmt(report.tier),
-                Fmt(step)
-            );
+            warn!("Storage: {} tier, as {}", Fmt(report.tier), Fmt(step));
             match report.tier {
                 Tier::Unverified => warn!("Running on defaults: nothing is written to the flash"),
                 Tier::Layout => warn!(
