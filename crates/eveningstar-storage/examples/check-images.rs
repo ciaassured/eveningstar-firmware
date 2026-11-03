@@ -36,7 +36,8 @@ const SLOT_BUDGET_PERCENT: u64 = 75;
 const PROJECT: &str = "eveningstar";
 
 /// The ESP-IDF bootloaders `nix/bootloader` builds always enable app
-/// rollback, which the known list's names state.
+/// rollback and read the table at the layout's offset, which the entry
+/// printed for a missing one states.
 const ROLLBACK: &str = "app rollback";
 
 const USAGE: &str = "usage: check-images --bootloader FILE --partition-table FILE [--app FILE]";
@@ -162,8 +163,22 @@ fn check_bootloader(checks: &mut Checks, path: &Path, bytes: &[u8]) {
         u32::try_from(bytes.len()).is_ok_and(|len| len <= layout::TABLE_OFFSET),
         format!("fits below the table at {:#x}", layout::TABLE_OFFSET),
     );
-    if let Some(name) = known::name(digest) {
-        checks.pass(format!("known: {name} ({})", known::Hex(digest)));
+    if let Some(known) = known::find(digest) {
+        checks.pass(format!(
+            "known: {} ({}), reads the table at {:#x}, rollback {}",
+            known.name,
+            known::Hex(digest),
+            known.table_offset,
+            known.rollback
+        ));
+        checks.check(
+            known.table_offset == layout::TABLE_OFFSET,
+            format!(
+                "its table offset is the layout's, {:#x}",
+                layout::TABLE_OFFSET
+            ),
+        );
+        checks.check(known.rollback, "it supports app rollback");
     } else {
         checks.fail(format!("unknown digest {}", known::Hex(digest)));
         let name = format!("ESP-IDF {}, {ROLLBACK}", idf.as_deref().unwrap_or("?"));
@@ -171,7 +186,9 @@ fn check_bootloader(checks: &mut Checks, path: &Path, bytes: &[u8]) {
             "        add it to BOOTLOADERS in crates/eveningstar-storage/src/known.rs:\n{}",
             known::Entry {
                 digest,
-                name: &name
+                name: &name,
+                table_offset: layout::TABLE_OFFSET,
+                rollback: true,
             }
         );
     }
