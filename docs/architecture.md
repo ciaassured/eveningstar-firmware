@@ -16,6 +16,7 @@ The workspace's crates live flat under `crates/`.
 | `eveningstar-storage`     | The flash devices, their regions and handles, the verification chain |
 | `eveningstar-boot`        | The content modules of the boot regions: parsed models and views     |
 | `eveningstar-ota`         | The OTA mechanism: updates, activation, confirmation and rollback    |
+| `eveningstar-system`      | Reboots, reboot holds and the task watchdog supervisor               |
 | `eveningstar`             | The firmware: services, transports, drivers and watchdogs            |
 
 `eveningstar-board` and `eveningstar` build for the ESP32-C6 only; the others
@@ -61,11 +62,36 @@ They are system crates, meant to be reusable by other firmware: none depends
 on the application, the `eveningstar` crate or the charge-controller code, so
 they can be renamed and moved out of the workspace.
 
+### `eveningstar-system`
+
+The services any firmware on the board runs besides its application: the
+reboot service with its holds, and the task watchdog supervisor (see
+[Faults and reboots](#faults-and-reboots)). It holds their logic only and
+names no part of the chip or of the firmware:
+
+- The chip's software reset and hardware watchdogs are traits, `Reset` and
+  `HardwareWatchdogs`, which the services take at start-up.
+- Reboot reasons and reboot holders are type parameters, which the firmware
+  fills with its own enums. Each holder is registered at start-up, in one of a
+  fixed number of slots, and the reboot status lists holds by holder.
+- Supervised tasks are registered at start-up, each in one of a fixed number
+  of slots, with a name for the log and a marker type the firmware declares.
+  A task's handle is a `WatchdogHandle` of its marker, so one task's handle
+  can't be passed to another, and a marker registered twice panics at boot.
+
+The services are futures, `RebootTask::run` and `Supervisor::run`, which the
+firmware spawns as its tasks. The crate logs through `defmt` only with its
+`defmt` feature, which the firmware enables. It is listed in `host_crates` in
+`nix/checks.nix`, and its tests run the services on embassy-time's mock time
+driver.
+
 ### `eveningstar`
 
 The firmware itself, split into services, which own the device's state and
 work, and transports, which make the services reachable over a protocol. The
-other modules are drivers and the [watchdogs](#faults-and-reboots).
+other modules are drivers and the chip's side of the
+[system services](#faults-and-reboots): its software reset and hardware
+watchdogs.
 
 ## Services and transports
 
@@ -90,10 +116,12 @@ around and can't be made outside the service.
 
 A service can hand out narrower handles derived from its full one. Each caller
 gets the narrowest handle that does its job. The reboot service is the example
-to follow: `reboot::start` returns the one `Reboot`, and from it come a
+to follow: starting it returns the one `Reboot`, and from it come a
 `GracefulReboot`, which can only request graceful reboots, and a
-`RebootHolder`, which can only hold them off. The Ethernet link monitor gets a
-`GracefulReboot`, so it can't reboot the device at once.
+`RebootHolder`, which can only hold them off, for the holder it registered.
+The Ethernet link monitor gets a `GracefulReboot`, so it can't reboot the
+device at once. The reboot handles each hold a reference to the service's
+state, a `static` in the firmware, so they are `Copy` but not zero-sized.
 
 ## The API
 
@@ -1088,17 +1116,33 @@ own.
   deadline, or a hung executor.
 - **Everything else requests a reboot** through the reboot service, with a
   reason, such as the Ethernet link staying down or the running image staying
-  unconfirmed. A graceful reboot waits for
-  holds to be released, up to a deadline. An immediate one doesn't wait.
+  unconfirmed. A graceful reboot waits for holds to be released, up to a
+  deadline. An immediate one doesn't wait.
 
-Only three places may reset the chip: the reboot service, the watchdog
-supervisor and the panic handler. Clippy's `disallowed_methods`, configured in
-`.clippy.toml`, rejects the reset functions everywhere else. Those three places
-`#[expect]` the lint, with a reason.
+The reboot service and the watchdog supervisor live in `eveningstar-system`.
+The firmware declares its reasons and holders (`services/reboot.rs`) and its
+supervised tasks (`wd` in `main.rs`), and implements the chip's side: the
+software reset (`reset.rs`) and the hardware watchdogs (`watchdog.rs`).
+
+A crate with reboot reasons of its own requests graceful reboots through
+`RebootRequest<S>`, an object-safe trait for its reason type `S`. The
+firmware's reason type converts from `S` with `From`, and the reboot handles
+implement the trait for every type their reason type converts from, so the
+conversion is the firmware's `From` alone, and a `&dyn RebootRequest<S>`
+names neither the firmware's reasons nor the service.
+
+Only two places may reset the chip: the panic handler, and the firmware's
+implementation of `eveningstar_system::Reset`, through which the reboot
+service and the watchdog supervisor reset. `reset::take` hands that
+implementation out once per boot, to those two services. Clippy's
+`disallowed_methods`, configured in `.clippy.toml`, rejects the reset
+functions everywhere else. Those two places `#[expect]` the lint, with a
+reason.
 
 The watchdogs come in three layers, each a backstop for the one above it: a
 software supervisor over tasks, then the chip's main and RTC watchdogs. See
-`watchdog.rs` for what each layer catches.
+`eveningstar_system::watchdog` for what each layer catches, and the firmware's
+`watchdog.rs` for the chip's watchdogs.
 
 ## Planned crates
 
