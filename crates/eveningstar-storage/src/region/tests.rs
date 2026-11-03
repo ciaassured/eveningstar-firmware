@@ -580,6 +580,7 @@ fn access_errors_map_to_nor_flash_kinds() {
         AccessError::OutOfRange
     );
     assert_eq!(AccessError::from(ReadError::Device), AccessError::Device);
+    assert_eq!(AccessError::from(ReadError::Stale), AccessError::Device);
 }
 
 #[test]

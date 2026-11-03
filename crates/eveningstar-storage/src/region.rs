@@ -55,7 +55,9 @@ impl From<ReadError> for AccessError {
     fn from(error: ReadError) -> Self {
         match error {
             ReadError::OutOfRange => Self::OutOfRange,
-            ReadError::Device => Self::Device,
+            // A read of a region written under it returned bytes that can't
+            // be used, as a failed read does.
+            ReadError::Device | ReadError::Stale => Self::Device,
         }
     }
 }

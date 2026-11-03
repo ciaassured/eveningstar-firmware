@@ -7,6 +7,9 @@ pub enum ReadError {
     OutOfRange,
     /// The device behind the source failed the read.
     Device,
+    /// The region was written while it was read, so the bytes read may mix
+    /// the contents from before and after the write.
+    Stale,
 }
 
 /// Bytes that can be read at offsets: a byte slice, or a region of flash.
@@ -22,7 +25,8 @@ pub trait Source {
     /// # Errors
     ///
     /// [`ReadError::OutOfRange`] when the range doesn't lie inside the source,
-    /// and [`ReadError::Device`] when the device behind it fails the read.
+    /// [`ReadError::Device`] when the device behind it fails the read, and
+    /// [`ReadError::Stale`] when the region was written while it was read.
     fn read(&self, offset: u32, buf: &mut [u8]) -> Result<(), ReadError>;
 }
 
