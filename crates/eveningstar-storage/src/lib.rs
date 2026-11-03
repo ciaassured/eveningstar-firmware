@@ -2,9 +2,9 @@
 //! board's table and bootloader, the typed handles to the partitions, and the
 //! OTA mechanism.
 //!
-//! [`split`] reads the board through a [`NorDevice`](nor::NorDevice) once per boot and hands out
-//! the handles of the trust tier it reaches ([`Storage`]); the
-//! [`partitions`] module documents the handles.
+//! [`split`] reads the board through a [`NorDevice`](nor::NorDevice) once per
+//! boot and hands out the handles of the trust tier it reaches
+//! ([`Storage`]); the [`partitions`] module documents the handles.
 //!
 //! In the full tier, [`Ota`] alone writes the other app slot and the otadata.
 //! An update is written and verified ([`Ota::begin_update`],
@@ -17,10 +17,18 @@
 //! whole image: the one running, or an activated one with its rollback
 //! armed. Nothing in the crate reboots.
 //!
+//! The handles of the second design sit beside these: the [`roles`] of the
+//! regions, and in [`nor`] the internal flash's readers, writers and write
+//! sessions over a state table that gives each region a [`WriteState`].
+//! Readers read through snapshots, which fail once their region is written,
+//! and readers of publishable roles publish views ([`PublicRead`]), the
+//! only bytes meant to leave the device.
+//!
 //! The formats on the flash (the partition table, ESP images and the otadata)
 //! are read by `eveningstar-esp-formats`, whose [`image`], [`otadata`] and
 //! [`table`] modules are re-exported. The crate is `no_std`, allocation-free,
-//! and also builds on the host.
+//! and also builds on the host. The `test-support` feature adds the
+//! `test_support` module: a NOR flash in RAM, and handles over it.
 
 #![cfg_attr(not(test), no_std)]
 
