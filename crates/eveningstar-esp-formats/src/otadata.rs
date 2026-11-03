@@ -58,8 +58,6 @@ pub const BLANK_SEQ: u32 = u32::MAX;
 /// The CRC-32 polynomial, reflected.
 const POLY: u32 = 0xEDB8_8320;
 
-const _: () = assert!(crate::layout::OTADATA.size == 2 * SECTOR_SIZE);
-
 /// The CRC an entry with sequence number `seq` stores: ESP-IDF's
 /// `esp_rom_crc32_le(UINT32_MAX, &seq, 4)`, a reflected CRC-32 with the
 /// register starting at 0 and the result inverted, over the four

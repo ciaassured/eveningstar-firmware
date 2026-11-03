@@ -27,7 +27,7 @@ in
       # and clippy, that the generated storage layout is current, and the web
       # UI's lint and type check), `build` (a release build, which also links,
       # with the web UI bundled, the partition table ESP-IDF builds checked
-      # against the storage layout, the storage crate's Nix-built test fixtures
+      # against the storage layout, the Nix-built test fixtures of the formats crate
       # checked against what Nix builds, and the Nix bootloader, table and the
       # built app image run through the storage crate's `check-images`) and
       # `test` (the tests of the
@@ -84,18 +84,18 @@ in
             }
           }
 
-          # The storage crate's tests read the partition table and bootloader
-          # Nix builds from committed copies, which have to equal what Nix
-          # builds now.
+          # The tests of the formats and storage crates read the partition
+          # table and bootloader Nix builds from committed copies, which have to
+          # equal what Nix builds now.
           # shellcheck disable=SC2329 # run through run_check
           check_storage_testdata() {
             local testdata file stale=0
             testdata="$(nix build --no-link --print-out-paths .#storage-testdata)" || return 1
             for file in partition-table.bin bootloader.bin; do
-              cmp "crates/eveningstar-storage/testdata/$file" "$testdata/$file" || stale=1
+              cmp "crates/eveningstar-esp-formats/testdata/$file" "$testdata/$file" || stale=1
             done
             if [ "$stale" -ne 0 ]; then
-              echo "crates/eveningstar-storage/testdata does not match what Nix builds: run storage-testdata" >&2
+              echo "crates/eveningstar-esp-formats/testdata does not match what Nix builds: run storage-testdata" >&2
               return 1
             fi
           }
@@ -145,7 +145,7 @@ in
           # The crates that also build on the host, and the host's target.
           # Their features stay out of the firmware's lint, as `--all-features`
           # would otherwise enable them in the firmware's dependency on them.
-          host_crates=(eveningstar-api eveningstar-storage)
+          host_crates=(eveningstar-api eveningstar-esp-formats eveningstar-storage)
           host_target="$(rustc --print host-tuple)"
 
           expanded=()

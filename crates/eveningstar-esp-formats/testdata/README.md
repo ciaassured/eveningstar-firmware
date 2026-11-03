@@ -1,6 +1,7 @@
 # Test fixtures
 
-Real binaries the storage crate's tests read with `include_bytes!`.
+Real binaries the tests read with `include_bytes!`: this crate's through
+`src/test_support.rs`, which the storage crate's tests use too.
 
 | File | Bytes | What it is |
 |---|---|---|
@@ -18,7 +19,7 @@ the `build` check group fails when they don't, and the `storage-testdata`
 dev-shell command rewrites them. The tests also hold the bootloader's
 SHA-256 digests (the one the image stores, and the `sha256sum` of the file),
 which change with it, and a new bootloader needs its entry
-in `src/known.rs`, which the `build` group prints.
+in `crates/eveningstar-storage/src/known.rs`, which the `build` group prints.
 
 ## Snapshots
 
@@ -49,7 +50,7 @@ repository root:
 nix develop --command flash-all
 # about 10 s for the board to boot
 nix develop --command esptool --chip esp32c6 read-flash 0xA000 0x2000 \
-  crates/eveningstar-storage/testdata/otadata-first-boot.bin
+  crates/eveningstar-esp-formats/testdata/otadata-first-boot.bin
 ```
 
 `flash-all` writes the bootloader, the table, blank otadata and the app at

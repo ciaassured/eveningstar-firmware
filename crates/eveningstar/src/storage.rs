@@ -25,7 +25,8 @@ use eveningstar_storage::otadata::{self, Sector, State, Validity};
 use eveningstar_storage::partitions::{Partition, PartitionTable};
 use eveningstar_storage::table::{self, Fields, Found, Match};
 use eveningstar_storage::{
-    DeviceError, Entry, Flash, Limit, Report, SECTOR_SIZE, Slot, Storage, Text, Tier, layout, split,
+    DeviceError, Entry, Flash, Limit, Report, SECTOR_SIZE, Slot, SlotPartitions as _, Storage,
+    Text, Tier, layout, split,
 };
 use static_cell::StaticCell;
 

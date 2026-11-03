@@ -14,7 +14,7 @@ use crate::test_support::{
     RamFlash, Rng, TABLE, Tear, app_descriptor_bytes, block_on, boot_flash, data, idf_loads, lend,
     run, segment_at,
 };
-use crate::{DeviceError, Entry, Flash, ReadError, Tier, split};
+use crate::{DeviceError, Entry, Flash, ReadError, SlotPartitions as _, Tier, split};
 
 // Images.
 

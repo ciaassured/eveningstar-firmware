@@ -4,10 +4,9 @@
 )]
 
 use super::*;
-use crate::layout::{PARTITIONS, TABLE_OFFSET};
 use crate::test_support::{
-    ESPFLASH_TABLE, Rng, TABLE, entry_bytes, flash_with, md5_entry, md5_entry_for, table_of,
-    table_with_md5,
+    ESPFLASH_TABLE, PARTITIONS, Rng, TABLE, TABLE_OFFSET, entry_bytes, flash_with, md5_entry,
+    md5_entry_for, table_of, table_with_md5,
 };
 use crate::{FLAG_READONLY, TYPE_DATA};
 
@@ -65,17 +64,6 @@ fn the_nix_table_matches_the_layout() {
 }
 
 #[test]
-fn the_nix_table_matches_at_the_compiled_offset() {
-    let flash = flash_with(0x1_0000, &[(TABLE_OFFSET, TABLE)]);
-    assert!(compare_layout(&flash[..]).matches());
-    // The same bytes one sector further on aren't at the compiled offset.
-    let moved = flash_with(0x1_0000, &[(TABLE_OFFSET + SECTOR_SIZE, TABLE)]);
-    let comparison = compare_layout(&moved[..]);
-    assert_eq!(comparison.end, Err(TableError::Empty));
-    assert_eq!(comparison.partitions, [Match::Missing; N]);
-}
-
-#[test]
 fn the_espflash_table_is_read_as_stored() {
     let entries = read_all(ESPFLASH_TABLE, 0);
     let summary: Vec<_> = entries
@@ -129,9 +117,6 @@ fn the_espflash_table_differs_from_the_layout() {
         })
     ));
     assert!(!comparison.matches());
-
-    let flash = flash_with(0x1_0000, &[(TABLE_OFFSET, ESPFLASH_TABLE)]);
-    assert_eq!(compare_layout(&flash[..]), comparison);
 }
 
 // Each field of each entry.
@@ -890,7 +875,7 @@ fn exercise(source: &[u8], offset: u32) {
     let comparison = compare(source, offset, &PARTITIONS);
     let _ = comparison.matches();
     let _ = std::format!("{comparison:?}");
-    let _ = compare_layout(source);
+    let _ = compare(source, TABLE_OFFSET, &PARTITIONS);
     for entry in entries(source, offset).flatten() {
         let _ = entry.label.to_str();
         let _ = std::format!("{entry:?}");

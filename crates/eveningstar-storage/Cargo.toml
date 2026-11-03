@@ -8,7 +8,11 @@ publish.workspace = true
 
 [dependencies]
 embedded-storage-async.workspace = true
+eveningstar-esp-formats.workspace = true
 sha2.workspace = true
+
+[dev-dependencies]
+eveningstar-esp-formats = { workspace = true, features = ["test-support"] }
 
 [lints]
 workspace = true
