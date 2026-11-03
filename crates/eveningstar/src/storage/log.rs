@@ -433,12 +433,20 @@ pub(super) fn ota(ota: &Ota<'_>) {
     }
 }
 
-/// A digest as hex digits.
+/// A SHA-256 digest, formatted as 64 lowercase hex digits with nothing
+/// between them, as `sha256sum` and `esptool image-info` print it.
 pub(super) struct Hex<'a>(pub(super) &'a [u8; 32]);
 
 impl Format for Hex<'_> {
     fn format(&self, f: Formatter<'_>) {
-        defmt::write!(f, "{=[u8]:02x}", self.0[..]);
+        const DIGITS: &[u8; 16] = b"0123456789abcdef";
+        let mut text = [0; 64];
+        for (pair, byte) in text.as_chunks_mut::<2>().0.iter_mut().zip(self.0) {
+            for (digit, nibble) in pair.iter_mut().zip([byte >> 4, byte & 0x0F]) {
+                *digit = DIGITS[usize::from(nibble)];
+            }
+        }
+        defmt::write!(f, "{=str}", core::str::from_utf8(&text).unwrap_or_default());
     }
 }
 
