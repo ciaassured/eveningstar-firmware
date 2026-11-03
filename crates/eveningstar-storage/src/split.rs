@@ -23,8 +23,8 @@ use crate::partitions::{
 use crate::region::Region;
 use crate::table::{self, Found};
 use crate::{
-    Entry, LayoutComparison, ReadError, Slot, SlotPartitions as _, Text, compare_layout, known,
-    layout,
+    Entry, LayoutComparison, ReadError, Slot, SlotPartitions as _, Source, Text, compare_layout,
+    known, layout,
 };
 
 /// How far the board is trusted, from least to most.
@@ -278,8 +278,11 @@ impl<'f> Checks<'f> {
     /// have read. A booted offset past the flash has no table entry to find.
     fn search(&mut self) {
         let whole = Region::clamped(self.flash, 0, self.flash.capacity());
+        let mut header = [0; image::HEADER_LEN as usize];
+        let chip_size = Source::read(&whole, 0, &mut header)
+            .map_or(0, |()| image::flash_size(image::flash_size_code(&header)));
         if self.booted < whole.len() {
-            self.found = Some(table::find(&whole, self.booted));
+            self.found = Some(table::find(&whole, self.booted, chip_size));
         }
     }
 
