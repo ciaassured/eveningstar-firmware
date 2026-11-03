@@ -1,0 +1,22 @@
+[package]
+name = "eveningstar-ota"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+eveningstar-boot.workspace = true
+eveningstar-esp-formats.workspace = true
+eveningstar-storage.workspace = true
+
+[dev-dependencies]
+# A critical-section implementation for the host.
+critical-section = { workspace = true, features = ["std"] }
+eveningstar-esp-formats = { workspace = true, features = ["test-support"] }
+eveningstar-storage = { workspace = true, features = ["test-support"] }
+sha2.workspace = true
+
+[lints]
+workspace = true
