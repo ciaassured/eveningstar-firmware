@@ -206,6 +206,13 @@ impl<'f, R: AppRole> AppSlot<'f, R> {
         self.reader.span()
     }
 
+    /// The region's write state now: the epoch to ask
+    /// [`verdict`](Self::verdict) for.
+    #[must_use]
+    pub fn write_state(&self) -> WriteState {
+        self.reader.write_state()
+    }
+
     /// The last result, while the region is stable at its epoch. Never
     /// inlined, so its copies stay out of the callers' frames.
     #[must_use]

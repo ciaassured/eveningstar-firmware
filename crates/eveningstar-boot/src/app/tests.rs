@@ -238,9 +238,11 @@ fn the_check_runs_again_after_a_write_and_the_verdict_follows_the_epoch() {
     assert_eq!(run(slot.verdict(before.epoch())), Ok(before));
     let old_view = slot.published(&before).unwrap();
 
+    assert_eq!(slot.write_state(), WriteState::Stable(before.epoch()));
     rewrite(&mut writer, &second);
     let epoch = writer.write_state().epoch();
     assert_ne!(epoch, before.epoch());
+    assert_eq!(slot.write_state(), writer.write_state());
     // The old epoch is stale, and so is what was published at it.
     assert_eq!(run(slot.verdict(before.epoch())), Err(LoadError::Stale));
     assert_eq!(slot.model(), None);
