@@ -1,275 +1,306 @@
-//! Fixtures and builders shared by the tests: the formats crate's, and a
-//! flash in RAM.
+//! Test support: a NOR flash in RAM with a hook on its calls, and readers and
+//! writers over it made without `split`. The module allocates, and is built
+//! only for tests and with the `test-support` feature.
+//!
+//! The RAM device and the state table lock through `critical-section`, so a
+//! host test needs an implementation of it, such as `critical-section`'s
+//! `std` feature.
+//!
+//! ```
+//! use eveningstar_storage::Span;
+//! use eveningstar_storage::roles::AlternateApp;
+//! use eveningstar_storage::test_support::{RamNor, TestFlash, run};
+//! use eveningstar_storage::{Slot, layout};
+//!
+//! let flash = TestFlash::new(RamNor::erased(layout::FLASH_SIZE));
+//! let span = Span::from(layout::OTA_1);
+//! let mut writer = flash.writer::<AlternateApp>(span, Slot::Ota0);
+//! run(writer.begin().program(0, &[0; 4])).unwrap();
+//! assert_eq!(flash.device().at(span.offset, 5), [0, 0, 0, 0, 0xFF]);
+//! ```
 
 #![allow(
-    clippy::cast_possible_truncation,
-    reason = "the flash's addresses and lengths fit"
+    clippy::missing_panics_doc,
+    clippy::must_use_candidate,
+    reason = "test support panics on misuse, and its getters are plain"
 )]
 
 extern crate alloc;
 
 use alloc::boxed::Box;
-use std::sync::Mutex;
+use alloc::collections::BTreeMap;
+use alloc::vec;
+use alloc::vec::Vec;
+use core::cell::RefCell;
+use core::fmt;
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-pub(crate) use eveningstar_esp_formats::test_support::*;
+use embassy_sync::blocking_mutex::CriticalSectionMutex;
 
-use crate::SlotPartitions as _;
+pub use eveningstar_esp_formats::test_support::{Run, block_on, run};
 
-/// Size of the board's flash in bytes.
-pub(crate) const FLASH_LEN: usize = crate::layout::FLASH_SIZE as usize;
+use crate::nor::{self, NorDevice, SECTOR_SIZE, WORD_SIZE};
+use crate::roles::{Internal, Role, Writable};
+use crate::{DeviceError, Slot, Span};
 
-/// A flash in RAM with NOR semantics: an erase sets a sector to `0xFF`, a
-/// program ANDs the bytes in. A call that breaks the [`NorDevice`] contract
-/// (misaligned, past the end, more than a sector programmed at once) panics,
-/// as it is a bug in the crate. Every erase and program is logged, and they
-/// can be made to fail after a number of them, the first that fails landing
-/// in part as a power cut leaves it.
-///
-/// [`NorDevice`]: crate::nor::NorDevice
-#[derive(Debug)]
-pub(crate) struct RamFlash {
-    bytes: Mutex<Vec<u8>>,
-    /// Erases and programs that succeeded, as (address, length, is erase).
-    ops: Mutex<Vec<Op>>,
-    /// The number of erases and programs that succeed before every later one
-    /// fails.
-    fail_after: Mutex<Option<usize>>,
-    /// How the first program that fails lands.
-    tear: Mutex<Option<Tear>>,
-    /// Reads that touch this range fail.
-    fail_reads: Mutex<Option<core::ops::Range<u32>>>,
-}
+#[cfg(test)]
+mod board;
+#[cfg(test)]
+pub(crate) use board::*;
 
-/// An erase or program a [`RamFlash`] carried out.
+/// A call a [`RamNor`] received.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Op {
+pub enum Call {
+    /// A read of the given length at the given address.
+    Read(u32, u32),
+    /// An erase of the sector at the given address.
     Erase(u32),
+    /// A program of the given length at the given address.
     Program(u32, u32),
 }
 
-impl RamFlash {
-    /// A flash holding `bytes`.
-    pub(crate) fn new(bytes: Vec<u8>) -> Self {
-        assert!(u32::try_from(bytes.len()).is_ok());
+/// A hook run before a call.
+type Hook = Box<dyn FnOnce() + Send>;
+
+/// A NOR flash in RAM: an erase sets a sector to `0xFF`, a program ANDs the
+/// bytes in, and bytes never written read as `0xFF`. Only the sectors written
+/// take memory.
+///
+/// Every call is logged ([`calls`](Self::calls)), and a hook can run before
+/// any of them ([`before_call`](Self::before_call)), which stands for a task
+/// that runs between two calls. A call that breaks the [`NorDevice`] contract
+/// (misaligned, past the capacity, more than a sector programmed) panics, as
+/// it is a bug in the caller.
+pub struct RamNor {
+    capacity: u32,
+    sectors: CriticalSectionMutex<RefCell<BTreeMap<u32, Vec<u8>>>>,
+    calls: CriticalSectionMutex<RefCell<Vec<Call>>>,
+    hooks: CriticalSectionMutex<RefCell<Vec<(usize, Hook)>>>,
+    /// The number of calls received.
+    count: AtomicUsize,
+    /// Whether erases and programs fail, changing nothing.
+    failing: AtomicBool,
+}
+
+impl RamNor {
+    /// An erased flash of `capacity` bytes.
+    pub fn erased(capacity: u32) -> Self {
         Self {
-            bytes: Mutex::new(bytes),
-            ops: Mutex::default(),
-            fail_after: Mutex::default(),
-            tear: Mutex::default(),
-            fail_reads: Mutex::default(),
+            capacity,
+            sectors: CriticalSectionMutex::new(RefCell::new(BTreeMap::new())),
+            calls: CriticalSectionMutex::new(RefCell::new(Vec::new())),
+            hooks: CriticalSectionMutex::new(RefCell::new(Vec::new())),
+            count: AtomicUsize::new(0),
+            failing: AtomicBool::new(false),
         }
     }
 
-    /// An erased flash of `len` bytes with `parts` written at their offsets.
-    pub(crate) fn with(len: usize, parts: &[(u32, &[u8])]) -> Self {
-        Self::new(flash_with(len, parts))
+    /// A flash of `capacity` bytes holding `parts` at their addresses and
+    /// `0xFF` elsewhere.
+    pub fn with(capacity: u32, parts: &[(u32, &[u8])]) -> Self {
+        let flash = Self::erased(capacity);
+        for (address, bytes) in parts {
+            flash.poke(*address, bytes);
+        }
+        flash
     }
 
-    /// Makes every erase and program fail once `n` more have succeeded.
-    pub(crate) fn fail_after(&self, n: usize) {
-        let done = self.ops.lock().unwrap().len();
-        *self.fail_after.lock().unwrap() = Some(done + n);
+    /// Runs `hook` before the call that is the `n`-th from now, counting
+    /// from 0 for the next one, and before that call takes effect. The calls
+    /// the hook makes are counted too.
+    pub fn before_call(&self, n: usize, hook: impl FnOnce() + Send + 'static) {
+        let at = self.count.load(Ordering::SeqCst) + n;
+        self.hooks
+            .lock(|hooks| hooks.borrow_mut().push((at, Box::new(hook))));
     }
 
-    /// Cuts the power once `n` more erases and programs have succeeded: every
-    /// later one fails, and when the first to fail is a program, it lands as
-    /// `tear` says all the same.
-    pub(crate) fn cut_after(&self, n: usize, tear: Tear) {
-        self.fail_after(n);
-        *self.tear.lock().unwrap() = Some(tear);
+    /// Makes every later erase and program fail without changing a bit, or
+    /// succeed again.
+    pub fn fail_writes(&self, failing: bool) {
+        self.failing.store(failing, Ordering::SeqCst);
     }
 
-    /// Makes every read that touches `range` fail.
-    pub(crate) fn fail_reads(&self, range: core::ops::Range<u32>) {
-        *self.fail_reads.lock().unwrap() = Some(range);
+    /// The calls received so far, in order.
+    pub fn calls(&self) -> Vec<Call> {
+        self.calls.lock(|calls| calls.borrow().clone())
     }
 
-    /// Lets every erase, program and read succeed again.
-    pub(crate) fn heal(&self) {
-        *self.fail_after.lock().unwrap() = None;
-        *self.tear.lock().unwrap() = None;
-        *self.fail_reads.lock().unwrap() = None;
-    }
-
-    /// Writes `bytes` at `address` as they are, without logging them or
-    /// failing: what the bootloader writes, or what decays on the flash.
-    pub(crate) fn poke(&self, address: u32, bytes: &[u8]) {
-        let range = self.range(address, bytes.len());
-        self.bytes.lock().unwrap()[range].copy_from_slice(bytes);
-    }
-
-    /// What `read` returns given the bytes, without copying them.
-    pub(crate) fn with_bytes<T>(&self, read: impl FnOnce(&[u8]) -> T) -> T {
-        read(&self.bytes.lock().unwrap())
-    }
-
-    /// The erases and programs carried out so far.
-    pub(crate) fn ops(&self) -> Vec<Op> {
-        self.ops.lock().unwrap().clone()
-    }
-
-    /// A copy of the bytes.
-    pub(crate) fn bytes(&self) -> Vec<u8> {
-        self.bytes.lock().unwrap().clone()
+    /// The erases and programs received so far, in order.
+    pub fn writes(&self) -> Vec<Call> {
+        self.calls()
+            .into_iter()
+            .filter(|call| !matches!(call, Call::Read(..)))
+            .collect()
     }
 
     /// A copy of the `len` bytes at `address`.
-    pub(crate) fn at(&self, address: u32, len: usize) -> Vec<u8> {
-        let at = address as usize;
-        self.bytes.lock().unwrap()[at..at + len].to_vec()
+    pub fn at(&self, address: u32, len: usize) -> Vec<u8> {
+        let mut bytes = vec![0; len];
+        self.copy_out(address, &mut bytes);
+        bytes
     }
 
-    fn range(&self, address: u32, len: usize) -> core::ops::Range<usize> {
-        let start = address as usize;
-        let end = start.checked_add(len).expect("range overflows");
-        assert!(
-            end <= self.bytes.lock().unwrap().len(),
-            "{start:#x}..{end:#x} is past the end of the flash"
-        );
-        start..end
-    }
-
-    /// Logs `op`, or fails it when the failure point has been reached.
-    fn record(&self, op: Op) -> Result<(), crate::DeviceError> {
-        let mut ops = self.ops.lock().unwrap();
-        if self
-            .fail_after
-            .lock()
-            .unwrap()
-            .is_some_and(|n| ops.len() >= n)
-        {
-            return Err(crate::DeviceError);
-        }
-        ops.push(op);
-        Ok(())
-    }
-}
-
-/// A [`RamFlash`] lent to [`crate::split`], which takes its flash mutably, while
-/// the test keeps reading it: the box is leaked, so the borrow lasts as long as
-/// `flash` does.
-pub(crate) fn lend(flash: &RamFlash) -> &mut dyn crate::nor::NorDevice {
-    Box::leak(Box::new(Lent(flash)))
-}
-
-/// A shared [`RamFlash`] as a [`crate::nor::NorDevice`], for [`lend`].
-struct Lent<'a>(&'a RamFlash);
-
-impl crate::nor::NorDevice for Lent<'_> {
-    fn capacity(&self) -> u32 {
-        crate::nor::NorDevice::capacity(self.0)
-    }
-    fn read(&self, address: u32, buf: &mut [u8]) -> Result<(), crate::DeviceError> {
-        crate::nor::NorDevice::read(self.0, address, buf)
-    }
-    fn erase_sector(&self, address: u32) -> Result<(), crate::DeviceError> {
-        crate::nor::NorDevice::erase_sector(self.0, address)
-    }
-    fn program(&self, address: u32, bytes: &[u8]) -> Result<(), crate::DeviceError> {
-        crate::nor::NorDevice::program(self.0, address, bytes)
-    }
-}
-
-impl crate::nor::NorDevice for RamFlash {
-    fn capacity(&self) -> u32 {
-        self.bytes.lock().unwrap().len() as u32
-    }
-
-    fn read(&self, address: u32, buf: &mut [u8]) -> Result<(), crate::DeviceError> {
-        let range = self.range(address, buf.len());
-        let fails = self.fail_reads.lock().unwrap().clone();
-        if let Some(fails) = fails
-            && (range.start as u32) < fails.end
-            && fails.start < range.end as u32
-        {
-            return Err(crate::DeviceError);
-        }
-        buf.copy_from_slice(&self.bytes.lock().unwrap()[range]);
-        Ok(())
-    }
-
-    fn erase_sector(&self, address: u32) -> Result<(), crate::DeviceError> {
-        assert!(
-            address.is_multiple_of(crate::SECTOR_SIZE),
-            "erase at {address:#x}"
-        );
-        let range = self.range(address, crate::SECTOR_SIZE as usize);
-        if let Err(error) = self.record(Op::Erase(address)) {
-            // A cut erase lands whole or not at all here.
-            *self.tear.lock().unwrap() = None;
-            return Err(error);
-        }
-        self.bytes.lock().unwrap()[range].fill(0xFF);
-        Ok(())
-    }
-
-    fn program(&self, address: u32, bytes: &[u8]) -> Result<(), crate::DeviceError> {
-        assert!(
-            address.is_multiple_of(crate::WORD_SIZE) && bytes.len().is_multiple_of(4),
-            "program of {} bytes at {address:#x}",
-            bytes.len()
-        );
-        assert!(
-            bytes.len() <= crate::SECTOR_SIZE as usize,
-            "program of {} bytes at once",
-            bytes.len()
-        );
-        let range = self.range(address, bytes.len());
-        let recorded = self.record(Op::Program(address, bytes.len() as u32));
-        let mut flash = self.bytes.lock().unwrap();
-        if recorded.is_err() {
-            if let Some(tear) = self.tear.lock().unwrap().take() {
-                tear.land(&mut flash[range], bytes);
+    /// Writes `bytes` at `address` as they are, without logging or failing:
+    /// what another writer of the chip leaves, such as esptool.
+    pub fn poke(&self, address: u32, bytes: &[u8]) {
+        self.check(address, bytes.len());
+        self.sectors.lock(|sectors| {
+            let mut sectors = sectors.borrow_mut();
+            for (at, byte) in (address..).zip(bytes) {
+                Self::sector(&mut sectors, at)[Self::index(at)] = *byte;
             }
-            return recorded;
+        });
+    }
+
+    /// Panics unless the `len` bytes at `address` lie inside the capacity.
+    fn check(&self, address: u32, len: usize) {
+        let end = u32::try_from(len)
+            .ok()
+            .and_then(|len| address.checked_add(len));
+        assert!(
+            end.is_some_and(|end| end <= self.capacity),
+            "{len} bytes at {address:#x} run past the capacity {:#x}",
+            self.capacity
+        );
+    }
+
+    /// The offset of `address` in its sector.
+    fn index(address: u32) -> usize {
+        (address % SECTOR_SIZE) as usize
+    }
+
+    /// The sector holding `address`, erased when it was never written.
+    fn sector(sectors: &mut BTreeMap<u32, Vec<u8>>, address: u32) -> &mut Vec<u8> {
+        sectors
+            .entry(address / SECTOR_SIZE)
+            .or_insert_with(|| vec![0xFF; SECTOR_SIZE as usize])
+    }
+
+    fn copy_out(&self, address: u32, buf: &mut [u8]) {
+        self.check(address, buf.len());
+        self.sectors.lock(|sectors| {
+            let sectors = sectors.borrow();
+            for (at, byte) in (address..).zip(buf.iter_mut()) {
+                *byte = sectors
+                    .get(&(at / SECTOR_SIZE))
+                    .map_or(0xFF, |sector| sector[Self::index(at)]);
+            }
+        });
+    }
+
+    /// Counts and logs `call`, after running the hooks due before it.
+    fn receive(&self, call: Call) {
+        let index = self.count.fetch_add(1, Ordering::SeqCst);
+        let due: Vec<Hook> = self.hooks.lock(|hooks| {
+            let mut hooks = hooks.borrow_mut();
+            let (due, later) = hooks.drain(..).partition(|(at, _)| *at == index);
+            *hooks = later;
+            due.into_iter().map(|(_, hook)| hook).collect()
+        });
+        // Outside every lock: a hook makes calls of its own.
+        for hook in due {
+            hook();
         }
-        for (old, new) in flash[range].iter_mut().zip(bytes) {
-            *old &= new;
+        self.calls.lock(|calls| calls.borrow_mut().push(call));
+    }
+}
+
+impl NorDevice for RamNor {
+    fn capacity(&self) -> u32 {
+        self.capacity
+    }
+
+    fn read(&self, address: u32, buf: &mut [u8]) -> Result<(), DeviceError> {
+        let len = u32::try_from(buf.len()).expect("read length fits");
+        self.receive(Call::Read(address, len));
+        self.copy_out(address, buf);
+        Ok(())
+    }
+
+    fn erase_sector(&self, address: u32) -> Result<(), DeviceError> {
+        assert!(address.is_multiple_of(SECTOR_SIZE), "erase at {address:#x}");
+        self.check(address, SECTOR_SIZE as usize);
+        self.receive(Call::Erase(address));
+        if self.failing.load(Ordering::SeqCst) {
+            return Err(DeviceError);
         }
+        self.sectors.lock(|sectors| {
+            sectors.borrow_mut().remove(&(address / SECTOR_SIZE));
+        });
+        Ok(())
+    }
+
+    fn program(&self, address: u32, bytes: &[u8]) -> Result<(), DeviceError> {
+        let len = u32::try_from(bytes.len()).expect("program length fits");
+        assert!(
+            address.is_multiple_of(WORD_SIZE) && len.is_multiple_of(WORD_SIZE),
+            "program of {len} bytes at {address:#x}"
+        );
+        assert!(len <= SECTOR_SIZE, "program of {len} bytes in one call");
+        self.check(address, bytes.len());
+        self.receive(Call::Program(address, len));
+        if self.failing.load(Ordering::SeqCst) {
+            return Err(DeviceError);
+        }
+        self.sectors.lock(|sectors| {
+            let mut sectors = sectors.borrow_mut();
+            for (at, byte) in (address..).zip(bytes) {
+                Self::sector(&mut sectors, at)[Self::index(at)] &= *byte;
+            }
+        });
         Ok(())
     }
 }
 
-/// The otadata partition's offset.
-pub(crate) const OTADATA_AT: u32 = crate::layout::OTADATA.offset;
-
-/// A board flashed by `flash-all`: the Nix bootloader and table, the otadata
-/// the bootloader writes on its first boot, and the app in `ota_0`.
-pub(crate) fn nix_board() -> RamFlash {
-    RamFlash::with(
-        FLASH_LEN,
-        &[
-            (0, BOOTLOADER),
-            (crate::layout::TABLE_OFFSET, TABLE),
-            (OTADATA_AT, OTADATA_FIRST_BOOT),
-            (crate::layout::OTA_0.offset, APP),
-        ],
-    )
+impl fmt::Debug for RamNor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RamNor")
+            .field("capacity", &self.capacity)
+            .field("count", &self.count)
+            .finish_non_exhaustive()
+    }
 }
 
-/// A board flashed by `cargo run`: espflash's bootloader and default table,
-/// and the app in its `factory` partition at 0x10000.
-pub(crate) fn espflash_board() -> RamFlash {
-    RamFlash::with(
-        FLASH_LEN,
-        &[
-            (0, ESPFLASH_BOOTLOADER),
-            (0x8000, ESPFLASH_TABLE),
-            (0x1_0000, APP),
-        ],
-    )
+/// A [`RamNor`] and a state table, both leaked so the handles made over them
+/// are `'static` and can move into a hook.
+///
+/// It makes any number of readers and writers, of any span: the uniqueness
+/// `split` gives is up to the test.
+#[derive(Clone, Copy, Debug)]
+pub struct TestFlash {
+    device: &'static RamNor,
+    state: &'static nor::State,
 }
 
-/// One boot of `flash` by the simulated ESP-IDF bootloader ([`boot`]), which
-/// loads a slot when [`idf_loads`] says so and writes the otadata back
-/// unlogged: the slot started, `None` when none loads.
-pub(crate) fn boot_flash(flash: &RamFlash) -> Option<crate::Slot> {
-    let loadable = crate::Slot::ALL.map(|slot| {
-        let entry = slot.partition();
-        flash.with_bytes(|bytes| idf_loads(&bytes[entry.offset as usize..entry.end() as usize]))
-    });
-    let mut otadata = flash.at(OTADATA_AT, OTADATA_LEN);
-    let booted = boot(&mut otadata, loadable);
-    flash.poke(OTADATA_AT, &otadata);
-    booted
+impl TestFlash {
+    /// The handles' flash: `device`, with a new state table.
+    pub fn new(device: RamNor) -> Self {
+        Self {
+            device: Box::leak(Box::new(device)),
+            state: Box::leak(Box::new(nor::State::new())),
+        }
+    }
+
+    /// The device.
+    pub fn device(&self) -> &'static RamNor {
+        self.device
+    }
+
+    /// A reader of `span`, absolute, with role `R`. Panics unless the span
+    /// lies inside the device.
+    pub fn reader<R: Role<Device = Internal>>(&self, span: Span) -> nor::Reader<'static, R> {
+        nor::Reader::new(self.device, self.state, span).expect("the span lies inside the device")
+    }
+
+    /// A writer of `span`, absolute, with role `R`, while the app runs from
+    /// `running`. Panics unless the span lies inside the device and inside
+    /// one physical span of the compiled layout.
+    pub fn writer<R: Writable<Device = Internal>>(
+        &self,
+        span: Span,
+        running: Slot,
+    ) -> nor::Writer<'static, R> {
+        nor::Writer::new(self.device, self.state, span, running)
+            .expect("the span lies inside the device and one physical span")
+    }
 }

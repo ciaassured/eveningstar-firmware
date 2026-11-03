@@ -1,4 +1,162 @@
-//! NOR flash: the device trait and its sizes.
+//! NOR flash: the device trait, its sizes, the state table and the handles
+//! of the internal flash's regions.
+//!
+//! A region's handles are a [`Reader<'f, R>`] and a [`Writer<'f, R>`], where
+//! `R` is its [role](crate::roles). Each holds the device, the
+//! [`State`] table and the region's span; neither is `Clone` nor `Copy`, and
+//! only the crate makes them. A writer reads at any time and writes only
+//! through a [`Session`], which marks the region written to while it lives.
+//!
+//! A writer erases and programs only inside a session:
+//!
+//! ```
+//! use eveningstar_storage::nor::Writer;
+//! use eveningstar_storage::roles::{AlternateConfig, CurrentConfig};
+//!
+//! async fn store(config: &mut Writer<'_, CurrentConfig>, old: &mut Writer<'_, AlternateConfig>) {
+//!     let mut session = config.begin();
+//!     let _ = session.erase(0, 4096).await;
+//!     let _ = session.program(0, &[0; 4]).await;
+//!     drop(session);
+//!     let _ = old.begin().erase(0, 4096).await;
+//! }
+//! ```
+//!
+//! ```compile_fail,E0599
+//! use eveningstar_storage::nor::Writer;
+//! use eveningstar_storage::roles::CurrentConfig;
+//!
+//! async fn store(config: &mut Writer<'_, CurrentConfig>) {
+//!     let _ = config.program(0, &[0; 4]).await;
+//! }
+//! ```
+//!
+//! ```compile_fail,E0599
+//! use eveningstar_storage::nor::Writer;
+//! use eveningstar_storage::roles::Diag;
+//!
+//! async fn wipe(diag: &mut Writer<'_, Diag>) {
+//!     let _ = diag.erase(0, 4096).await;
+//! }
+//! ```
+//!
+//! The alternate configuration's session erases and never programs:
+//!
+//! ```compile_fail,E0599
+//! use eveningstar_storage::nor::Writer;
+//! use eveningstar_storage::roles::AlternateConfig;
+//!
+//! async fn store(old: &mut Writer<'_, AlternateConfig>) {
+//!     let _ = old.begin().program(0, &[0; 4]).await;
+//! }
+//! ```
+//!
+//! A role without a writer has none:
+//!
+//! ```compile_fail,E0277
+//! use eveningstar_storage::nor::Writer;
+//! use eveningstar_storage::roles::Bootloader;
+//!
+//! fn rewrite(_: &Writer<'_, Bootloader>) {}
+//! ```
+//!
+//! ```compile_fail,E0277
+//! use eveningstar_storage::nor::Writer;
+//! use eveningstar_storage::roles::CurrentApp;
+//!
+//! fn overwrite(_: &Writer<'_, CurrentApp>) {}
+//! ```
+//!
+//! A function takes the role it needs, and no handle of another role:
+//!
+//! ```compile_fail,E0308
+//! use eveningstar_storage::nor::Writer;
+//! use eveningstar_storage::roles::{AlternateApp, CurrentConfig};
+//!
+//! fn activate(_: &Writer<'_, AlternateApp>) {}
+//!
+//! fn run(config: &Writer<'_, CurrentConfig>) {
+//!     activate(config);
+//! }
+//! ```
+//!
+//! ```compile_fail,E0308
+//! use eveningstar_storage::nor::Reader;
+//! use eveningstar_storage::roles::{AlternateApp, CurrentApp};
+//!
+//! fn check(_: &Reader<'_, CurrentApp>) {}
+//!
+//! fn run(alternate: &Reader<'_, AlternateApp>) {
+//!     check(alternate);
+//! }
+//! ```
+//!
+//! No handle is cloned or copied:
+//!
+//! ```
+//! use eveningstar_storage::nor::{Reader, Writer};
+//! use eveningstar_storage::roles::{AlternateApp, Diag};
+//!
+//! fn keep<'f>(app: Reader<'f, AlternateApp>, diag: Writer<'f, Diag>) -> (Reader<'f, AlternateApp>, Writer<'f, Diag>) {
+//!     (app, diag)
+//! }
+//! ```
+//!
+//! ```compile_fail,E0599
+//! use eveningstar_storage::nor::Reader;
+//! use eveningstar_storage::roles::AlternateApp;
+//!
+//! fn run(app: Reader<'_, AlternateApp>) {
+//!     let _twin = app.clone();
+//! }
+//! ```
+//!
+//! ```compile_fail,E0599
+//! use eveningstar_storage::nor::Writer;
+//! use eveningstar_storage::roles::Diag;
+//!
+//! fn run(diag: Writer<'_, Diag>) {
+//!     let _twin = diag.clone();
+//! }
+//! ```
+//!
+//! ```compile_fail,E0382
+//! use eveningstar_storage::nor::Reader;
+//! use eveningstar_storage::roles::Otadata;
+//!
+//! fn run(otadata: Reader<'_, Otadata>) -> [Reader<'_, Otadata>; 2] {
+//!     [otadata, otadata]
+//! }
+//! ```
+//!
+//! ```compile_fail,E0382
+//! use eveningstar_storage::nor::Writer;
+//! use eveningstar_storage::roles::Otadata;
+//!
+//! fn run(otadata: Writer<'_, Otadata>) -> [Writer<'_, Otadata>; 2] {
+//!     [otadata, otadata]
+//! }
+//! ```
+//!
+//! A session borrows its writer mutably, so a region has one session at a
+//! time:
+//!
+//! ```compile_fail,E0499
+//! use eveningstar_storage::nor::Writer;
+//! use eveningstar_storage::roles::Diag;
+//!
+//! fn run(diag: &mut Writer<'_, Diag>) {
+//!     let first = diag.begin();
+//!     let second = diag.begin();
+//!     drop((first, second));
+//! }
+//! ```
+
+mod handle;
+mod state;
+
+pub use handle::{Reader, Session, Writer};
+pub use state::State;
 
 /// Size of a NOR flash sector, the unit of erasure, in bytes.
 pub const SECTOR_SIZE: u32 = 4096;
@@ -56,3 +214,6 @@ pub trait NorDevice: Sync {
     /// [`DeviceError`] when the device fails the program.
     fn program(&self, address: u32, bytes: &[u8]) -> Result<(), DeviceError>;
 }
+
+#[cfg(test)]
+mod tests;

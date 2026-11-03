@@ -1124,6 +1124,8 @@ dependencies = [
 name = "eveningstar-storage"
 version = "0.1.0"
 dependencies = [
+ "critical-section",
+ "embassy-sync 0.8.0",
  "embedded-storage-async",
  "eveningstar-esp-formats",
  "sha2",
