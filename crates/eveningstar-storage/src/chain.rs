@@ -367,6 +367,23 @@ pub struct BootWriters<'f> {
     slot: Slot,
 }
 
+#[cfg(test)]
+impl<'f> BootWriters<'f> {
+    /// The boot writers `alternate_app` and `otadata`, for the app running
+    /// from `slot`, made of any writers for the tests.
+    pub(crate) const fn new(
+        alternate_app: Writer<'f, AlternateApp>,
+        otadata: Writer<'f, Otadata>,
+        slot: Slot,
+    ) -> Self {
+        Self {
+            alternate_app,
+            otadata,
+            slot,
+        }
+    }
+}
+
 impl BootWriters<'_> {
     /// The slot that booted, which the writers' guard protects.
     #[must_use]

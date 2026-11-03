@@ -336,6 +336,77 @@ fn a_session_changes_only_the_epoch_of_its_spans() {
     assert_ne!(stable(whole.write_state()), whole_before);
 }
 
+// The embedded-storage adapter.
+
+#[test]
+fn a_session_behaves_as_embedded_storage_expects_of_a_nor_flash() {
+    use embedded_storage_async::nor_flash::{
+        NorFlash, NorFlashError as _, NorFlashErrorKind, ReadNorFlash,
+    };
+
+    let flash = flash();
+    let mut config = flash.writer::<CurrentConfig>(Span::from(layout::CONFIG_0), Slot::Ota0);
+    let mut diag = diag(&flash);
+    let mut config = config.begin();
+    let mut diag = diag.begin();
+    assert_eq!(<Session<'_, CurrentConfig> as ReadNorFlash>::READ_SIZE, 1);
+    assert_eq!(<Session<'_, CurrentConfig> as NorFlash>::WRITE_SIZE, 4);
+    assert_eq!(<Session<'_, Diag> as NorFlash>::ERASE_SIZE, 4096);
+    assert_eq!(config.capacity(), layout::CONFIG_0.size as usize);
+    assert_eq!(diag.capacity(), layout::DIAG.size as usize);
+    let capacity = u32::try_from(config.capacity()).unwrap();
+
+    // Reads at any alignment, inside the capacity.
+    let mut buf = [0; 3];
+    run(ReadNorFlash::read(&mut config, 1, &mut buf)).unwrap();
+    run(ReadNorFlash::read(&mut config, capacity - 3, &mut buf)).unwrap();
+    let error = run(ReadNorFlash::read(&mut config, capacity - 2, &mut buf)).unwrap_err();
+    assert_eq!(error.kind(), NorFlashErrorKind::OutOfBounds);
+
+    // Writes of whole words, inside the capacity, any number of times.
+    run(NorFlash::write(&mut config, 8, &[0xF0; 8])).unwrap();
+    run(NorFlash::write(&mut config, 8, &[0x3C; 4])).unwrap();
+    let mut buf = [0; 8];
+    run(ReadNorFlash::read(&mut config, 8, &mut buf)).unwrap();
+    assert_eq!(buf, [0x30, 0x30, 0x30, 0x30, 0xF0, 0xF0, 0xF0, 0xF0]);
+    for (offset, len) in [(1, 4), (0, 2), (6, 4)] {
+        let error = run(NorFlash::write(&mut config, offset, &vec![0; len])).unwrap_err();
+        assert_eq!(
+            error.kind(),
+            NorFlashErrorKind::NotAligned,
+            "{len} at {offset}"
+        );
+    }
+    for offset in [capacity, u32::MAX - 3] {
+        let error = run(NorFlash::write(&mut config, offset, &[0; 4])).unwrap_err();
+        assert_eq!(error.kind(), NorFlashErrorKind::OutOfBounds, "{offset:#x}");
+    }
+    let error = run(NorFlash::write(&mut config, capacity - 4, &[0; 8])).unwrap_err();
+    assert_eq!(error.kind(), NorFlashErrorKind::OutOfBounds);
+    run(NorFlash::write(&mut config, capacity - 4, &[0; 4])).unwrap();
+
+    // Erases of whole sectors, `to` exclusive; `from > to` is out of bounds.
+    run(NorFlash::erase(&mut config, 0, 4096)).unwrap();
+    run(ReadNorFlash::read(&mut config, 8, &mut buf)).unwrap();
+    assert_eq!(buf, [0xFF; 8]);
+    for (from, to, kind) in [
+        (4096, 0, NorFlashErrorKind::OutOfBounds),
+        (0, capacity + 4096, NorFlashErrorKind::OutOfBounds),
+        (1, 4096, NorFlashErrorKind::NotAligned),
+        (0, 4095, NorFlashErrorKind::NotAligned),
+    ] {
+        let error = run(NorFlash::erase(&mut config, from, to)).unwrap_err();
+        assert_eq!(error.kind(), kind, "{from}..{to}");
+    }
+    run(NorFlash::erase(&mut config, capacity - 4096, capacity)).unwrap();
+    run(NorFlash::erase(&mut config, capacity, capacity)).unwrap();
+
+    // The adapters stay inside their regions.
+    run(NorFlash::write(&mut diag, 0, &[0; 4])).unwrap();
+    assert_eq!(flash.device().at(layout::DIAG.offset, 4), [0; 4]);
+    assert_eq!(flash.device().at(layout::CONFIG_0.end(), 4), [0xFF; 4]);
+}
+
 // Erases and programs.
 
 #[test]

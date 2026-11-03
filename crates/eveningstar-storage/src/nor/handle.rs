@@ -5,10 +5,11 @@ use core::future::{Future, poll_fn};
 use core::marker::PhantomData;
 use core::task::Poll;
 
+use embedded_storage_async::nor_flash::{ErrorType, MultiwriteNorFlash, NorFlash, ReadNorFlash};
 use eveningstar_esp_formats::pace::{Pace as _, Yield};
 
 use super::{NorDevice, SECTOR_SIZE, State, WORD_SIZE};
-use crate::region::{CHUNK_LEN, is_protected};
+use crate::guard::{CHUNK_LEN, is_protected};
 use crate::roles::{Internal, Programmable, Role, Writable};
 use crate::span::Span;
 use crate::state::{Spans, WriteState};
@@ -389,7 +390,7 @@ impl<'w, R: Writable<Device = Internal>> Session<'w, R> {
 
     /// Refuses `start..end`, absolute, when it touches a protected span.
     fn guard(&self, start: u32, end: u32) -> Result<(), AccessError> {
-        if is_protected(start, end, Some(self.running)) {
+        if is_protected(start, end, self.running) {
             Err(AccessError::Protected)
         } else {
             Ok(())
@@ -527,6 +528,42 @@ impl<R: Programmable<Device = Internal>> Session<'_, R> {
         Ok(())
     }
 }
+
+/// A session of a role whose sessions program is an `embedded_storage_async`
+/// NOR flash over its region: reads at any alignment, programs words of
+/// [`WORD_SIZE`] bytes any number of times ([`MultiwriteNorFlash`]), and
+/// erases sectors, each through the session's own operations and their
+/// guard. Offsets are relative to the region.
+impl<R: Programmable<Device = Internal>> ErrorType for Session<'_, R> {
+    type Error = AccessError;
+}
+
+impl<R: Programmable<Device = Internal>> ReadNorFlash for Session<'_, R> {
+    const READ_SIZE: usize = 1;
+
+    async fn read(&mut self, offset: u32, bytes: &mut [u8]) -> Result<(), AccessError> {
+        Ok(self.read_async(offset, bytes).await?)
+    }
+
+    fn capacity(&self) -> usize {
+        usize::try_from(self.len()).unwrap_or(usize::MAX)
+    }
+}
+
+impl<R: Programmable<Device = Internal>> NorFlash for Session<'_, R> {
+    const WRITE_SIZE: usize = WORD_SIZE as usize;
+    const ERASE_SIZE: usize = SECTOR_SIZE as usize;
+
+    async fn erase(&mut self, from: u32, to: u32) -> Result<(), AccessError> {
+        Session::erase(self, from, to).await
+    }
+
+    async fn write(&mut self, offset: u32, bytes: &[u8]) -> Result<(), AccessError> {
+        Session::program(self, offset, bytes).await
+    }
+}
+
+impl<R: Programmable<Device = Internal>> MultiwriteNorFlash for Session<'_, R> {}
 
 impl<R: Writable<Device = Internal>> Source for Session<'_, R> {
     fn size(&self) -> u32 {

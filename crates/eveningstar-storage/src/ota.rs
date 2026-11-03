@@ -1,21 +1,26 @@
-//! The OTA mechanism: the writer of an update to the app slot that didn't
-//! boot, the images it verifies, and the writes to the otadata that select,
-//! confirm and roll back an image.
+//! The OTA mechanism: the writer of an update to the alternate slot, the
+//! images it verifies, and the writes to the otadata that select, confirm and
+//! roll back an image.
 //!
-//! Every erase and program goes through a [`Region`] of the other slot or of
-//! the otadata, with the running slot passed to the protected-region guard,
-//! so no operation here reaches the running app or the boot chain even when
-//! an offset is wrong. The otadata writes are the plans of the [`otadata`]
+//! It holds the boot writers ([`BootWriters`]), which only the boot tier has,
+//! and reads the slot and the otadata through them. Every erase and program
+//! runs in a write session, which passes the guard of the protected spans,
+//! the running slot among them, so no operation here reaches the running app
+//! or the boot chain even when an offset is wrong: an [`Update`] holds the
+//! alternate slot's session for its whole life, and each otadata write is a
+//! session of its own. The otadata writes are the plans of the [`otadata`]
 //! module, made one at a time.
 
 use core::fmt;
 use core::marker::PhantomData;
 
+use crate::chain::BootWriters;
+use crate::guard::AccessError;
 use crate::image::{self, App, ImageError};
-use crate::nor::{SECTOR_SIZE, WORD_SIZE};
+use crate::nor::{Reader, SECTOR_SIZE, Session, WORD_SIZE, Writer};
 use crate::otadata::{self, BootState, PlanError, Write};
-use crate::region::{AccessError, Region};
-use crate::{Slot, Text, split};
+use crate::roles::{AlternateApp, CurrentApp, Otadata};
+use crate::{Epoch, ReadError, Slot, Source, Span, Text, WriteState};
 
 /// The most otadata writes [`Ota::begin_update`] makes: the planner settles
 /// the selection within two.
@@ -30,15 +35,17 @@ pub enum OtaError {
     /// The otadata doesn't allow the operation, or a sector it keeps couldn't
     /// be read.
     Plan(PlanError),
-    /// The image in the other slot doesn't verify.
+    /// The image in the alternate slot doesn't verify, or the running app's
+    /// descriptor doesn't read.
     Image(ImageError),
     /// An erase or program was refused or failed.
     Access(AccessError),
     /// The [`VerifiedImage`] was made before the latest
     /// [`Ota::begin_update`].
     Stale,
-    /// The other slot no longer holds the image the [`VerifiedImage`]
-    /// describes.
+    /// The alternate slot no longer holds the image the [`VerifiedImage`]
+    /// describes: it was written since, its epoch moved, or it hashes to
+    /// another image; or its write state can't record an epoch.
     Changed,
     /// The image's project name isn't the running app's.
     Project,
@@ -77,8 +84,8 @@ impl From<AccessError> for OtaError {
     }
 }
 
-/// The OTA mechanism, in the full tier only: the app slot that didn't boot
-/// and the otadata, which it alone writes, the running slot and the running
+/// The OTA mechanism, over the boot writers: the alternate slot and the
+/// otadata, which it alone writes, the slot that booted and the running
 /// app's project name.
 ///
 /// An update is [`begin_update`](Self::begin_update), then
@@ -99,12 +106,13 @@ impl From<AccessError> for OtaError {
 ///
 /// A power cut at any point leaves a selection that boots the running image,
 /// or an activated image that verified, started once with its rollback
-/// armed: no valid otadata entry selects the other slot from the start of an
-/// update until its activation, and the activation's entry becomes valid only
-/// once whole, with state `New`, as its sequence number is programmed last.
+/// armed: no valid otadata entry selects the alternate slot from the start
+/// of an update until its activation, and the activation's entry becomes
+/// valid only once whole, with state `New`, as its sequence number is
+/// programmed last.
 pub struct Ota<'f> {
-    other: Region<'f>,
-    otadata: Region<'f>,
+    alternate: Writer<'f, AlternateApp>,
+    otadata: Writer<'f, Otadata>,
     running: Slot,
     project: Text<32>,
     /// Counts the updates begun, so a [`VerifiedImage`] from an earlier one
@@ -113,21 +121,32 @@ pub struct Ota<'f> {
 }
 
 impl<'f> Ota<'f> {
-    /// The mechanism for the app running from `running`, with `other` the
-    /// other slot and `otadata` the otadata partition.
-    pub(crate) const fn new(
-        other: Region<'f>,
-        otadata: Region<'f>,
-        running: Slot,
-        project: Text<32>,
-    ) -> Self {
-        Self {
-            other,
+    /// The mechanism over `writers`, for the app the current slot holds, read
+    /// from `current` through a snapshot for the project name an update has
+    /// to match.
+    ///
+    /// # Errors
+    ///
+    /// [`ImageError`] when the running app's descriptor doesn't read: there
+    /// is then no project name for an update to match.
+    pub fn new(
+        writers: BootWriters<'f>,
+        current: &Reader<'_, CurrentApp>,
+    ) -> Result<Self, ImageError> {
+        let project = project_name(current)?;
+        let running = writers.slot();
+        let BootWriters {
+            alternate_app,
+            otadata,
+            ..
+        } = writers;
+        Ok(Self {
+            alternate: alternate_app,
             otadata,
             running,
             project,
             generation: 0,
-        }
+        })
     }
 
     /// The boot state the otadata gives now.
@@ -136,13 +155,20 @@ impl<'f> Ota<'f> {
         otadata::read(&self.otadata).boot_state(self.running)
     }
 
-    /// Starts an update of the other slot (O3).
+    /// The running app's project name, which an update has to name.
+    #[must_use]
+    pub const fn project(&self) -> &Text<32> {
+        &self.project
+    }
+
+    /// Starts an update of the alternate slot.
     ///
     /// First the boot selection is settled on the running slot, as
     /// [`plan_begin_update`](otadata::Otadata::plan_begin_update) plans it:
     /// an activation not booted yet is cancelled, and an entry naming the
-    /// other slot is replaced, so the bootloader never selects the slot
-    /// while it is rewritten, whatever is cut short. Then the slot's first
+    /// alternate slot is replaced, so the bootloader never selects the slot
+    /// while it is rewritten, whatever is cut short. Then a write session
+    /// opens on the slot, which the [`Update`] holds, and the slot's first
     /// sector is erased. Every [`VerifiedImage`] made before goes stale,
     /// whether or not this succeeds.
     ///
@@ -154,21 +180,26 @@ impl<'f> Ota<'f> {
     /// [`OtaError::Access`] when an erase or program fails.
     pub async fn begin_update(&mut self) -> Result<Update<'_, 'f>, OtaError> {
         // Wraps only after more updates than the slot's first sector
-        // survives erases, and activation hashes the slot again anyway.
+        // survives erases, and activation checks the slot's epoch anyway.
         self.generation = self.generation.wrapping_add(1);
         self.settle().await?;
-        self.other.erase(0, SECTOR_SIZE, Some(self.running)).await?;
+        let mut session = self.alternate.begin();
+        session.erase(0, SECTOR_SIZE).await?;
         Ok(Update {
-            ota: self,
+            session,
+            project: self.project,
+            generation: self.generation,
+            slot: self.running.other(),
             written: 0,
             erased: SECTOR_SIZE,
             partial: [0xFF; WORD],
             failed: false,
+            flash: PhantomData,
         })
     }
 
     /// Makes the writes `plan_begin_update` plans until it plans none.
-    async fn settle(&self) -> Result<(), OtaError> {
+    async fn settle(&mut self) -> Result<(), OtaError> {
         let mut writes = 0;
         while let Some(write) = otadata::read(&self.otadata).plan_begin_update(self.running)? {
             if writes == SETTLE_WRITES {
@@ -181,69 +212,92 @@ impl<'f> Ota<'f> {
     }
 
     /// Selects the image `image` describes for the next boot, with state
-    /// `New` (O6): the bootloader starts it once as `PendingVerify`, and
-    /// rolls it back at the boot after unless it is confirmed.
+    /// `New`: the bootloader starts it once as `PendingVerify`, and rolls it
+    /// back at the boot after unless it is confirmed.
     ///
     /// The image has to come from the latest update, or from
-    /// [`verify_other`](Self::verify_other) since then, and the slot is
-    /// hashed again to check it still holds it. The entry selecting it is
-    /// written whole to the otadata sector that isn't active, so a power cut
-    /// leaves the running slot selected.
+    /// [`verify_other`](Self::verify_other) since then, the slot has to be
+    /// at the epoch it verified at, and the slot is hashed again to check it
+    /// still holds it. The entry selecting it is written whole to the
+    /// otadata sector that isn't active, so a power cut leaves the running
+    /// slot selected.
     ///
     /// # Errors
     ///
     /// [`OtaError::Stale`] for an image made before the latest
     /// [`begin_update`](Self::begin_update); [`OtaError::Changed`] when the
-    /// slot no longer holds it; [`OtaError::Image`] when the slot can't be
-    /// read; [`OtaError::Plan`] when the active entry doesn't select the
-    /// running slot (an activation already made, a fallback) or the running
-    /// image isn't confirmed `Valid`; [`OtaError::Access`] when the write
-    /// fails.
+    /// slot was written since or no longer holds it; [`OtaError::Image`]
+    /// when the slot can't be read; [`OtaError::Plan`] when the active entry
+    /// doesn't select the running slot (an activation already made, a
+    /// fallback) or the running image isn't confirmed `Valid`;
+    /// [`OtaError::Access`] when the write fails.
     pub async fn activate(&mut self, image: VerifiedImage<'f>) -> Result<(), OtaError> {
         self.check(image).await?;
         let write = otadata::read(&self.otadata).plan_activate(self.running)?;
         Ok(self.execute(&write).await?)
     }
 
-    /// Checks that `image` comes from the latest update and that the slot
-    /// still holds it, hashing the slot again.
+    /// Checks that `image` comes from the latest update, that the slot is at
+    /// the epoch it verified at, and that the slot still holds it, hashing
+    /// the slot again.
     async fn check(&self, image: VerifiedImage<'f>) -> Result<(), OtaError> {
         let VerifiedImage {
             slot,
             size,
             digest,
             generation,
+            epoch,
             ..
         } = image;
         if generation != self.generation || slot != self.running.other() {
             return Err(OtaError::Stale);
         }
-        match image::verify_app(&self.other).await {
+        if self.alternate.write_state() != WriteState::Stable(epoch) {
+            return Err(OtaError::Changed);
+        }
+        match image::verify_app(&self.alternate).await {
             Ok(app) if app.size() == size && *app.digest() == digest => Ok(()),
             Err(ImageError::Read(error)) => Err(ImageError::Read(error).into()),
             _ => Err(OtaError::Changed),
         }
     }
 
-    /// Verifies the image the other slot holds, as [`Update::finish`] does
-    /// apart from the length written, to activate it again.
+    /// Verifies the image the alternate slot holds, as [`Update::finish`]
+    /// does apart from the length written, to activate it again.
     ///
     /// # Errors
     ///
-    /// [`OtaError::Image`] when the image doesn't verify, and
-    /// [`OtaError::Project`] when its project name isn't the running app's.
+    /// [`OtaError::Image`] when the image doesn't verify,
+    /// [`OtaError::Project`] when its project name isn't the running app's,
+    /// and [`OtaError::Changed`] when the slot's write state records no
+    /// epoch.
     pub async fn verify_other(&mut self) -> Result<VerifiedImage<'f>, OtaError> {
-        self.verify().await
+        let verified = verify(&self.alternate, &self.project).await?;
+        self.image_at_epoch(&verified)
     }
 
-    /// Confirms the running image (O7): makes it `Valid` and the one the
-    /// active entry selects, whatever state it booted in, as
+    /// The [`VerifiedImage`] of `verified`, the alternate slot's image, at
+    /// the slot's epoch now.
+    fn image_at_epoch(&self, verified: &Verified) -> Result<VerifiedImage<'f>, OtaError> {
+        let WriteState::Stable(epoch) = self.alternate.write_state() else {
+            return Err(OtaError::Changed);
+        };
+        Ok(VerifiedImage::of(
+            verified,
+            self.running.other(),
+            self.generation,
+            epoch,
+        ))
+    }
+
+    /// Confirms the running image: makes it `Valid` and the one the active
+    /// entry selects, whatever state it booted in, as
     /// [`plan_confirm`](otadata::Otadata::plan_confirm) plans it. Booted
     /// `PendingVerify` or with another state, its entry is rewritten in
-    /// place, which cancels its rollback; booted as a fallback from the other
-    /// slot, or with no valid entry, a `Valid` entry for it is written to the
-    /// sector that isn't active. Nothing is written when it is confirmed
-    /// already, during an activation not booted yet included.
+    /// place, which cancels its rollback; booted as a fallback from the
+    /// alternate slot, or with no valid entry, a `Valid` entry for it is
+    /// written to the sector that isn't active. Nothing is written when it is
+    /// confirmed already, during an activation not booted yet included.
     ///
     /// A power cut leaves the boot selection as before the call: a rollback
     /// for a `PendingVerify` image, the same fallback for one booted as a
@@ -261,8 +315,8 @@ impl<'f> Ota<'f> {
         Ok(())
     }
 
-    /// Marks the running image `Invalid` in place (O8), so the bootloader
-    /// starts the other slot at the next boot. The other slot has to be a
+    /// Marks the running image `Invalid` in place, so the bootloader starts
+    /// the alternate slot at the next boot. The alternate slot has to be a
     /// rollback target holding an image that verifies, as
     /// [`verify_other`](Self::verify_other) checks it.
     ///
@@ -271,58 +325,32 @@ impl<'f> Ota<'f> {
     ///
     /// # Errors
     ///
-    /// [`OtaError::Plan`] when the other slot isn't a rollback target or the
-    /// active entry doesn't select the running slot, checked before the
-    /// image; [`OtaError::Image`] and [`OtaError::Project`] when the other
-    /// slot's image doesn't verify; [`OtaError::Access`] when the write
-    /// fails.
+    /// [`OtaError::Plan`] when the alternate slot isn't a rollback target or
+    /// the active entry doesn't select the running slot, checked before the
+    /// image; [`OtaError::Image`] and [`OtaError::Project`] when the
+    /// alternate slot's image doesn't verify; [`OtaError::Access`] when the
+    /// write fails.
     pub async fn roll_back(&mut self) -> Result<(), OtaError> {
         let write = otadata::read(&self.otadata).plan_roll_back(self.running)?;
         self.execute_verified(&write).await
     }
 
-    /// Makes `write` once the other slot's image verifies.
-    async fn execute_verified(&self, write: &Write) -> Result<(), OtaError> {
+    /// Makes `write` once the alternate slot's image verifies.
+    async fn execute_verified(&mut self, write: &Write) -> Result<(), OtaError> {
         // The image only has to verify: the write doesn't depend on it.
-        let _target = self.verify().await?;
+        verify(&self.alternate, &self.project).await?;
         Ok(self.execute(write).await?)
     }
 
-    /// Verifies the other slot's image and checks its project name.
-    async fn verify(&self) -> Result<VerifiedImage<'f>, OtaError> {
-        match image::verify_app(&self.other).await {
-            Ok(app) => self.identify(&app),
-            Err(error) => Err(error.into()),
-        }
-    }
-
-    /// The [`VerifiedImage`] of `app`, the other slot's image, once its
-    /// project name is checked to be the running app's.
-    fn identify(&self, app: &App) -> Result<VerifiedImage<'f>, OtaError> {
-        let id = split::app_id(&self.other)?;
-        if id.project_name.as_bytes() != self.project.as_bytes() {
-            return Err(OtaError::Project);
-        }
-        Ok(VerifiedImage {
-            slot: self.running.other(),
-            size: app.size(),
-            digest: *app.digest(),
-            generation: self.generation,
-            version: id.version,
-            flash: PhantomData,
-        })
-    }
-
-    /// Makes the otadata write `write`: its sector erased, then its entry
-    /// programmed in the order its programs come, the sequence number last.
-    async fn execute(&self, write: &Write) -> Result<(), AccessError> {
+    /// Makes the otadata write `write` in a session of its own: its sector
+    /// erased, then its entry programmed in the order its programs come, the
+    /// sequence number last.
+    async fn execute(&mut self, write: &Write) -> Result<(), AccessError> {
         let at = write.offset();
-        let running = Some(self.running);
-        self.otadata
-            .erase(at, at + otadata::SECTOR_SIZE, running)
-            .await?;
+        let mut session = self.otadata.begin();
+        session.erase(at, at + otadata::SECTOR_SIZE).await?;
         for (offset, bytes) in write.programs() {
-            self.otadata.program(offset, bytes, running).await?;
+            session.program(offset, bytes).await?;
         }
         Ok(())
     }
@@ -331,7 +359,7 @@ impl<'f> Ota<'f> {
 impl fmt::Debug for Ota<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Ota")
-            .field("other", &self.other)
+            .field("alternate", &self.alternate)
             .field("otadata", &self.otadata)
             .field("running", &self.running)
             .field("project", &self.project)
@@ -340,13 +368,80 @@ impl fmt::Debug for Ota<'_> {
     }
 }
 
-/// An update being written to the other slot, from [`Ota::begin_update`].
+/// The project name of the app `current` holds, read through a snapshot.
+fn project_name(current: &Reader<'_, CurrentApp>) -> Result<Text<32>, ImageError> {
+    let snapshot = current
+        .snapshot(Span::new(0, current.len()))
+        .map_err(|_| ImageError::Read(ReadError::Stale))?;
+    Ok(names(&snapshot)?.project)
+}
+
+/// The project name and version an app's descriptor names.
+struct Names {
+    project: Text<32>,
+    version: Text<32>,
+}
+
+/// The names in the descriptor of the app image in `source`. Never inlined,
+/// so the descriptor stays out of its callers' frames.
+#[inline(never)]
+fn names<S: Source + ?Sized>(source: &S) -> Result<Names, ImageError> {
+    let descriptor = image::app_descriptor(source)?;
+    Ok(Names {
+        project: descriptor.project_name(),
+        version: descriptor.version(),
+    })
+}
+
+/// An image that verified: its length and digest, and the version its
+/// descriptor names.
+struct Verified {
+    size: u32,
+    digest: [u8; 32],
+    version: Text<32>,
+}
+
+/// Verifies the app image `slot` holds and checks that its project name is
+/// `project`.
+async fn verify<S: Source + ?Sized>(slot: &S, project: &Text<32>) -> Result<Verified, OtaError> {
+    match image::verify_app(slot).await {
+        Ok(app) => identify(slot, project, &app),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// The image `app`, which `slot` holds, once its project name is checked to
+/// be `project`.
+fn identify<S: Source + ?Sized>(
+    slot: &S,
+    project: &Text<32>,
+    app: &App,
+) -> Result<Verified, OtaError> {
+    let names = names(slot)?;
+    if names.project.as_bytes() != project.as_bytes() {
+        return Err(OtaError::Project);
+    }
+    Ok(Verified {
+        size: app.size(),
+        digest: *app.digest(),
+        version: names.version,
+    })
+}
+
+/// An update being written to the alternate slot, from
+/// [`Ota::begin_update`].
 ///
-/// It borrows the [`Ota`], so nothing else changes the slot or the boot
-/// selection while it lives. Dropping it abandons the update: the slot stays
-/// partly written, and no valid otadata entry selects it.
+/// It holds the slot's write session, so no snapshot of the slot can be
+/// taken while it lives, and it borrows the [`Ota`], so nothing else changes
+/// the slot or the boot selection meanwhile. Dropping it abandons the
+/// update and ends the session: the slot stays partly written, and no valid
+/// otadata entry selects it.
 pub struct Update<'o, 'f> {
-    ota: &'o mut Ota<'f>,
+    session: Session<'o, AlternateApp>,
+    project: Text<32>,
+    generation: u32,
+    /// The slot written, the alternate one.
+    slot: Slot,
     /// The bytes taken so far, the partial word's included.
     written: u32,
     /// The offset up to which the update has erased the slot.
@@ -355,6 +450,7 @@ pub struct Update<'o, 'f> {
     partial: [u8; WORD],
     /// An erase or program failed.
     failed: bool,
+    flash: PhantomData<&'f ()>,
 }
 
 impl<'f> Update<'_, 'f> {
@@ -364,8 +460,8 @@ impl<'f> Update<'_, 'f> {
         self.written
     }
 
-    /// Takes the next `bytes` of the image (O4), which arrives in order, in
-    /// parts of any length.
+    /// Takes the next `bytes` of the image, which arrives in order, in parts
+    /// of any length.
     ///
     /// Each sector is erased just before the first bytes programmed into
     /// it, and whole words are programmed as they arrive. The last bytes of
@@ -386,7 +482,7 @@ impl<'f> Update<'_, 'f> {
         let fits = u32::try_from(bytes.len())
             .ok()
             .and_then(|len| self.written.checked_add(len))
-            .is_some_and(|end| end <= self.ota.other.len());
+            .is_some_and(|end| end <= self.session.len());
         if !fits {
             return Err(OtaError::TooLarge);
         }
@@ -395,32 +491,51 @@ impl<'f> Update<'_, 'f> {
         Ok(taken?)
     }
 
-    /// Verifies what was written (O5): the partial word is completed with
-    /// `0xFF` and programmed, then the slot's image is verified (header,
-    /// chip, segments, checksum and the appended SHA-256), its project name
-    /// compared with the running app's, and its length with the bytes
-    /// written.
+    /// Verifies what was written: the partial word is completed with `0xFF`
+    /// and programmed, the slot's image is verified (header, chip, segments,
+    /// checksum and the appended SHA-256), its project name compared with the
+    /// running app's, and its length with the bytes written. Then the
+    /// session ends, and the [`VerifiedImage`] records the slot's epoch
+    /// after it.
     ///
     /// # Errors
     ///
     /// [`OtaError::Image`] when the image doesn't verify,
     /// [`OtaError::Project`] when it names another project,
     /// [`OtaError::Length`] when the bytes written are more or fewer than the
-    /// image, [`OtaError::Interrupted`] after a failed write, and
-    /// [`OtaError::Access`] when programming the partial word fails.
+    /// image, [`OtaError::Interrupted`] after a failed write,
+    /// [`OtaError::Access`] when programming the partial word fails, and
+    /// [`OtaError::Changed`] when the slot's write state records no epoch.
     pub async fn finish(mut self) -> Result<VerifiedImage<'f>, OtaError> {
         if self.failed {
             return Err(OtaError::Interrupted);
         }
         self.flush().await?;
-        let written = self.written;
-        match self.ota.verify().await {
-            Ok(image) if image.size != written => Err(OtaError::Length {
-                written,
-                image: image.size,
-            }),
-            verified => verified,
+        // Read through the session, which alone writes the slot, so the
+        // bytes are those it leaves.
+        let verified = verify(&self.session, &self.project).await?;
+        self.complete(&verified)
+    }
+
+    /// Checks the length of `verified`, the image written, ends the session,
+    /// and records the slot's epoch after it.
+    fn complete(self, verified: &Verified) -> Result<VerifiedImage<'f>, OtaError> {
+        if verified.size != self.written {
+            return Err(OtaError::Length {
+                written: self.written,
+                image: verified.size,
+            });
         }
+        let Self {
+            session,
+            slot,
+            generation,
+            ..
+        } = self;
+        let WriteState::Stable(epoch) = session.finish() else {
+            return Err(OtaError::Changed);
+        };
+        Ok(VerifiedImage::of(verified, slot, generation, epoch))
     }
 
     /// Programs the partial word, completed with `0xFF`.
@@ -481,7 +596,6 @@ impl<'f> Update<'_, 'f> {
     /// Programs `bytes`, which lie in one sector at `offset`, after erasing
     /// the sectors up to theirs.
     async fn program(&mut self, offset: u32, bytes: &[u8]) -> Result<(), AccessError> {
-        let running = Some(self.ota.running);
         let end = offset
             .checked_add(len_u32(bytes))
             .ok_or(AccessError::OutOfRange)?;
@@ -490,17 +604,17 @@ impl<'f> Update<'_, 'f> {
                 .erased
                 .checked_add(SECTOR_SIZE)
                 .ok_or(AccessError::OutOfRange)?;
-            self.ota.other.erase(self.erased, next, running).await?;
+            self.session.erase(self.erased, next).await?;
             self.erased = next;
         }
-        self.ota.other.program(offset, bytes, running).await
+        self.session.program(offset, bytes).await
     }
 }
 
 impl fmt::Debug for Update<'_, '_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Update")
-            .field("slot", &self.ota.running.other())
+            .field("slot", &self.slot)
             .field("written", &self.written)
             .field("erased", &self.erased)
             .field("failed", &self.failed)
@@ -513,21 +627,26 @@ fn len_u32(bytes: &[u8]) -> u32 {
     u32::try_from(bytes.len()).unwrap_or(u32::MAX)
 }
 
-/// An image in the other slot that verified, from [`Update::finish`] or
+/// An image in the alternate slot that verified, from [`Update::finish`] or
 /// [`Ota::verify_other`]: an ESP32-C6 app of the running app's project,
-/// intact. It says nothing of who made it.
+/// intact, at the slot's epoch after it was written. It says nothing of who
+/// made it.
 ///
 /// [`Ota::activate`] takes it, and only while no update has begun since it
-/// was made. It borrows the flash as the handles do, so it can't outlive
-/// them into a later [`split`](crate::split). Switching back to the image in
-/// the other slot:
+/// was made and the slot is still at that epoch. It borrows the flash as the
+/// handles do, so it can't outlive them into a later
+/// [`split`](crate::chain::split). Switching back to the image in the
+/// alternate slot:
 ///
 /// ```
-/// use eveningstar_storage::{OtaError, nor::NorDevice, split};
+/// use eveningstar_storage::chain::{Handles, split};
+/// use eveningstar_storage::nor::{NorDevice, State};
+/// use eveningstar_storage::{Ota, OtaError};
 ///
-/// async fn switch_back(flash: &mut dyn NorDevice, booted: u32) -> Result<(), OtaError> {
-///     let storage = split(flash, booted).await;
-///     if let Some(mut ota) = storage.data.and_then(|data| data.ota) {
+/// async fn switch_back(flash: &mut dyn NorDevice, state: &mut State, booted: u32) -> Result<(), OtaError> {
+///     let storage = split(flash, state, booted).await;
+///     if let Handles::Boot(handles, writers) = storage.handles {
+///         let mut ota = Ota::new(writers, &handles.current_app)?;
 ///         let image = ota.verify_other().await?;
 ///         ota.activate(image).await?;
 ///     }
@@ -538,14 +657,21 @@ fn len_u32(bytes: &[u8]) -> u32 {
 /// but not with an image kept from before a later `split`:
 ///
 /// ```compile_fail,E0499
-/// use eveningstar_storage::{OtaError, nor::NorDevice, split};
+/// use eveningstar_storage::chain::{Handles, split};
+/// use eveningstar_storage::nor::{NorDevice, State};
+/// use eveningstar_storage::{Ota, OtaError};
 ///
-/// async fn switch_back(flash: &mut dyn NorDevice, booted: u32) -> Result<(), OtaError> {
-///     let mut ota = split(flash, booted).await.data.unwrap().ota.unwrap();
+/// async fn switch_back(flash: &mut dyn NorDevice, state: &mut State, booted: u32) -> Result<(), OtaError> {
+///     let Handles::Boot(handles, writers) = split(flash, state, booted).await.handles else {
+///         return Ok(());
+///     };
+///     let mut ota = Ota::new(writers, &handles.current_app)?;
 ///     let image = ota.verify_other().await?;
-///     drop(ota);
-///     let mut again = split(flash, booted).await.data.unwrap().ota.unwrap();
-///     again.activate(image).await
+///     drop((ota, handles));
+///     let Handles::Boot(handles, writers) = split(flash, state, booted).await.handles else {
+///         return Ok(());
+///     };
+///     Ota::new(writers, &handles.current_app)?.activate(image).await
 /// }
 /// ```
 #[derive(Debug, PartialEq, Eq)]
@@ -555,11 +681,27 @@ pub struct VerifiedImage<'f> {
     size: u32,
     digest: [u8; 32],
     generation: u32,
+    /// The slot's epoch after the image was written.
+    epoch: Epoch,
     version: Text<32>,
     flash: PhantomData<&'f ()>,
 }
 
 impl VerifiedImage<'_> {
+    /// The image `verified`, in `slot`, verified in update `generation` at
+    /// the slot's `epoch`.
+    fn of(verified: &Verified, slot: Slot, generation: u32, epoch: Epoch) -> Self {
+        Self {
+            slot,
+            size: verified.size,
+            digest: verified.digest,
+            generation,
+            epoch,
+            version: verified.version,
+            flash: PhantomData,
+        }
+    }
+
     /// The slot that holds the image.
     #[must_use]
     pub const fn slot(&self) -> Slot {
@@ -576,6 +718,12 @@ impl VerifiedImage<'_> {
     #[must_use]
     pub const fn digest(&self) -> &[u8; 32] {
         &self.digest
+    }
+
+    /// The slot's epoch the image verified at.
+    #[must_use]
+    pub const fn epoch(&self) -> Epoch {
+        self.epoch
     }
 
     /// The version its app descriptor gives.

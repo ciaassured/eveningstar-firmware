@@ -1,28 +1,29 @@
-//! Storage on the internal flash: the partition layout, the checks of the
-//! board's table and bootloader, the typed handles to the partitions, and the
-//! OTA mechanism.
+//! Storage on the internal flash: the partition layout, the verification
+//! chain that decides how far the board is trusted, the handles of its
+//! regions, and the OTA mechanism.
 //!
-//! [`split`] reads the board through a [`NorDevice`](nor::NorDevice) once per
-//! boot and hands out the handles of the trust tier it reaches
-//! ([`Storage`]); the [`partitions`] module documents the handles.
+//! [`split`](chain::split) runs the verification chain once per boot through
+//! a [`NorDevice`](nor::NorDevice) and hands out the handles of the trust
+//! tier it reaches ([`chain::Storage`]); the [`chain`] module documents the
+//! steps and the tiers. A handle is a reader or a writer of a region with a
+//! role ([`roles`]), over a state table that gives each region a
+//! [`WriteState`] ([`nor`]). Readers read through snapshots, which fail once
+//! their region is written, and readers of publishable roles publish views
+//! ([`PublicRead`]), the only bytes meant to leave the device. Writers write
+//! only inside a session, whose erases and programs pass the guard of the
+//! protected spans.
 //!
-//! In the full tier, [`Ota`] alone writes the other app slot and the otadata.
-//! An update is written and verified ([`Ota::begin_update`],
-//! [`Update::write`], [`Update::finish`]), the [`VerifiedImage`] it gives is
-//! selected for the next boot ([`Ota::activate`]), and the image that boots
-//! is confirmed ([`Ota::confirm`]) or rolled back ([`Ota::roll_back`]). Any
-//! booted image that isn't `Valid` needs a confirmation
+//! In the boot tier, [`Ota`] holds the boot writers ([`chain::BootWriters`])
+//! and alone writes the alternate slot and the otadata. An update is written
+//! and verified ([`Ota::begin_update`], [`Update::write`],
+//! [`Update::finish`]), the [`VerifiedImage`] it gives is selected for the
+//! next boot ([`Ota::activate`]), and the image that boots is confirmed
+//! ([`Ota::confirm`]) or rolled back ([`Ota::roll_back`]). Any booted image
+//! that isn't `Valid` needs a confirmation
 //! ([`otadata::BootState::needs_confirmation`]), and updates begin only from
 //! a `Valid` one. A power cut at any step leaves a selection that starts a
 //! whole image: the one running, or an activated one with its rollback
 //! armed. Nothing in the crate reboots.
-//!
-//! The handles of the second design sit beside these: the [`roles`] of the
-//! regions, and in [`nor`] the internal flash's readers, writers and write
-//! sessions over a state table that gives each region a [`WriteState`].
-//! Readers read through snapshots, which fail once their region is written,
-//! and readers of publishable roles publish views ([`PublicRead`]), the
-//! only bytes meant to leave the device.
 //!
 //! The formats on the flash (the partition table, ESP images and the otadata)
 //! are read by `eveningstar-esp-formats`, whose [`image`], [`otadata`] and
@@ -32,29 +33,25 @@
 
 #![cfg_attr(not(test), no_std)]
 
-mod board_table;
 pub mod chain;
+mod guard;
 pub mod known;
 pub mod layout;
 pub mod nor;
 mod ota;
-pub mod partitions;
-mod region;
 pub mod roles;
 mod span;
-mod split;
 mod state;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 mod view;
 
-pub use board_table::{LayoutComparison, compare_layout};
+pub use chain::{Report, Storage, Tier, split};
 pub use eveningstar_esp_formats::{Entry, ReadError, Slot, Source, Text, image, otadata, table};
+pub use guard::AccessError;
 pub use nor::{DeviceError, SECTOR_SIZE, WORD_SIZE};
 pub use ota::{Ota, OtaError, Update, VerifiedImage};
-pub use region::AccessError;
 pub use span::Span;
-pub use split::{AppId, BootChain, BootloaderId, Data, Limit, Report, Storage, Tier, split};
 pub use state::{Epoch, WriteState};
 pub use view::{MAX_SANITIZED, PublicRead, PublishError, SnapshotError, ViewError};
 

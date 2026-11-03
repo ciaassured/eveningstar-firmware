@@ -7,15 +7,44 @@ use sha2::{Digest as _, Sha256};
 
 use super::*;
 use crate::Slot::{Ota0, Ota1};
+use crate::chain::{BootWriters, Handles};
 use crate::layout::{OTA_0, OTA_1, OTADATA, TABLE_OFFSET};
 use crate::nor::NorDevice;
+use crate::nor::{Reader, State as StateTable, Writer};
 use crate::otadata::{Otadata, Sector, State};
+use crate::roles::{self, AlternateApp, Internal, Writable};
 use crate::test_support::{
     APP, BOOTLOADER, FLASH_LEN, ImageBuilder, OTADATA_AT, OTADATA_FIRST_BOOT, OTADATA_LEN, Op,
     RamFlash, Rng, TABLE, Tear, app_descriptor_bytes, block_on, boot_flash, data, idf_loads, lend,
     run, segment_at,
 };
 use crate::{DeviceError, Entry, ReadError, SlotPartitions as _, Tier, split};
+
+/// A writer of `span` of `flash` while the app runs from `ota_0`, whatever
+/// the span.
+fn writer<'f, R: Writable<Device = Internal>>(
+    flash: &'f RamFlash,
+    state: &'f StateTable,
+    span: Span,
+) -> Writer<'f, R> {
+    Writer::new(flash, state, span, Ota0).unwrap()
+}
+
+/// A state table for one `split`, leaked so it outlives the handles.
+fn state() -> &'static mut StateTable {
+    Box::leak(Box::new(StateTable::new()))
+}
+
+/// The OTA mechanism over the boot writers `split` hands out on `device`,
+/// booted from `running`, which reaches the boot tier.
+fn ota_over(device: &mut dyn NorDevice, running: Slot) -> Ota<'_> {
+    let storage = run(split(device, state(), running.partition().offset));
+    assert_eq!(storage.report.tier, Tier::Boot, "{:?}", storage.report);
+    let Handles::Boot(handles, writers) = storage.handles else {
+        panic!("{:?}", storage.handles);
+    };
+    Ota::new(writers, &handles.current_app).unwrap()
+}
 
 // Images.
 
@@ -124,11 +153,9 @@ fn flashed(image: &[u8]) -> RamFlash {
 }
 
 /// The OTA mechanism of `flash` booted from `running`, which reaches the
-/// full tier.
+/// boot tier.
 fn ota_on(flash: &RamFlash, running: Slot) -> Ota<'_> {
-    let storage = run(split(lend(flash), running.partition().offset));
-    assert_eq!(storage.report.tier(), Tier::Full, "{:?}", storage.report);
-    storage.data.unwrap().ota.unwrap()
+    ota_over(lend(flash), running)
 }
 
 /// Boots `flash`, which has to start a slot.
@@ -1132,8 +1159,7 @@ impl NorDevice for Forgetful<'_> {
 fn beginning_an_update_stops_when_the_otadata_doesnt_keep_what_is_written() {
     let flash = flashed(APP);
     let mut forgetful = Forgetful(&flash);
-    let storage = run(split(&mut forgetful, OTA_0.offset));
-    let mut ota = storage.data.unwrap().ota.unwrap();
+    let mut ota = ota_over(&mut forgetful, Ota0);
     assert_eq!(run(ota.begin_update()).err(), Some(OtaError::Unsettled));
     // Two writes of the second sector, and nothing of the slot.
     let second = OTADATA_AT + SECTOR_SIZE;
@@ -1528,22 +1554,24 @@ fn no_operation_writes_outside_the_other_slot_and_the_otadata() {
 #[test]
 fn the_guard_refuses_what_a_wrong_span_would_write() {
     let flash = flashed(APP);
-    let region = |entry: Entry| Region::new(&flash, entry.offset, entry.size).unwrap();
-    let project = run(split(lend(&flash), OTA_0.offset))
-        .report
-        .app
-        .unwrap()
-        .project_name;
+    let state: &StateTable = state();
+    let current = Reader::new(&flash, state, Span::of(&OTA_0)).unwrap();
     // The running slot in place of the other one.
-    let mut ota = Ota::new(region(OTA_0), region(OTADATA), Ota0, project);
+    let writers = BootWriters::new(
+        writer(&flash, state, Span::of(&OTA_0)),
+        writer(&flash, state, Span::of(&OTADATA)),
+        Ota0,
+    );
+    let mut ota = Ota::new(writers, &current).unwrap();
     assert_eq!(
         run(ota.begin_update()).err(),
         Some(OtaError::Access(AccessError::Protected))
     );
     // The boot chain in place of the otadata, holding no valid entry: a
     // confirmation would write its first sector.
-    let boot = Region::new(&flash, 0, OTADATA.size).unwrap();
-    let mut ota = Ota::new(region(OTA_1), boot, Ota0, project);
+    let boot = writer(&flash, state, Span::new(0, OTADATA.size));
+    let writers = BootWriters::new(writer(&flash, state, Span::of(&OTA_1)), boot, Ota0);
+    let mut ota = Ota::new(writers, &current).unwrap();
     assert_eq!(
         run(ota.confirm()),
         Err(OtaError::Access(AccessError::Protected))
@@ -1560,6 +1588,132 @@ fn the_guard_refuses_what_a_wrong_span_would_write() {
     );
 }
 
+// Sessions and epochs.
+
+/// The OTA mechanism of `flash` booted from `ota_0` over writers of `state`,
+/// with readers of the alternate slot and the otadata over the same table.
+fn watched<'f>(
+    flash: &'f RamFlash,
+    state: &'f StateTable,
+) -> (
+    Ota<'f>,
+    Reader<'f, AlternateApp>,
+    Reader<'f, roles::Otadata>,
+) {
+    let current = Reader::new(flash, state, Span::of(&OTA_0)).unwrap();
+    let writers = BootWriters::new(
+        writer(flash, state, Span::of(&OTA_1)),
+        writer(flash, state, Span::of(&OTADATA)),
+        Ota0,
+    );
+    let ota = Ota::new(writers, &current).unwrap();
+    let alternate = Reader::new(flash, state, Span::of(&OTA_1)).unwrap();
+    let otadata = Reader::new(flash, state, Span::of(&OTADATA)).unwrap();
+    (ota, alternate, otadata)
+}
+
+#[test]
+fn an_update_holds_the_slot_s_session_for_its_life() {
+    let flash = flashed(APP);
+    let (mut ota, alternate, otadata) = watched(&flash, state());
+    let new = small_app("0.2.0", 0);
+    let before = alternate.write_state();
+    run(async {
+        let mut update = ota.begin_update().await.unwrap();
+        // The slot is written to from the start of the update: no snapshot
+        // of it can be taken, and its state is the one it started from.
+        assert_eq!(
+            alternate.snapshot(Span::new(0, 4)).err(),
+            Some(crate::SnapshotError::Busy)
+        );
+        assert_eq!(alternate.write_state(), WriteState::Writing(before.epoch()));
+        // The otadata isn't: its writes are sessions of their own.
+        assert!(otadata.write_state().is_stable());
+        update.write(&new).await.unwrap();
+        assert!(!alternate.write_state().is_stable());
+        let image = update.finish().await.unwrap();
+        // Finished, the slot is stable at a new epoch, which the image
+        // records.
+        let after = alternate.write_state();
+        assert_eq!(after, WriteState::Stable(image.epoch()));
+        assert_ne!(after.epoch(), before.epoch());
+        assert!(alternate.snapshot(Span::new(0, 4)).is_ok());
+    });
+}
+
+#[test]
+fn an_abandoned_update_ends_its_session() {
+    let flash = flashed(APP);
+    let (mut ota, alternate, _) = watched(&flash, state());
+    let before = alternate.write_state();
+    run(async {
+        let mut update = ota.begin_update().await.unwrap();
+        update.write(&[0; 100]).await.unwrap();
+        drop(update);
+    });
+    let after = alternate.write_state();
+    assert!(after.is_stable());
+    assert_ne!(after, before);
+    // A failed finish ends it too.
+    let image = finish_with(&mut ota, &[0; 64]);
+    assert!(image.is_err());
+    assert!(alternate.write_state().is_stable());
+}
+
+#[test]
+fn each_otadata_write_is_its_own_session() {
+    let flash = flashed(APP);
+    let (mut ota, alternate, otadata) = watched(&flash, state());
+    let image = finish_with(&mut ota, &small_app("0.2.0", 0)).unwrap();
+    let before = otadata.write_state();
+    let slot = alternate.write_state();
+    run(ota.activate(image)).unwrap();
+    // One write, one session: a new epoch, and nothing open after it.
+    let after = otadata.write_state();
+    assert!(after.is_stable());
+    assert_ne!(after, before);
+    assert_eq!(alternate.write_state(), slot);
+}
+
+#[test]
+fn an_image_whose_slot_was_written_since_isnt_activated() {
+    let flash = flashed(APP);
+    let state: &StateTable = state();
+    let (mut ota, alternate, _) = watched(&flash, state);
+    let image = finish_with(&mut ota, &small_app("0.2.0", 0)).unwrap();
+    assert_eq!(alternate.write_state(), WriteState::Stable(image.epoch()));
+    // Another writer of the slot, which no boot has, writes it: the slot's
+    // epoch moves, though it still holds the image.
+    let mut other = writer::<AlternateApp>(&flash, state, Span::of(&OTA_1));
+    let end = OTA_1.size - SECTOR_SIZE;
+    run(other.begin().erase(end, OTA_1.size)).unwrap();
+    assert_ne!(alternate.write_state(), WriteState::Stable(image.epoch()));
+    assert_eq!(run(ota.activate(image)), Err(OtaError::Changed));
+    // Verified again at the new epoch, it is.
+    let again = run(ota.verify_other()).unwrap();
+    assert_eq!(alternate.write_state(), WriteState::Stable(again.epoch()));
+    run(ota.activate(again)).unwrap();
+}
+
+#[test]
+fn ota_needs_the_running_app_s_descriptor() {
+    let flash = RamFlash::with(FLASH_LEN, &[(OTA_1.offset, APP)]);
+    let state: &StateTable = state();
+    let current = Reader::new(&flash, state, Span::of(&OTA_0)).unwrap();
+    let writers = BootWriters::new(
+        writer(&flash, state, Span::of(&OTA_1)),
+        writer(&flash, state, Span::of(&OTADATA)),
+        Ota0,
+    );
+    assert_eq!(
+        Ota::new(writers, &current).err(),
+        Some(ImageError::Magic(0xFF))
+    );
+    // With the image there, its project is the one updates match.
+    let flash = flashed(APP);
+    assert_eq!(ota_on(&flash, Ota0).project().to_str(), Some("eveningstar"));
+}
+
 // Yields.
 
 #[test]
@@ -1568,9 +1722,9 @@ fn long_operations_yield_to_the_executor() {
     let flash = flashed(APP);
     let mut ota = ota_on(&flash, Ota0);
     // What verifying the image yields, on its own.
-    let slot = Region::new(&flash, OTA_1.offset, OTA_1.size).unwrap();
     flash.poke(OTA_1.offset, &new);
-    let verifying = block_on(image::verify_app(&slot)).wakes;
+    let slot = flash.at(OTA_1.offset, OTA_1.size as usize);
+    let verifying = block_on(image::verify_app(&slot[..])).wakes;
     assert_eq!(verifying, (new.len() - 32) / image::YIELD_INTERVAL as usize);
 
     let image = run(async {
