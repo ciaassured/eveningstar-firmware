@@ -1,7 +1,9 @@
 //! Readers, writers and write sessions of the internal flash's regions.
 
 use core::fmt;
+use core::future::{Future, poll_fn};
 use core::marker::PhantomData;
+use core::task::Poll;
 
 use eveningstar_esp_formats::pace::{Pace as _, Yield};
 
@@ -154,6 +156,31 @@ impl<'f, R: Role<Device = Internal>> Reader<'f, R> {
     #[must_use]
     pub fn write_state(&self) -> WriteState {
         self.extent.write_state()
+    }
+
+    /// Completes once the region is stable at a state other than the one it
+    /// is in now: after a write session on a span it covers ends at a new
+    /// epoch or, when a session is open now, after that session ends. The
+    /// state is taken when `changed` is called, not when the future is first
+    /// polled, so no session that ends in between is missed.
+    ///
+    /// Several tasks may wait, on one region or on several regions of the
+    /// device. Up to 16 waiting at once per device are each woken once per
+    /// session end; with more, they wake each other in turn, and are polled
+    /// again and again until the region changes.
+    pub fn changed(&self) -> impl Future<Output = ()> + '_ {
+        let from = self.write_state();
+        poll_fn(move |cx| {
+            let ready = self.extent.state.waiters().register_then(cx.waker(), || {
+                let now = self.write_state();
+                now.is_stable() && now != from
+            });
+            if ready {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        })
     }
 }
 

@@ -3,7 +3,12 @@
     reason = "test offsets and lengths are small"
 )]
 
-use core::pin::pin;
+extern crate alloc;
+
+use alloc::sync::Arc;
+use alloc::task::Wake;
+use core::pin::{Pin, pin};
+use core::sync::atomic::{AtomicUsize, Ordering};
 use core::task::{Context, Poll, Waker};
 
 use super::*;
@@ -41,7 +46,7 @@ fn stable(state: WriteState) -> crate::Epoch {
 }
 
 /// Polls `future` once with a waker that does nothing.
-fn poll_once<F: Future>(future: core::pin::Pin<&mut F>) -> Poll<F::Output> {
+fn poll_once<F: Future>(future: Pin<&mut F>) -> Poll<F::Output> {
     future.poll(&mut Context::from_waker(Waker::noop()))
 }
 
@@ -877,4 +882,141 @@ fn a_bootloader_view_lies_inside_its_region() {
             .unwrap_err(),
         PublishError::OutOfRange
     );
+}
+
+// Waiting for a change.
+
+/// A waker that counts its wakes.
+#[derive(Default)]
+struct Counter(AtomicUsize);
+
+impl Wake for Counter {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+/// A future and the waker that counts its wakes.
+struct Waiting<F> {
+    future: Pin<Box<F>>,
+    counter: Arc<Counter>,
+    waker: Waker,
+}
+
+impl<F: Future<Output = ()>> Waiting<F> {
+    fn new(future: F) -> Self {
+        let counter = Arc::new(Counter::default());
+        Self {
+            future: Box::pin(future),
+            waker: Waker::from(counter.clone()),
+            counter,
+        }
+    }
+
+    /// Whether the future completes when polled.
+    fn ready(&mut self) -> bool {
+        self.future
+            .as_mut()
+            .poll(&mut Context::from_waker(&self.waker))
+            .is_ready()
+    }
+
+    fn wakes(&self) -> usize {
+        self.counter.0.load(Ordering::SeqCst)
+    }
+}
+
+#[test]
+fn changed_completes_on_a_new_epoch_only() {
+    let flash = flash();
+    let (reader, mut writer) = alternate(&flash);
+    let mut waiting = Waiting::new(reader.changed());
+    assert!(!waiting.ready());
+
+    // A session that issues no call wakes the task, which waits on.
+    drop(writer.begin());
+    assert_eq!(waiting.wakes(), 1);
+    assert!(!waiting.ready());
+    // So does one the guard refused.
+    let _ = run(writer.begin().erase(0, 1));
+    assert!(!waiting.ready());
+
+    write_word(&mut writer, 0);
+    assert!(waiting.wakes() >= 3);
+    assert!(waiting.ready());
+}
+
+#[test]
+fn changed_wakes_every_waiter() {
+    let flash = flash();
+    let (reader, mut writer) = alternate(&flash);
+    let chip: Reader<'_, Chip> = flash.reader(Span::new(0, FLASH_SIZE));
+    let config: Reader<'_, CurrentConfig> = flash.reader(Span::from(layout::CONFIG_0));
+    let mut app_waiters: Vec<_> = (0..4).map(|_| Waiting::new(reader.changed())).collect();
+    let mut chip_waiter = Waiting::new(chip.changed());
+    let mut config_waiter = Waiting::new(config.changed());
+    for waiting in &mut app_waiters {
+        assert!(!waiting.ready());
+    }
+    assert!(!chip_waiter.ready());
+    assert!(!config_waiter.ready());
+
+    write_word(&mut writer, 0);
+    for waiting in &mut app_waiters {
+        assert_eq!(waiting.wakes(), 1);
+        assert!(waiting.ready());
+    }
+    assert_eq!(chip_waiter.wakes(), 1);
+    assert!(chip_waiter.ready());
+    // A waiter on another region is woken, and waits on.
+    assert_eq!(config_waiter.wakes(), 1);
+    assert!(!config_waiter.ready());
+}
+
+#[test]
+fn as_many_waiters_as_slots_are_each_woken_once() {
+    let flash = flash();
+    let (reader, mut writer) = alternate(&flash);
+    let mut waiters: Vec<_> = (0..crate::state::WAITERS)
+        .map(|_| Waiting::new(reader.changed()))
+        .collect();
+    for waiting in &mut waiters {
+        assert!(!waiting.ready());
+        // Polling again registers nothing new.
+        assert!(!waiting.ready());
+    }
+    assert!(waiters.iter().all(|waiting| waiting.wakes() == 0));
+    write_word(&mut writer, 0);
+    for waiting in &mut waiters {
+        assert_eq!(waiting.wakes(), 1);
+        assert!(waiting.ready());
+    }
+}
+
+#[test]
+fn changed_takes_the_state_when_called() {
+    let flash = flash();
+    let (reader, mut writer) = alternate(&flash);
+    let changed = reader.changed();
+    write_word(&mut writer, 0);
+    // Polled for the first time after the write, it completes.
+    assert!(Waiting::new(changed).ready());
+    // Called after it, it waits for the next.
+    let mut waiting = Waiting::new(reader.changed());
+    assert!(!waiting.ready());
+}
+
+#[test]
+fn changed_called_during_a_session_completes_when_it_ends() {
+    let flash = flash();
+    let (reader, mut writer) = alternate(&flash);
+    let session = writer.begin();
+    let mut waiting = Waiting::new(reader.changed());
+    assert!(!waiting.ready());
+    drop(session);
+    assert!(waiting.ready());
 }
