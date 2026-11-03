@@ -1,6 +1,7 @@
 # Storage: what is left
 
-Status: implemented. How it is built and why is in `docs/architecture.md`
+Status: implemented. A second design, `specs/storage-v2.md`, is proposed to
+replace it. How it is built and why is in `docs/architecture.md`
 ("Storage"), and the rules for working on it are in `CLAUDE.md` ("Storage").
 This file keeps what those don't: the work that builds on the storage layer, and
 what hasn't been verified.
