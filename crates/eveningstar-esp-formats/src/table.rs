@@ -28,10 +28,6 @@
 //! [`compare_labels`] compares the partitions with the expected ones by
 //! label, and [`find`] looks for the table a bootloader read at an offset
 //! other than the expected one, judging each candidate as [`verify`] does.
-//!
-//! [`entries`] and [`compare`] read the list as the first design did: it ends
-//! at the MD5 entry, whose digest is reported in [`End::Md5`] and decides
-//! nothing else, and the entries are compared by position.
 
 use core::fmt;
 use core::ops::BitOr;
@@ -206,39 +202,8 @@ impl fmt::Debug for Fields {
     }
 }
 
-/// How a well-formed list of entries ends.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum End {
-    /// At an MD5 entry, the entry at `index`, holding `digest`.
-    Md5 {
-        /// Position of the MD5 entry, which is also the number of partitions.
-        index: usize,
-        /// The digest the entry stores.
-        digest: [u8; 16],
-        /// Whether `digest` is the MD5 of the 32 bytes of each entry before
-        /// it, as stored.
-        matches: bool,
-    },
-    /// At an erased entry, the entry at `index`.
-    Erased {
-        /// Position of the erased entry, which is also the number of
-        /// partitions.
-        index: usize,
-    },
-}
-
-impl End {
-    /// The number of partition entries before the end.
-    #[must_use]
-    pub const fn partitions(&self) -> usize {
-        match *self {
-            Self::Md5 { index, .. } | Self::Erased { index } => index,
-        }
-    }
-}
-
-/// Why a table isn't valid: what makes the bootloader refuse it, from
-/// [`verify`], or why it isn't well formed, from [`entries`].
+/// Why the bootloader refuses a table ([`verify`]), or why its partitions
+/// can't be read ([`partitions`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TableError {
     /// The entry at `index` has a magic that is neither a partition's, the MD5
@@ -252,8 +217,7 @@ pub enum TableError {
     },
     /// The first entry is erased: there is no table.
     Empty,
-    /// [`MAX_ENTRIES`] entries and no end entry among them ([`verify`]), or
-    /// no MD5 or erased entry ([`entries`]).
+    /// [`MAX_ENTRIES`] entries and no end entry among them.
     Unterminated,
     /// The partition entry at `index` starts or ends past the chip size, as
     /// the bootloader compares them: `offset > chip size` or
@@ -290,210 +254,16 @@ pub enum TableError {
     },
 }
 
-/// One slot of the table.
-enum Slot {
-    Partition(RawEntry),
-    Md5([u8; 16]),
-    Erased,
-}
-
-/// The slot stored in `bytes`, or its magic when that is malformed.
-fn parse_slot(bytes: &[u8; 32]) -> Result<Slot, u16> {
-    let [m0, m1, kind, subtype, ..] = *bytes;
-    match u16::from_le_bytes([m0, m1]) {
-        MAGIC => Ok(Slot::Partition(RawEntry::from_bytes(bytes))),
-        MD5_MAGIC => {
-            let [_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, digest @ ..] = *bytes;
-            Ok(Slot::Md5(digest))
-        }
-        0xFFFF if kind == ERASED && subtype == ERASED => Ok(Slot::Erased),
-        magic => Err(magic),
-    }
-}
-
-/// The partition entries of the table at `offset` in `source`, read one at a
-/// time.
-pub fn entries<S: Source + ?Sized>(source: &S, offset: u32) -> Entries<'_, S> {
-    Entries {
-        source,
-        offset,
-        index: 0,
-        state: State::Reading,
-        md5: Md5::new(),
-    }
-}
-
-/// An iterator over the partition entries of a table, from [`entries`].
-///
-/// It yields each partition entry in order. At the end of the list it stops;
-/// at a malformed or unreadable entry it yields the error and then stops.
-/// [`end`](Self::end) then says which of the two it was. It hashes each entry
-/// as it reads it, so an MD5 entry is checked without reading the table again.
-pub struct Entries<'s, S: ?Sized> {
-    source: &'s S,
-    offset: u32,
-    index: usize,
-    state: State,
-    /// The MD5 of the entries read so far.
-    md5: Md5,
-}
-
-#[derive(Clone, Copy)]
-enum State {
-    Reading,
-    Done(Result<End, TableError>),
-}
-
-impl<S: Source + ?Sized> Entries<'_, S> {
-    /// How the table ended: `None` while there are entries left to read, then
-    /// the end of a well-formed list or the reason the table isn't well formed.
-    #[must_use]
-    pub fn end(&self) -> Option<Result<End, TableError>> {
-        match self.state {
-            State::Reading => None,
-            State::Done(end) => Some(end),
-        }
-    }
-
-    /// Reads the remaining entries and returns how the table ended.
-    ///
-    /// # Errors
-    ///
-    /// The reason the table isn't well formed, as [`end`](Self::end) gives it.
-    pub fn finish(&mut self) -> Result<End, TableError> {
-        loop {
-            if let State::Done(end) = self.state {
-                return end;
-            }
-            self.next();
-        }
-    }
-
-    /// The slot at `index`, a partition entry's bytes hashed into `md5`.
-    fn read_slot(&mut self) -> Result<Slot, TableError> {
-        let index = self.index;
-        let read_error = |error| TableError::Read { index, error };
-        let offset = u32::try_from(index)
-            .ok()
-            .and_then(|i| i.checked_mul(ENTRY_LEN))
-            .and_then(|at| self.offset.checked_add(at))
-            .ok_or(read_error(ReadError::OutOfRange))?;
-        let bytes = read_array(self.source, offset).map_err(read_error)?;
-        let slot = parse_slot(&bytes).map_err(|magic| TableError::Magic { index, magic })?;
-        if let Slot::Partition(_) = slot {
-            self.md5.update(&bytes);
-        }
-        Ok(slot)
-    }
-}
-
-impl<S: Source + ?Sized> Iterator for Entries<'_, S> {
-    type Item = Result<RawEntry, TableError>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if !matches!(self.state, State::Reading) {
-            return None;
-        }
-        let index = self.index;
-        let end = if index >= MAX_ENTRIES {
-            Err(TableError::Unterminated)
-        } else {
-            match self.read_slot() {
-                Ok(Slot::Partition(entry)) => {
-                    self.index += 1;
-                    return Some(Ok(entry));
-                }
-                Ok(Slot::Md5(digest)) => Ok(End::Md5 {
-                    index,
-                    digest,
-                    matches: self.md5.clone().finalize() == digest,
-                }),
-                Ok(Slot::Erased) if index == 0 => Err(TableError::Empty),
-                Ok(Slot::Erased) => Ok(End::Erased { index }),
-                Err(error) => Err(error),
-            }
-        };
-        self.state = State::Done(end);
-        end.err().map(Err)
-    }
-}
-
-impl<S: ?Sized> fmt::Debug for Entries<'_, S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Entries")
-            .field("offset", &self.offset)
-            .field("index", &self.index)
-            .finish_non_exhaustive()
-    }
-}
-
-/// How one expected partition compares with the table's entry with its label
-/// ([`compare_labels`]), or at its position ([`compare`]).
+/// How one expected partition compares with the table's partition with its
+/// label ([`compare_labels`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Match {
-    /// The entry equals the partition in every field.
+    /// The partition equals the expected one in every field.
     Matches,
-    /// The entry differs from the partition in these fields.
+    /// The partition differs from the expected one in these fields.
     Differs(Fields),
-    /// The table has no entry at this position: the list ends before it, or
-    /// the table isn't well formed up to it.
+    /// The table has no partition with its label.
     Missing,
-}
-
-/// A table compared with the partitions it is expected to hold, position by
-/// position: the table's entry `i` against expected partition `i`.
-///
-/// It holds no copy of the entries; [`entries`] reads them from the table.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Comparison<const N: usize> {
-    /// Per expected partition, in order, how it compares.
-    pub partitions: [Match; N],
-    /// The number of entries past the last expected partition. When it isn't
-    /// zero, the first of them is entry `N`.
-    pub extra: usize,
-    /// How the table ends, or why it isn't well formed.
-    pub end: Result<End, TableError>,
-}
-
-impl<const N: usize> Comparison<N> {
-    /// Whether the table is well formed and holds exactly the expected
-    /// partitions, in order, whatever its MD5.
-    #[must_use]
-    pub fn matches(&self) -> bool {
-        self.end.is_ok() && self.extra == 0 && self.partitions.iter().all(|m| *m == Match::Matches)
-    }
-}
-
-/// Compares the table at `offset` in `source` with `expected`: every field of
-/// every entry, in order, and that the list then ends with an MD5 or erased
-/// entry. What follows the end is ignored.
-pub fn compare<S: Source + ?Sized, const N: usize>(
-    source: &S,
-    offset: u32,
-    expected: &[Entry; N],
-) -> Comparison<N> {
-    let mut partitions = [Match::Missing; N];
-    let mut extra = 0;
-    let mut entries = entries(source, offset);
-    for (index, entry) in (&mut entries).enumerate() {
-        let Ok(entry) = entry else { break };
-        match (partitions.get_mut(index), expected.get(index)) {
-            (Some(result), Some(expected)) => {
-                let fields = entry.differences(expected);
-                *result = if fields.is_empty() {
-                    Match::Matches
-                } else {
-                    Match::Differs(fields)
-                };
-            }
-            _ => extra += 1,
-        }
-    }
-    Comparison {
-        partitions,
-        extra,
-        end: entries.finish(),
-    }
 }
 
 /// The app subtype of a factory app.

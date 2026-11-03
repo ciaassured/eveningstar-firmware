@@ -1,5 +1,5 @@
-//! Fixtures and builders shared by the tests of `split`, the partitions and
-//! `Ota`: the formats crate's, a flash in RAM that fails and tears its writes
+//! Fixtures and builders shared by the tests of the chain and `Ota`: the
+//! formats crate's, a flash in RAM that fails and tears its writes
 //! on request, and the boards the flash commands leave.
 
 #![allow(
@@ -146,7 +146,7 @@ impl RamFlash {
     }
 }
 
-/// A [`RamFlash`] lent to [`crate::split`], which takes its flash mutably, while
+/// A [`RamFlash`] lent to [`crate::chain::split`], which takes its flash mutably, while
 /// the test keeps reading it: the box is leaked, so the borrow lasts as long as
 /// `flash` does.
 pub(crate) fn lend(flash: &RamFlash) -> &mut dyn crate::nor::NorDevice {
