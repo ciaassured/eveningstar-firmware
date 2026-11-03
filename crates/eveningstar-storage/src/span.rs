@@ -60,6 +60,19 @@ impl Span {
         self.offset < other_end && other.offset < end
     }
 
+    /// The bytes the span shares with `other`, or `None` when it shares
+    /// none. A span whose end doesn't fit in a `u32` counts as running up to
+    /// `u32::MAX`.
+    #[must_use]
+    pub fn intersection(self, other: Self) -> Option<Self> {
+        let start = self.offset.max(other.offset);
+        let end = self
+            .end()
+            .unwrap_or(u32::MAX)
+            .min(other.end().unwrap_or(u32::MAX));
+        (start < end).then(|| Self::new(start, end - start))
+    }
+
     /// The span at `relative`, an offset and a length counted from the start
     /// of this one, in the coordinates this one is in; `None` when it doesn't
     /// lie inside this one.
@@ -121,6 +134,26 @@ mod tests {
         // An empty span strictly inside another counts as overlapping it.
         assert!(Span::new(0x1800, 0).overlaps(a));
         assert!(a.overlaps(Span::new(0x1800, 0)));
+    }
+
+    #[test]
+    fn spans_intersect_on_the_bytes_they_share() {
+        let a = Span::new(0x1000, 0x1000);
+        assert_eq!(a.intersection(a), Some(a));
+        assert_eq!(
+            a.intersection(Span::new(0x1800, 0x1000)),
+            Some(Span::new(0x1800, 0x800))
+        );
+        assert_eq!(
+            Span::new(0, 0x1001).intersection(a),
+            Some(Span::new(0x1000, 1))
+        );
+        assert_eq!(a.intersection(Span::new(0x2000, 0x10)), None);
+        assert_eq!(a.intersection(Span::new(0x1800, 0)), None);
+        assert_eq!(
+            a.intersection(Span::new(0x1800, u32::MAX)),
+            Some(Span::new(0x1800, 0x800))
+        );
     }
 
     #[test]

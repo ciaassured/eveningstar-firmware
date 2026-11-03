@@ -9,11 +9,14 @@ use core::task::{Context, Poll, Waker};
 use super::*;
 use crate::layout::{FACTORY, FLASH_SIZE, OTA_0, OTA_1, RESERVED, TABLE_OFFSET};
 use crate::roles::{
-    AlternateApp, AlternateConfig, Chip, CurrentConfig, Diag, FoundApp, Internal, Otadata,
-    Programmable,
+    AlternateApp, AlternateConfig, Bootloader, Chip, CurrentConfig, Diag, FoundApp, Internal,
+    Otadata, PartitionTable, Programmable,
 };
 use crate::test_support::{Call, RamNor, TestFlash, block_on, run};
-use crate::{AccessError, ReadError, Slot, SnapshotError, Source, Span, WriteState, layout};
+use crate::{
+    AccessError, MAX_SANITIZED, PublicRead, PublishError, ReadError, Slot, SnapshotError, Source,
+    Span, ViewError, WriteState, layout,
+};
 
 const SECTOR: u32 = SECTOR_SIZE;
 
@@ -610,4 +613,268 @@ fn a_snapshot_over_several_spans_fails_when_any_is_written() {
     );
     Source::read(&found_snapshot, 0, &mut buf).unwrap();
     drop(session);
+}
+
+// Publication.
+
+/// Reads the whole of `view`, polled to completion.
+fn read_view(view: &impl PublicRead) -> Result<Vec<u8>, ViewError> {
+    let mut buf = vec![0; view.len() as usize];
+    run(view.read(0, &mut buf)).map(|()| buf)
+}
+
+#[test]
+fn a_view_serves_the_region_at_its_epoch() {
+    let flash = flash();
+    flash.device().poke(OTA_1.offset + 0x10, b"0123456789");
+    let (reader, _) = alternate(&flash);
+    let epoch = stable(reader.write_state());
+    let view = reader.publish(epoch, Span::new(0x10, 10), &[]).unwrap();
+    assert_eq!(view.len(), 10);
+    assert!(!view.is_empty());
+    assert_eq!(view.epoch(), epoch);
+    assert_eq!(view.span(), Span::new(0x10, 10));
+    assert_eq!(view.sanitized(), []);
+    assert_eq!(read_view(&view).unwrap(), b"0123456789");
+    let mut buf = [0; 4];
+    run(view.read(6, &mut buf)).unwrap();
+    assert_eq!(&buf, b"6789");
+    assert_eq!(run(view.read(7, &mut buf)), Err(ViewError::OutOfRange));
+    assert_eq!(buf, [0; 4]);
+}
+
+#[test]
+fn a_view_reads_in_4_kib_steps() {
+    let flash = flash();
+    let (reader, _) = alternate(&flash);
+    let epoch = stable(reader.write_state());
+    let view = reader.publish(epoch, Span::new(0, 0x2800), &[]).unwrap();
+    let mut buf = vec![0; 0x2800];
+    let read = block_on(view.read(0, &mut buf));
+    read.output.unwrap();
+    assert_eq!(read.wakes, 2);
+    assert_eq!(reads(&flash), 3);
+}
+
+#[test]
+fn publish_refuses_an_epoch_that_moved() {
+    let flash = flash();
+    let (reader, mut writer) = alternate(&flash);
+    let epoch = stable(reader.write_state());
+    write_word(&mut writer, 0);
+    assert_eq!(
+        reader.publish(epoch, Span::new(0, 4), &[]).unwrap_err(),
+        PublishError::Stale
+    );
+    let epoch = stable(reader.write_state());
+    let session = writer.begin();
+    assert_eq!(
+        reader.publish(epoch, Span::new(0, 4), &[]).unwrap_err(),
+        PublishError::Stale
+    );
+    drop(session);
+    assert!(reader.publish(epoch, Span::new(0, 4), &[]).is_ok());
+}
+
+#[test]
+fn publish_refuses_another_regions_epoch() {
+    let flash = flash();
+    let (reader, _) = alternate(&flash);
+    let table: Reader<'_, PartitionTable> = flash.reader(Span::new(TABLE_OFFSET, SECTOR));
+    let other = stable(table.write_state());
+    assert_eq!(
+        reader.publish(other, Span::new(0, 4), &[]).unwrap_err(),
+        PublishError::Stale
+    );
+}
+
+#[test]
+fn publish_refuses_spans_outside_the_region_and_the_view() {
+    let flash = flash();
+    let (reader, _) = alternate(&flash);
+    let epoch = stable(reader.write_state());
+    let publish = |span, sanitized: &[Span]| reader.publish(epoch, span, sanitized).map(|_| ());
+    assert_eq!(
+        publish(Span::new(OTA_1.size - 3, 4), &[]),
+        Err(PublishError::OutOfRange)
+    );
+    assert_eq!(
+        publish(Span::new(4, u32::MAX), &[]),
+        Err(PublishError::OutOfRange)
+    );
+    assert_eq!(
+        publish(Span::new(0x100, 0x10), &[Span::new(0xC, 5)]),
+        Err(PublishError::SanitizedOutOfRange)
+    );
+    assert_eq!(
+        publish(
+            Span::new(0x100, 0x10),
+            &[Span::new(0, 1), Span::new(1, u32::MAX)]
+        ),
+        Err(PublishError::SanitizedOutOfRange)
+    );
+    let four = [Span::new(0, 1); MAX_SANITIZED];
+    publish(Span::new(0x100, 0x10), &four).unwrap();
+    let five = [Span::new(0, 1); MAX_SANITIZED + 1];
+    assert_eq!(
+        publish(Span::new(0x100, 0x10), &five),
+        Err(PublishError::TooManySanitized)
+    );
+    publish(Span::new(OTA_1.size, 0), &[Span::new(0, 0)]).unwrap();
+}
+
+#[test]
+fn publish_refuses_every_sensitive_span() {
+    let flash = flash();
+    for entry in [FACTORY, layout::CONFIG_0, layout::CONFIG_1, layout::DIAG] {
+        // A found region over the whole flash, as a table could place one.
+        let found: Reader<'_, FoundApp> = flash.reader(Span::new(0, FLASH_SIZE));
+        let epoch = stable(found.write_state());
+        let publish = |span| found.publish(epoch, span, &[]).map(|_| ());
+        assert_eq!(
+            publish(Span::from(entry)),
+            Err(PublishError::Sensitive),
+            "{}",
+            entry.label
+        );
+        assert_eq!(
+            publish(Span::new(entry.offset - 4, 5)),
+            Err(PublishError::Sensitive),
+            "{}",
+            entry.label
+        );
+        assert_eq!(
+            publish(Span::new(entry.end() - 1, 5)),
+            Err(PublishError::Sensitive),
+            "{}",
+            entry.label
+        );
+        assert_eq!(
+            publish(Span::new(entry.offset + 8, 0)),
+            Err(PublishError::Sensitive),
+            "{}",
+            entry.label
+        );
+        // A region found over the partition alone is refused just the same.
+        let inside: Reader<'_, FoundApp> = flash.reader(Span::from(entry));
+        let epoch = stable(inside.write_state());
+        assert_eq!(
+            inside.publish(epoch, Span::new(0, 4), &[]).unwrap_err(),
+            PublishError::Sensitive
+        );
+    }
+    // Bytes next to them, and the other partitions, publish.
+    let found: Reader<'_, FoundApp> = flash.reader(Span::new(0, FLASH_SIZE));
+    let epoch = stable(found.write_state());
+    for span in [
+        Span::new(FACTORY.offset - 4, 4),
+        Span::new(FACTORY.end(), 4),
+        Span::from(layout::OTADATA),
+        Span::from(OTA_0),
+        Span::new(OTA_1.offset, OTA_1.size),
+        Span::new(layout::DIAG.end(), 4),
+        Span::from(RESERVED),
+    ] {
+        assert!(found.publish(epoch, span, &[]).is_ok(), "{span:?}");
+    }
+}
+
+#[test]
+fn sanitized_bytes_are_served_as_erased() {
+    let flash = flash();
+    flash.device().poke(TABLE_OFFSET, &[0x11; 0x40]);
+    // The second sanitized span holds a byte that isn't erased; the first
+    // and the third are erased already.
+    flash.device().poke(TABLE_OFFSET + 0x10, &[0xFF; 0x10]);
+    flash.device().poke(TABLE_OFFSET + 0x2C, &[0xFF; 4]);
+    flash.device().poke(TABLE_OFFSET + 0x3F, &[0xFF]);
+    let table: Reader<'_, PartitionTable> = flash.reader(Span::new(TABLE_OFFSET, SECTOR));
+    let epoch = stable(table.write_state());
+    let sanitized = [
+        Span::new(0x10, 0x10),
+        Span::new(0x28, 8),
+        Span::new(0x3F, 1),
+    ];
+    let view = table
+        .publish(epoch, Span::new(0, 0x40), &sanitized)
+        .unwrap();
+    assert_eq!(view.sanitized(), [Span::new(0x28, 8)]);
+
+    let mut expected = vec![0x11; 0x40];
+    expected[0x10..0x20].fill(0xFF);
+    expected[0x28..0x30].fill(0xFF);
+    expected[0x3F] = 0xFF;
+    assert_eq!(read_view(&view).unwrap(), expected);
+    // A read that starts or ends inside a sanitized span.
+    let mut buf = [0; 6];
+    run(view.read(0x26, &mut buf)).unwrap();
+    assert_eq!(buf, [0x11, 0x11, 0xFF, 0xFF, 0xFF, 0xFF]);
+    run(view.read(0x2E, &mut buf)).unwrap();
+    assert_eq!(buf, [0xFF, 0xFF, 0x11, 0x11, 0x11, 0x11]);
+}
+
+#[test]
+fn a_view_fails_once_the_region_is_written() {
+    let flash = flash();
+    flash.device().poke(OTA_1.offset, &[0x22; 8]);
+    let (reader, mut writer) = alternate(&flash);
+    let epoch = stable(reader.write_state());
+    let view = reader.publish(epoch, Span::new(0, 8), &[]).unwrap();
+    write_word(&mut writer, 0x1000);
+    let mut buf = [7; 8];
+    assert_eq!(run(view.read(0, &mut buf)), Err(ViewError::Stale));
+    assert_eq!(buf, [0; 8]);
+}
+
+#[test]
+fn a_view_read_that_straddles_a_session_is_stale() {
+    let flash = flash();
+    let (reader, mut writer) = alternate(&flash);
+    let epoch = stable(reader.write_state());
+    let view = reader.publish(epoch, Span::new(0, 0x2000), &[]).unwrap();
+    flash
+        .device()
+        .before_call(1, move || write_word(&mut writer, 0));
+    assert_eq!(read_view(&view), Err(ViewError::Stale));
+}
+
+#[test]
+fn publish_fails_when_a_session_straddles_the_sanitized_check() {
+    let flash = flash();
+    flash.device().poke(OTA_1.offset, &[0; 8]);
+    let (reader, mut writer) = alternate(&flash);
+    let epoch = stable(reader.write_state());
+    // A session that issues no call leaves the epoch as it was.
+    let mut idle: Writer<'_, AlternateApp> = flash.writer(Span::from(OTA_1), Slot::Ota0);
+    flash.device().before_call(0, move || drop(idle.begin()));
+    let view = reader
+        .publish(epoch, Span::new(0, 0x10), &[Span::new(0, 4)])
+        .unwrap();
+    assert_eq!(view.sanitized(), [Span::new(0, 4)]);
+    // One that writes fails the check of the sanitized span.
+    flash
+        .device()
+        .before_call(0, move || write_word(&mut writer, 0x8));
+    assert_eq!(
+        reader
+            .publish(epoch, Span::new(0, 0x10), &[Span::new(0, 4)])
+            .unwrap_err(),
+        PublishError::Stale
+    );
+}
+
+#[test]
+fn a_bootloader_view_lies_inside_its_region() {
+    let flash = flash();
+    flash.device().poke(0, &[0xE9; 4]);
+    let bootloader: Reader<'_, Bootloader> = flash.reader(Span::new(0, TABLE_OFFSET));
+    let epoch = stable(bootloader.write_state());
+    let view = bootloader.publish(epoch, Span::new(0, 4), &[]).unwrap();
+    assert_eq!(read_view(&view).unwrap(), [0xE9; 4]);
+    assert_eq!(
+        bootloader
+            .publish(epoch, Span::new(0, TABLE_OFFSET + 1), &[])
+            .unwrap_err(),
+        PublishError::OutOfRange
+    );
 }
