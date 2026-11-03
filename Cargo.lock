@@ -1132,6 +1132,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "eveningstar-ota"
+version = "0.1.0"
+dependencies = [
+ "critical-section",
+ "eveningstar-boot",
+ "eveningstar-esp-formats",
+ "eveningstar-storage",
+ "sha2",
+]
+
+[[package]]
 name = "eveningstar-storage"
 version = "0.1.0"
 dependencies = [
