@@ -16,8 +16,13 @@
 //! handles were fed, resets the chip if any task has gone longer than its
 //! timeout, and otherwise feeds both hardware watchdogs.
 //!
-//! A task can instead [retire](WatchdogHandle::retire) its handle, which ends
-//! its supervision for the rest of the boot.
+//! A task that waits for an outside event can [pause](WatchdogHandle::pause)
+//! its handle: its deadline isn't checked until its next feed, so a hang while
+//! paused isn't caught. A task that waits for a known time longer than its
+//! timeout can instead [sleep](WatchdogHandle::sleep) for that time, which
+//! replaces its timeout until its next feed. A task can also
+//! [retire](WatchdogHandle::retire) its handle, which ends its supervision for
+//! the rest of the boot.
 //!
 //! # Usage
 //!
@@ -66,6 +71,12 @@ const RTC_WD_TIMEOUT: esp_hal::time::Duration =
 pub(crate) enum Message {
     /// The task is still making progress.
     Fed,
+    /// The task is waiting for an outside event; its deadline isn't checked
+    /// until it feeds again.
+    Pause,
+    /// The task is waiting for this long; until it feeds again, this is its
+    /// deadline instead of its timeout.
+    Sleep(Duration),
     /// The task is no longer supervised.
     Retired,
 }
@@ -73,16 +84,20 @@ pub(crate) enum Message {
 /// Carries a task's latest [`Message`] to the [`Supervisor`].
 ///
 /// A [`Signal`] only keeps the latest message since the last poll, not how
-/// many were sent, which is all the supervisor needs. A retire sent after a
-/// feed replaces it.
+/// many were sent, which is all the supervisor needs. A later message replaces
+/// an earlier one: a pause or sleep sent after a feed leaves the task paused
+/// or asleep, a feed sent after either supervises it again from that poll, and
+/// a retire replaces any.
 pub(crate) type Mailbox = Signal<CriticalSectionRawMutex, Message>;
 
 /// Marker for a supervised task. [`watchdog!`] generates one type per task, so
 /// each task's handle has a distinct type and can't be passed to another task.
 pub(crate) trait WatchdogType {}
 
-/// A task's connection to the supervisor. The task must call [`feed`](Self::feed)
-/// at least once per its timeout, or the chip resets.
+/// A task's connection to the supervisor. Unless the handle is paused or
+/// retired, the task must call [`feed`](Self::feed) at least once per its
+/// timeout, or the chip resets; once asleep, at least once per the time it
+/// slept for.
 ///
 /// Not `Clone` or `Copy`: each task owns exactly one handle.
 pub(crate) struct WatchdogHandle<T: WatchdogType> {
@@ -98,8 +113,28 @@ impl<T: WatchdogType> WatchdogHandle<T> {
         }
     }
 
+    /// Tells the supervisor the task is making progress, and ends a pause or
+    /// a sleep: the timeout runs again from here.
     pub(crate) fn feed(&self) {
         self.mailbox.signal(Message::Fed);
+    }
+
+    /// Stops the deadline until the next [`feed`](Self::feed), while the task
+    /// waits for an outside event.
+    #[expect(
+        dead_code,
+        reason = "no supervised task waits for an outside event yet"
+    )]
+    pub(crate) fn pause(&self) {
+        self.mailbox.signal(Message::Pause);
+    }
+
+    /// Replaces the timeout with `time` until the next [`feed`](Self::feed),
+    /// while the task waits for that long. The chip resets as for a missed
+    /// deadline if no feed comes within `time`.
+    #[expect(dead_code, reason = "no supervised task sleeps yet")]
+    pub(crate) fn sleep(&self, time: Duration) {
+        self.mailbox.signal(Message::Sleep(time));
     }
 
     /// Ends supervision of this task for the rest of the boot. The handle is
@@ -115,15 +150,59 @@ pub(crate) struct WatchdogInfo {
     pub name: &'static str,
     /// Longest allowed gap between feeds.
     pub timeout: Duration,
-    /// When the supervisor last saw a feed. Detection is per poll, so this can
-    /// lag the real feed by up to one [`POLL_INTERVAL`].
+    /// When the supervisor last saw a feed, or the task began to sleep.
+    /// Detection is per poll, so this can lag the real feed by up to one
+    /// [`POLL_INTERVAL`].
     pub last_fed: Instant,
+    /// What the task is waiting for, from its pause or sleep until its next
+    /// feed.
+    pub wait: Wait,
     /// Set once the task retires its handle; its deadline is no longer checked.
     pub retired: bool,
     pub mailbox: &'static Mailbox,
 }
 
+/// How long the supervisor lets a task go without a feed.
+#[derive(Clone, Copy)]
+pub(crate) enum Wait {
+    /// The task's timeout.
+    Timeout,
+    /// This long, instead of the timeout.
+    Sleep(Duration),
+    /// For ever.
+    Paused,
+}
+
 impl WatchdogInfo {
+    /// Applies the task's latest message, seen at `now`.
+    fn receive(&mut self, message: Message, now: Instant) {
+        match message {
+            Message::Fed => {
+                self.last_fed = now;
+                self.wait = Wait::Timeout;
+            }
+            Message::Pause => self.wait = Wait::Paused,
+            Message::Sleep(time) => {
+                self.last_fed = now;
+                self.wait = Wait::Sleep(time);
+            }
+            Message::Retired => self.retire(),
+        }
+    }
+
+    /// Whether the task's deadline has passed at `now`.
+    fn missed(&self, now: Instant) -> bool {
+        if self.retired {
+            return false;
+        }
+        let allowed = match self.wait {
+            Wait::Timeout => self.timeout,
+            Wait::Sleep(time) => time,
+            Wait::Paused => return false,
+        };
+        now.duration_since(self.last_fed) > allowed
+    }
+
     fn retire(&mut self) {
         if !self.retired {
             self.retired = true;
@@ -135,7 +214,7 @@ impl WatchdogInfo {
 /// Owns the hardware watchdogs and checks every task's deadline.
 /// If deadlines are not met, the chip is reset.
 pub(crate) struct Supervisor<const N: usize> {
-    task_watchdogs: [WatchdogInfo; N],
+    task_watchdogs: &'static mut [WatchdogInfo; N],
     rtc_watchdog: Rwdt,
     timer0_watchdog: Wdt<TIMG0<'static>>,
 }
@@ -145,7 +224,7 @@ impl<const N: usize> Supervisor<N> {
     /// the chip resets unless [`run`](Self::run) starts within
     /// `TIMER0_WD_TIMEOUT`.
     pub(crate) fn new(
-        task_watchdogs: [WatchdogInfo; N],
+        task_watchdogs: &'static mut [WatchdogInfo; N],
         mut rtc_watchdog: Rwdt,
         mut timer0_watchdog: Wdt<TIMG0<'static>>,
     ) -> Supervisor<N> {
@@ -168,12 +247,13 @@ impl<const N: usize> Supervisor<N> {
 
     /// Polls forever and monitors each task for feed timeouts.
     pub(crate) async fn run(mut self) -> ! {
-        // Reset all task watchdog timers to the start of the supervisor. Feeds
-        // sent before now are dropped; a retire is kept.
+        // Reset all task watchdog timers to the start of the supervisor. A
+        // pause, sleep or retire sent before now is kept, and a feed counts from
+        // the start.
         let start = Instant::now();
-        for wd in &mut self.task_watchdogs {
-            if let Some(Message::Retired) = wd.mailbox.try_take() {
-                wd.retire();
+        for wd in self.task_watchdogs.iter_mut() {
+            if let Some(message) = wd.mailbox.try_take() {
+                wd.receive(message, start);
             }
             wd.last_fed = start;
         }
@@ -188,15 +268,12 @@ impl<const N: usize> Supervisor<N> {
             ticker.next().await;
 
             let now = Instant::now();
-            for wd in &mut self.task_watchdogs {
-                match wd.mailbox.try_take() {
-                    Some(Message::Fed) => wd.last_fed = now,
-                    Some(Message::Retired) => wd.retire(),
-                    None => {}
+            for wd in self.task_watchdogs.iter_mut() {
+                if let Some(message) = wd.mailbox.try_take() {
+                    wd.receive(message, now);
                 }
 
-                // Check the timeout hasn't elapsed.
-                if !wd.retired && now.duration_since(wd.last_fed) > wd.timeout {
+                if wd.missed(now) {
                     error!("Task watchdog `{}` missed its deadline", wd.name);
                     #[expect(
                         clippy::disallowed_methods,
@@ -222,9 +299,10 @@ impl<const N: usize> Supervisor<N> {
 /// this is checked at compile time.
 macro_rules! watchdog {
     ( $( $field:ident: $Kind:ident = $timeout:expr, )+ ) => {
-        use $crate::watchdog::{WatchdogType, WatchdogHandle, WatchdogInfo, Supervisor, Mailbox};
+        use $crate::watchdog::{WatchdogType, WatchdogHandle, WatchdogInfo, Supervisor, Mailbox, Wait};
         use esp_hal::{peripherals::TIMG0, rtc_cntl::Rwdt, timer::timg::Wdt};
         use embassy_time::Instant;
+        use static_cell::ConstStaticCell;
 
         $(
             const _: () = assert!(
@@ -247,6 +325,21 @@ macro_rules! watchdog {
         const COUNT: usize = [ $( Index::$Kind, )* ].len();
         static MAILBOXES: [Mailbox; COUNT] = [ const { Mailbox::new() }; COUNT];
 
+        // The supervisor's view of each task, built at compile time so that
+        // no frame holds it.
+        static INFOS: ConstStaticCell<[WatchdogInfo; COUNT]> = ConstStaticCell::new([
+            $(
+                WatchdogInfo {
+                    name: stringify!($field),
+                    timeout: $timeout,
+                    last_fed: Instant::MIN,
+                    wait: Wait::Timeout,
+                    retired: false,
+                    mailbox: &MAILBOXES[Index::$Kind as usize],
+                },
+            )*
+        ]);
+
         // Handles of each task watchdog to pass the caller.
         pub(crate) struct Handles {
             $(
@@ -255,20 +348,7 @@ macro_rules! watchdog {
         }
 
         pub(crate) fn supervisor(rwdt: Rwdt, wdt: Wdt<TIMG0<'static>>) -> (Supervisor<COUNT>, Handles) {
-            let supervisor = Supervisor::new(
-                [
-                    $(
-                        WatchdogInfo {
-                            name: stringify!($field),
-                            timeout: $timeout,
-                            last_fed: Instant::MIN,
-                            retired: false,
-                            mailbox: &MAILBOXES[Index::$Kind as usize],
-                        },
-                    )*
-                ],
-                rwdt,
-                wdt);
+            let supervisor = Supervisor::new(INFOS.take(), rwdt, wdt);
 
             let handles = Handles {
                 $(
