@@ -115,17 +115,21 @@ eveningstar               the firmware: the device implementations, the services
   `Holder::…`, the `wd::` markers). In the crate they are declared by the
   firmware: the reboot service is generic over a reason type, each system
   crate defines its own reasons (`eveningstar_ota::RebootReason`), and the
-  firmware's reason type converts from them with `From`. The crate depends on
-  esp-hal for the reset and the hardware watchdogs, so it builds for the chip
-  only; its chip-independent parts can be tested on the host later.
+  firmware's reason type converts from them with `From`. The crate holds the
+  logic only and builds on the host: the chip's parts (the reset, the main and
+  RTC watchdogs) stay in the firmware or the BSP behind a trait the crate
+  takes at start-up, and its logging goes through an optional `defmt`
+  feature, as the other host crates keep `defmt` out. Its host tests need a
+  time driver for `embassy-time` (its `mock-driver` or `std` feature), to be
+  confirmed when the crate is made. `eveningstar-ota` depends on it, so OTA
+  stays buildable and testable on the host.
 - The configuration store, diag store and factory data module own their
   regions later. Each may be its own crate or a firmware module.
 - Crate names keep the `eveningstar-` prefix for now; system crates never
   depend on application crates (`morningstar`, the charge-controller service),
   so they can be renamed and moved out later.
-- Every crate stays `no_std` and allocation-free. All but
-  `eveningstar-system` build on the host and are added to `host_crates` in
-  `nix/checks.nix`.
+- Every crate stays `no_std` and allocation-free, builds on the host, and is
+  added to `host_crates` in `nix/checks.nix`.
 
 ## Devices
 
@@ -331,10 +335,13 @@ enforced by the storage crate, the third by the content module.
    factory or `Chip` snapshot has no such method, whatever the tier.
 2. **Location.** Every `Publishable` role is located from a known point: the
    bootloader at 0x0, where the ROM loads it; the table at the offset a known
-   bootloader reads, or the single table the search finds; an entry of the
-   located table; or the image at the booted offset, from MMU entry 0. No
-   region is located by scanning other flash for something that looks like a
-   format, so nothing elsewhere can be published.
+   bootloader reads, or the table the search finds; an entry of the located
+   table; or the image at the booted offset, from MMU entry 0. The search is
+   the one scan allowed, and it is bounded: it looks only at sector
+   boundaries below the booted offset, and a candidate counts only when it
+   is a valid table with an app entry at the booted offset and the only such
+   table. No other region is located by scanning flash for something that
+   looks like a format, so nothing elsewhere can be published.
 3. **Verification.** The content module publishes only bytes its parser
    verified with a check that covers each of them:
    - **An image** (app or bootloader): its segments, its checksum, and the
@@ -509,8 +516,13 @@ where the checks live.
   state from the `Otadata` module in every tier that has one and requests the
   reboot through `eveningstar-system` with its own reason, which the
   firmware's reason type converts from.
-- The OTA service's confirmation window (10 minutes, then a graceful reboot)
-  is built on the same reboot handle, as `specs/storage.md` describes.
+- **The confirmation window**, the OTA service's policy, built on the same
+  reboot handle: after a boot whose image needs confirming
+  (`BootState::needs_confirmation`), a user has 10 minutes to confirm it,
+  which calls `Ota::confirm`. On timeout the service requests a graceful
+  reboot in every case, including when there is no rollback target, so a
+  board reboots every 10 minutes until someone confirms. That is accepted so
+  that a user can confirm whichever image comes up.
 
 ## Protected paths (later)
 
@@ -559,7 +571,8 @@ Each step is a PR on a stack, each passing `nix run .#checks`:
 4. **`eveningstar-boot`:** the four content modules and the transport digest.
 5. **`eveningstar-system`:** the reboot service, its holds and the watchdog
    supervisor moved out of the firmware, generic over the firmware's reasons,
-   holders and tasks.
+   holders and tasks, with the chip's reset and hardware watchdogs behind a
+   trait the firmware implements.
 6. **`eveningstar-ota`:** `Ota` on `BootWriters`, with the OTA and otadata
    power-cut tests moved over; the reboot that rolls back an image that can't
    be confirmed.
