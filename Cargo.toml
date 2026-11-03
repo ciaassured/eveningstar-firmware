@@ -18,15 +18,16 @@ eveningstar-esp-formats = { path = "crates/eveningstar-esp-formats" }
 eveningstar-ota         = { path = "crates/eveningstar-ota" }
 eveningstar-storage     = { path = "crates/eveningstar-storage" }
 
-# Chip and logging features are project-wide, so they are set once here.
+# Chip and logging features are project-wide, so they are set once here. The
+# embassy crates that a host crate uses take `defmt` in each crate that logs
+# through them, so a host crate builds without `defmt` unless its own `defmt`
+# feature is on.
 critical-section       = "1.2.0"
 defmt                  = "1.0.1"
 embassy-embedded-hal   = { version = "0.6.0", features = ["defmt"] }
 embassy-executor       = { version = "0.10.0", features = ["defmt"] }
-embassy-futures        = { version = "0.1.2", features = ["defmt"] }
-embassy-time           = { version = "0.5.1", features = ["defmt"] }
-# `defmt` is enabled by the crates that log, not here: the host crates use
-# embassy-sync too, and keep `defmt` out.
+embassy-futures        = "0.1.2"
+embassy-time           = "0.5.1"
 embassy-sync           = "0.8.0"
 embassy-net            = { version = "0.9.1", features = ["auto-icmp-echo-reply", "defmt", "dhcpv4", "dhcpv4-hostname", "medium-ethernet", "proto-ipv4", "tcp", "udp"] }
 embassy-net-wiznet     = { version = "0.3.0", features = ["defmt"] }

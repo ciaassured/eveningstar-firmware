@@ -15,8 +15,8 @@ bench = false
 [dependencies]
 defmt.workspace = true
 embassy-executor.workspace = true
-embassy-futures.workspace = true
-embassy-time.workspace = true
+embassy-futures = { workspace = true, features = ["defmt"] }
+embassy-time = { workspace = true, features = ["defmt"] }
 embassy-sync = { workspace = true, features = ["defmt"] }
 embassy-net.workspace = true
 embassy-net-wiznet.workspace = true
