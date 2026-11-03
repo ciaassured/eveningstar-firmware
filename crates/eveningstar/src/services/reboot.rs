@@ -59,11 +59,6 @@ pub(crate) enum Reason {
     LinkDown,
     /// A client requested it through the API.
     Api,
-    /// The running image is unconfirmed (`PendingVerify`), and storage reached
-    /// the layout tier, not the boot tier, where it could be confirmed. Unless
-    /// confirmed, the bootloader rolls the image back at the next boot, so
-    /// rebooting returns to the previous image.
-    CannotConfirm,
 }
 
 /// What holds off a graceful reboot, as named in the [`Status`].

@@ -115,12 +115,7 @@ async fn main(spawner: Spawner) {
     // Nothing takes a storage handle yet, so the handles are dropped when
     // `main` returns. They can't be made again: the flash is split once per
     // boot.
-    let _storage = storage::start(
-        board.internal_flash,
-        board.flash_cache,
-        reboot.graceful_only(),
-    )
-    .await;
+    let _storage = storage::start(board.internal_flash, board.flash_cache).await;
     // Nothing hashes yet; the handle is `Copy`, so dropping it is harmless.
     let _sha = sha::start(board.sha);
 
