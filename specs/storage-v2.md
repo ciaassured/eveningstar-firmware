@@ -1,9 +1,12 @@
 # Storage, second design: regions, snapshots and content modules
 
-Status: reviewed, being implemented. It replaces the storage layer described
-in `docs/architecture.md` ("Storage") and `specs/storage.md`; once it is
-implemented, both are rewritten to match and `CLAUDE.md` ("Storage") is
-updated with it.
+Status: implemented, apart from `eveningstar-system`, which is built on its
+own (#74) and isn't part of this stack. How it is built and why is in
+`docs/architecture.md` ("Storage"), and the rules for working on it are in
+`CLAUDE.md` ("Storage"). This file keeps the design's reasons, the decisions
+made while it was built ("Decided during implementation", which take
+precedence over the text below where they differ), what is left to build, and
+what isn't verified yet.
 
 > **Publication is an allow list.** A raw region read is never exported.
 > Bytes leave the device only through a published view, and a view exists
@@ -99,14 +102,63 @@ was asleep, so they are recorded here to be confirmed or changed.
   `Source`, `ReadError`, `Text`, hashing and pacing.
 - `eveningstar-system` takes reasons as a type parameter the firmware
   declares, and holders and supervised tasks as values registered at
-  start-up. `eveningstar-ota` requests a reboot through an object
-  (`&'static dyn RebootRequest<ota::Reason>`), not a type parameter.
+  start-up. `eveningstar-ota` was to request a reboot through an object
+  (`&'static dyn RebootRequest<ota::Reason>`), not a type parameter;
+  superseded, as it requests none.
 - The confirmation window runs only in the boot tier, where confirming is
   possible. Below it nothing reboots except as today: a `PendingVerify` image
   in the layout tier, which the bootloader rolls back.
 - `activate` doesn't hash the slot again: the slot's epoch proves no write
   touched it since it verified, and the bootloader verifies the image at boot
   and falls back if it fails.
+
+### Decided during implementation (2026-11-04), for the user to confirm
+
+The code follows these where the sections below say otherwise.
+
+- **Snapshots and waits.** `Reader::snapshot` also fails `OutOfRange` for a
+  span outside the region. `Reader::changed()` completes once the region is
+  stable at a state other than the one it was in when `changed` was called:
+  a session that was open at the call ends, even without a write, and
+  completes it. A device holds at most 16 waiters at once; with more, they
+  wake each other in turn until the region changes.
+- **Epochs.** A region's epoch is the sum of its spans' counts together with
+  which spans they are, so epochs of regions over different spans never
+  compare equal. A counter that would wrap leaves its span written to for
+  good (every snapshot of it fails) rather than an epoch repeating.
+- **No reboot below the boot tier.** The layout tier's bootloader isn't known
+  to roll back, and one that doesn't would start the same `PendingVerify`
+  image after every reboot, so a reboot there could repeat for good on a
+  board with no reset button. The firmware logs a `PendingVerify` image in
+  the layout tier instead, and requests nothing; a bootloader that rolls back
+  does so at the next boot, whatever causes it. This replaces "Rolling back an
+  image that can't be confirmed" under "OTA" and the reboot in the
+  confirmation-window bullet above. `eveningstar-ota` therefore requests no
+  reboot and doesn't depend on `eveningstar-system`; the confirmation
+  window's reboot belongs to the OTA service.
+- **OTA readiness.** `Ota::new` waits for the current slot's check, and OTA
+  refuses every write, `confirm` included, until the running image verified
+  and its descriptor reads (`Unavailable`). Readiness is judged once. A change
+  of a slot's bytes that no session makes, such as flash decay, goes unseen
+  until the next session on it or the next boot, at which the bootloader
+  verifies the image it starts and falls back when it fails.
+- **Located readers.** The unverified tier has one `FoundApp` reader: the app
+  partition the bootloader keeps at the booted offset of the located table,
+  or, with no valid table, the image at the booted offset that MMU entry 0
+  gives. A known bootloader whose table offset isn't the compiled one leaves
+  that table without a reader: only the compiled sector and a table found by
+  the search have readers.
+- **Content modules.** `AppSlot` owns the reader of one app region and keeps
+  its check's result per epoch; `App` refers to the tier's slots and runs
+  their checks (`App::run`). `AppSlot::verdict(epoch)` is what OTA awaits. The
+  bootloader's and the apps' descriptors are read again on request rather
+  than kept in the model. Long jobs take a progress hook whose
+  `Progress::idle()` is called before each wait for a change only something
+  else brings about; the firmware pauses the check task's watchdog there.
+- **Failures carry no flash values.** A content module's failure keeps its
+  reason without the values it read (`ImageFailure`, `TableFailure`): a
+  table the bootloader refuses reports neither its stored nor its computed
+  MD5.
 
 ## Crates
 
@@ -117,9 +169,11 @@ eveningstar-storage       devices, roles, write state, handles, snapshots, publi
         ↑                 layout, known bootloaders, verification chain, split
 eveningstar-boot          content modules: bootloader, partition table, otadata, current and alternate app
         ↑
-eveningstar-ota  ──→  eveningstar-system   reboot service, reboot holds, watchdog supervisor
-        ↑                   ↑
+eveningstar-ota           updates, activation, confirmation, rollback; requests no reboot
+        ↑
 eveningstar               the firmware: the device implementations, the services, the API
+
+eveningstar-system        reboot service, reboot holds, watchdog supervisor (built apart, #74)
 ```
 
 - **`eveningstar-esp-formats`** reads the ESP formats from any `Source` and
@@ -136,7 +190,8 @@ eveningstar               the firmware: the device implementations, the services
 - **`eveningstar-boot`** turns readers into views. It holds no writer.
 - **`eveningstar-ota`** holds the boot writers and reads through them; it asks
   `eveningstar-boot` for views and verification results of the slots and the
-  otadata, and requests reboots through `eveningstar-system`'s trait.
+  otadata. It requests no reboot, so it doesn't depend on
+  `eveningstar-system`.
 - **`eveningstar-system`** takes the reboot service and its holds
   (`services/reboot.rs`) and the watchdog supervisor (`watchdog.rs`) out of
   the firmware. Today their reasons, holders and supervised tasks are closed
@@ -269,7 +324,7 @@ known point:
 | Role           | Located by                                                                                    | Class       |
 |----------------|-----------------------------------------------------------------------------------------------|-------------|
 | `FoundTable`   | the search, when it finds exactly one table: the sector of that table                         | publishable |
-| `FoundApp`     | an app partition of the located table, as the bootloader loads them; or MMU entry 0 (the booted offset) when no table is located, spanning the image its header describes, cut to the flash's capacity | publishable |
+| `FoundApp`     | the app partition the bootloader keeps at the booted offset of the located table; or, when no valid table is located, the image at MMU entry 0 (the booted offset), spanning the image its header describes, cut to the flash's capacity | publishable |
 | `FoundOtadata` | the located table's `data`/`ota` partition, as the bootloader loads them (the last such entry) | sensitive   |
 
 - No `Found*` reader is made over a span that overlaps one of the compiled
@@ -327,8 +382,9 @@ pub enum WriteState {
   as it may still have changed bits. A session borrows the writer mutably, so
   there is one session per region at a time.
 - **A reader reads only through a snapshot.** `Reader::snapshot(&self, range)`
-  returns `Snapshot<'_, R>` holding `Stable(e)`, or `Busy` while the state is
-  `Writing`. Every `Snapshot::read`:
+  returns `Snapshot<'_, R>` holding `Stable(e)`, `Busy` while the state is
+  `Writing`, or `OutOfRange` for a range outside the region. Every
+  `Snapshot::read`:
   1. loads the state and requires `Stable(e)`;
   2. reads the device;
   3. loads the state again and requires `Stable(e)`.
@@ -347,9 +403,11 @@ pub enum WriteState {
   a session that issued a device call ends with a new epoch. A read whose two
   loads both see `Stable(e)` either ran entirely outside every session or
   overlapped only sessions that issued no device call, so its bytes are those
-  of epoch `e`. Epochs never return to an earlier value: they grow by one per
-  session in a 31-bit counter, which no boot exhausts, and the entity tag adds
-  the random value drawn at boot.
+  of epoch `e`. Epochs never return to an earlier value: each span counts its
+  sessions that issued a device call in a 31-bit counter, which no boot
+  exhausts and which leaves its span written to for good rather than wrap; a
+  region's epoch is the sum of its spans' counts with which spans they are;
+  and the entity tag adds the random value drawn at boot.
 - Compared with the borrow checker's shared-xor-mutable rule: memory safety
   doesn't depend on this, as the flash isn't Rust memory and every device call
   is serialized. What the borrow checker would guarantee at compile time
@@ -363,11 +421,12 @@ pub enum WriteState {
   than returning torn bytes.
 - A content module's parsed model carries the epoch it was parsed at, and is
   valid while the region's state is `Stable` at that epoch.
-- `Reader::changed(&self).await` wakes after a session on the region ends
-  with a new epoch. Several tasks may wait (the app check, OTA, the API), so
-  it is built on an `embassy-sync` multi-waiter primitive (`Watch` or
-  `MultiWakerRegistration`), which builds on the host. It replaces the
-  firmware's `Writes` signal.
+- `Reader::changed(&self).await` completes once the region is stable at a
+  state other than the one it was in at the call: after a session on the
+  region ends with a new epoch, or after a session open at the call ends.
+  Several tasks may wait (the app check, OTA, the API), so it is built on
+  `embassy-sync`'s `MultiWakerRegistration`, 16 waiters per device, which
+  builds on the host. It replaces the firmware's `Writes` signal.
 
 ## Publication
 
@@ -497,13 +556,14 @@ views. A model's constructor is its parser.
 | `Bootloader`     | `Reader<Bootloader>`                      | header (with its flash size field), descriptor, length, stored digest, file SHA-256, known entry | the image, when its SHA-256 verifies, known or not     |
 | `PartitionTable` | `Reader<PartitionTable>`, `Option<Reader<FoundTable>>` | entries, the partitions as the bootloader loads them, MD5 stored and computed, end, how it was located, other candidates' offsets | the located table's verified bytes |
 | `Otadata`        | `Reader<Otadata>` or `Reader<FoundOtadata>` | both entries, validity, the active entry, boot state                                           | none; parsed fields only                               |
-| `App`            | `Reader<CurrentApp>`, `Reader<AlternateApp>`, or `Reader<FoundApp>`s | header, descriptor, length, stored digest, file SHA-256, verification result | the image, once verified                               |
+| `AppSlot`        | `Reader<CurrentApp>`, `Reader<AlternateApp>`, or `Reader<FoundApp>` | header, length, stored digest, file SHA-256, verification result, per epoch; the descriptor on request | the image, once verified                               |
 
-- The app checks run in `App`, as the storage service's check task does now:
-  background, paced, with their own watchdog handle fed per chunk, and run
-  again after a session on the slot ends (`Reader::changed`). `App` is the
-  one verifier of a slot: OTA awaits its result at the slot's new epoch rather
-  than hashing the slot itself.
+- The app checks run in `App::run`, over the tier's `AppSlot`s, in the
+  firmware's check task: background, paced, with their own watchdog handle
+  fed per KiB, and run again after a session on a slot ends
+  (`Reader::changed`). `AppSlot` is the one verifier of a slot: OTA awaits
+  its result at the slot's new epoch (`AppSlot::verdict`) rather than hashing
+  the slot itself.
 - `PartitionTable` also reports the expected layout from `layout.rs` in the
   same shape as the found partitions (`Entry`: label, type, subtype, offset,
   size, flags), plus the bootloader's and table's regions, so clients compare
@@ -619,13 +679,14 @@ first step that failed. It holds nothing about OTA readiness, which
 
 ## OTA (`eveningstar-ota`)
 
-`Ota` takes `BootWriters` and the `App` and `Otadata` modules. Its behaviour
-is today's (`docs/architecture.md`, "Updates and rollback"); what changes is
-where the checks live.
+`Ota` takes `BootWriters`, the current and alternate `AppSlot`s and the
+`Otadata` module. Its behaviour is the first design's; what changes is where
+the checks live.
 
-- The descriptor check and the project name, today `Limit::AppDescriptor` and
-  the full tier, are `Ota`'s own readiness: it reports `Unavailable` with a
-  reason instead of not existing.
+- The descriptor check and the project name, in the first design
+  `Limit::AppDescriptor` and the full tier, are `Ota`'s own readiness: it
+  reports `Unavailable` with a reason instead of not existing, and refuses
+  every write, `confirm` included, until it is ready.
 - Each `begin_update`, `activate`, `confirm` and `roll_back` writes through a
   session on the writer it needs. An `Update` holds the alternate slot's
   session for its whole life, so no snapshot of the slot can be taken while
@@ -636,18 +697,13 @@ where the checks live.
   refuses it once the slot's epoch has moved. It doesn't hash the slot again:
   the epoch proves nothing wrote it since, and the bootloader verifies the
   image at boot and falls back if it fails.
-- **Rolling back an image that can't be confirmed.** The bootloader starts a
-  newly activated image once in the state `PendingVerify` and rolls it back at
-  the next boot unless the firmware confirms it. Confirming writes the
-  otadata, which needs the boot writers. When the firmware boots a
-  `PendingVerify` image in the layout tier, it requests a graceful reboot, so
-  the bootloader rolls the image back instead of leaving it running
-  unconfirmed. This moves from the storage glue to `eveningstar-ota`, which
-  reads the boot state from the `Otadata` module and requests the reboot with
-  its own reason through `eveningstar-system`'s trait. Nothing reboots in the
-  unverified tier, where the otadata read may come from a leftover table, and
-  no other boot state causes a reboot below the boot tier: a state that
-  confirmation would fix can't be fixed there, so it is logged and reported.
+- **An image that can't be confirmed** (superseded: see "Decided during
+  implementation"). The bootloader starts a newly activated image once in the
+  state `PendingVerify` and rolls it back at the next boot unless the firmware
+  confirms it. Confirming writes the otadata, which needs the boot writers.
+  Below the boot tier nothing reboots: the firmware logs a `PendingVerify`
+  image in the layout tier, and nothing in the unverified tier, where the
+  otadata read may come from a leftover table.
 - **The confirmation window**, the OTA service's policy, runs only in the
   boot tier: after a boot whose image needs confirming
   (`BootState::needs_confirmation`), a user has 10 minutes to confirm it,
@@ -719,15 +775,17 @@ table's MD5), without their API and firmware parts.
 4. **`eveningstar-boot`:** the four content modules, sanitized views and the
    transport digest.
 5. **`eveningstar-system`:** the reboot service, its holds and the watchdog
-   supervisor moved out of the firmware.
+   supervisor moved out of the firmware. Built apart from this stack (#74);
+   the firmware here still has `services/reboot.rs` and `watchdog.rs`.
 6. **`eveningstar-ota`:** `Ota` on `BootWriters`, with the OTA and otadata
-   power-cut tests moved over; the rollback reboot.
-7. **Firmware:** the storage glue without write counting, `App`'s check task,
-   the system crate wired in.
-8. **Docs:** `docs/architecture.md` ("Storage", and the reboot and watchdog
-   sections) rewritten, `CLAUDE.md` ("Storage") updated, `specs/storage.md`
-   folded into this file or removed. The check labels (`(T1)`…`(T7)`,
-   `(O3)`…`(O8)`) leave the code's comments in the steps that touch them.
+   power-cut tests moved over. No rollback reboot (see "Decided during
+   implementation").
+7. **Firmware:** the storage glue without write counting, `App`'s check task.
+   The system crate is wired in when it lands.
+8. **Docs:** `docs/architecture.md` ("Storage") rewritten, `CLAUDE.md`
+   ("Storage") updated, and the first design's `specs/storage.md` folded into
+   this file and removed. The reboot and watchdog sections change with the
+   system crate. The check labels of the first design are gone from the code.
 
 ## Tests
 
@@ -769,3 +827,83 @@ table's MD5), without their API and firmware parts.
   written past an image in a slot over USB, and shown never to be published;
   an update written and activated through the firmware, checked over USB, and
   its rollback. The board is restored to the `flash-all` baseline after.
+- **Corrupt images on the board.** The ESP-IDF bootloader skips an image's
+  checksum and SHA-256 while a debugger is attached
+  (`esp_cpu_dbgr_is_attached()` in
+  `components/bootloader_support/src/esp_image_format.c`), so with probe-rs
+  attached during a boot it starts a corrupt image. A board test of image
+  corruption attaches a few seconds after the reset; the RTT buffer keeps the
+  early boot lines.
+
+## Left to build
+
+- **Configuration store.** It owns `Writer<CurrentConfig>` and keeps the
+  running slot's settings, secrets included, in 128 KiB, through its session
+  as an `embedded-storage-async` NOR flash. It reads the alternate slot's
+  configuration through `Writer<AlternateConfig>`, which reads at any time and
+  whose sessions erase only, to migrate after an update, and erases it once it
+  has migrated. Whether the store
+  accepts records zeroed in place (NOR programs only clear bits) is open. Its
+  format gives every record a strong integrity check (see "Publication").
+- **Diag store.** It owns `Writer<Diag>`. Crash records are backtraces, not
+  memory, and events such as updates and reboots, likely as a priority ring
+  buffer. Capturing a crash (likely an LP RAM record copied to `diag` on the
+  next boot) was deferred.
+- **Factory data module.** It would own `Factory`, which has no handle until
+  it exists; provisioning the partition is out of scope until the user asks.
+- **OTA service.** It owns `Ota` (built at boot in the boot tier, in a
+  `static`, and taken by nothing yet) and decides how updates arrive and are
+  authenticated: `VerifiedImage` means intact and meant for this board, not
+  authentic. Its confirmation window is above ("OTA"): in the boot tier only,
+  10 minutes after a boot whose image needs confirming, then a graceful reboot
+  in every case, through `eveningstar-system` once it lands. Images in the
+  layout tier are only logged.
+- **The API's view and the web UI** (see "What the API gets"): the regions,
+  the published views and their digests, the report (tier, the step that
+  failed, the table comparison, the bootloader, the slot booted), OTA's
+  readiness and the boot state, and the reason for a reboot. The storage UI
+  stack (#65–#69, `specs/storage-ui.md`) is rebuilt on this.
+- **Reporting the unverified tier.** The firmware runs on its default
+  configuration, which it doesn't save, and logs why; the API and the status
+  LED don't say so yet.
+- **The external NAND** (see "Devices"). It will hold bulk data logs.
+- **Protected paths** (above): clone export and configuration backup, once
+  authentication exists.
+
+Out of scope until the user asks: updating the bootloader or the partition
+table from the firmware, flash encryption and secure boot (the build forbids
+both), image signatures, and factory provisioning of the `factory` partition.
+
+## Not verified yet
+
+Verified on the dev board with this design: the boot tier after `flash-all`
+(`split` about 17 ms, the content modules 12 ms, the checks of both slots
+about 3.2 s in the background, the device's SHA-256s equal to the host's); 15
+tables written at 0x8000 over USB, each giving the tier and the located
+readers the bootloader's judgement and the layout call for, and those the
+bootloader refuses never booting until the table is rewritten over USB;
+leftover bytes after an image never published; a real update through `Ota`
+(on a throwaway branch that copies the running image): rollback
+(`PendingVerify`, then `Aborted`), confirm (lasting across reboots), and a
+chip reset mid-copy (the running slot boots, the half-written slot fails its
+check on the checksum); the bootloader's fallback from a corrupt selected
+image (one byte flipped in `ota_1`, selected as `New`: `ota_0` starts, the
+firmware logs the fallback and that the boot state needs confirming, and the
+alternate slot's check fails on the checksum); and a corrupt image started
+with a debugger attached, which the firmware's check fails and OTA refuses
+(`Descriptor(Checksum)`). From the first design: the booted offset for both
+slots and the first boot after `flash-all` writing otadata entry 0 with
+sequence 1 and `Valid`.
+
+Not verified:
+
+- A true power cut, not a chip reset, during an update, an activation and a
+  confirmation. The power-cut tests run on a RAM flash and a simulated
+  bootloader.
+- The unverified tier under `cargo run` (espflash's bootloader and table, the
+  search) with this design; the host tests cover it.
+- The warning logged for a `PendingVerify` image in the layout tier.
+- The interrupt latency of sector erases next to Ethernet traffic.
+- The stack high-water mark with `esp-storage`'s 4 KiB read buffer.
+- The path where MMU entry 0 is invalid, so the booted offset is unknown and
+  the tier is unverified.

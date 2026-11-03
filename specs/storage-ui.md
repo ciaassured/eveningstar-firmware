@@ -673,7 +673,7 @@ A GitHub stack on `main`, one PR per piece:
 5. `storage-web`: the client changes and the page.
 6. `storage-ui-docs`: `docs/architecture.md` (path parameters, ranged
    bodies, the storage endpoints, the boot-time checks and why the content
-   endpoint takes only `Read` handles), `specs/storage.md` ("Left to build")
+   endpoint takes only `Read` handles), `specs/storage-v2.md` ("Left to build")
    and `specs/web-ui.md`.
 
 2 and 3 are independent and can be built at the same time. Once the contract
@@ -699,5 +699,5 @@ under its own watchdog handle, fed per sector and yielding between them.
 ## Out of scope
 
 Writes of any kind (wiping is above), OTA uploads, confirming or rolling back
-an image, sanitized dumps of sensitive partitions (`specs/storage.md`), the
+an image, sanitized dumps of sensitive partitions (`specs/storage-v2.md`), the
 external NAND's contents, and checks on request or on a schedule.
