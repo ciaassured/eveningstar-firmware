@@ -1087,7 +1087,6 @@ dependencies = [
  "picoserve",
  "rtt-target",
  "serde",
- "sha2",
  "static_cell",
 ]
 
