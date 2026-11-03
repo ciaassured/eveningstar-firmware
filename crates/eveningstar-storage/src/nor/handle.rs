@@ -249,8 +249,8 @@ impl<'f, R: Writable<Device = Internal>> Writer<'f, R> {
         self.extent.span.len == 0
     }
 
-    /// The region's write state now: always `Stable`, as a session borrows
-    /// the writer.
+    /// The region's write state now: `Stable` while no session is open, as
+    /// a session borrows the writer, unless its counter ran out.
     #[must_use]
     pub fn write_state(&self) -> WriteState {
         self.extent.write_state()

@@ -176,6 +176,18 @@ mod tests {
         assert!(!State::inside_one(Span::new(0xC000, 0x1000)));
     }
 
+    /// A table placed in a `static`, as a device's owner places it.
+    static PLACED: State = State::new();
+
+    #[test]
+    fn a_table_lives_in_a_static() {
+        assert!(
+            PLACED
+                .load(State::spans_of(Span::from(layout::DIAG)))
+                .is_stable()
+        );
+    }
+
     #[test]
     fn a_table_starts_stable() {
         let table = State::new();
