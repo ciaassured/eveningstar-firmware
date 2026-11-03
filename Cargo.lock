@@ -1114,6 +1114,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "eveningstar-boot"
+version = "0.1.0"
+dependencies = [
+ "critical-section",
+ "embassy-sync 0.8.0",
+ "eveningstar-esp-formats",
+ "eveningstar-storage",
+ "sha2",
+]
+
+[[package]]
 name = "eveningstar-esp-formats"
 version = "0.1.0"
 dependencies = [

@@ -13,6 +13,7 @@ publish      = false
 # Workspace crates.
 eveningstar-api         = { path = "crates/eveningstar-api" }
 eveningstar-board       = { path = "crates/eveningstar-board" }
+eveningstar-boot        = { path = "crates/eveningstar-boot" }
 eveningstar-esp-formats = { path = "crates/eveningstar-esp-formats" }
 eveningstar-storage     = { path = "crates/eveningstar-storage" }
 
