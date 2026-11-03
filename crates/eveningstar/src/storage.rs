@@ -48,8 +48,8 @@ use static_cell::{ConstStaticCell, StaticCell};
 
 use crate::services::reboot::GracefulReboot;
 use crate::sha::Sha;
-use crate::watchdog::WatchdogHandle;
 use crate::wd;
+use eveningstar_system::watchdog::WatchdogHandle;
 
 mod check;
 mod confirmation;

@@ -12,12 +12,12 @@ use embassy_time::{Duration, Instant, Ticker};
 use embedded_hal_async::spi::{Operation, SpiDevice};
 use esp_hal::gpio::{Input, Output};
 use eveningstar_board::{ETHERNET_MAC_READ, Ethernet, EthernetChip, EthernetSpi};
+use eveningstar_system::watchdog::WatchdogHandle;
 use static_cell::{ConstStaticCell, StaticCell};
 
 use crate::services::reboot::{GracefulReboot, Reason};
 use crate::services::system::NAME_MAX_LEN;
 use crate::shared_spi::SharedSpi;
-use crate::watchdog::WatchdogHandle;
 use crate::wd::{EthernetProbe, LinkMonitor};
 
 /// Packet queue depth in each direction; each slot holds one 1514-byte frame.

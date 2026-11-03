@@ -22,8 +22,8 @@ use eveningstar_storage::{Epoch, Slot};
 
 use super::log;
 use crate::sha::Sha;
-use crate::watchdog::WatchdogHandle;
 use crate::wd;
+use eveningstar_system::watchdog::WatchdogHandle;
 
 /// Task watchdog timeout of the check task. A check feeds after every KiB
 /// hashed, many times a second, so this only has to outlast the

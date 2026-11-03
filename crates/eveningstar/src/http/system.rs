@@ -7,7 +7,7 @@ use embassy_time::Instant;
 use eveningstar_api::v1;
 
 use super::api::{Closing, Reply};
-use crate::services::reboot::{self, Holder, Reason, Reboot};
+use crate::services::reboot::{self, Holder, Reason, Reboot, RebootHolder};
 use crate::services::system::System;
 
 /// [`v1::GetSystem`].
@@ -61,13 +61,13 @@ fn reason(reason: Reason) -> v1::RebootReason {
 
 /// [`v1::Reboot`]: reboots once the client has the response.
 pub(super) async fn post_reboot(
-    reboot: Reboot,
+    (reboot, holder): (Reboot, RebootHolder),
     (): (),
     request: v1::RebootRequest,
 ) -> Result<impl Reply<()>, Infallible> {
     // With no other hold, a graceful reboot would reset the chip before the
     // response is written.
-    let hold = reboot.holder(Holder::Http).hold();
+    let hold = holder.hold();
     if request.mode == v1::RebootMode::Graceful {
         reboot.graceful(Reason::Api);
     }

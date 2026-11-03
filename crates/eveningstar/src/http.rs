@@ -21,7 +21,7 @@ use picoserve::routing::PathRouter;
 use picoserve::{Router, Timeouts};
 use static_cell::ConstStaticCell;
 
-use crate::services::reboot::Reboot;
+use crate::services::reboot::{Reboot, RebootHolder};
 use crate::services::system::System;
 
 const PORT: u16 = 80;
@@ -56,6 +56,8 @@ struct Buffers {
 pub(crate) struct AppState {
     pub(crate) system: &'static System,
     pub(crate) reboot: Reboot,
+    /// The HTTP server's reboot holder ([`Holder::Http`](crate::services::reboot::Holder::Http)).
+    pub(crate) reboot_holder: RebootHolder,
 }
 
 impl FromRef<AppState> for &'static System {
@@ -67,6 +69,12 @@ impl FromRef<AppState> for &'static System {
 impl FromRef<AppState> for Reboot {
     fn from_ref(state: &AppState) -> Self {
         state.reboot
+    }
+}
+
+impl FromRef<AppState> for (Reboot, RebootHolder) {
+    fn from_ref(state: &AppState) -> Self {
+        (state.reboot, state.reboot_holder)
     }
 }
 
