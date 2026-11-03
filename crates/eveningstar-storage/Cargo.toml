@@ -7,12 +7,21 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+embassy-sync.workspace = true
 embedded-storage-async.workspace = true
 eveningstar-esp-formats.workspace = true
 sha2.workspace = true
 
 [dev-dependencies]
+# A critical-section implementation for the host.
+critical-section = { workspace = true, features = ["std"] }
 eveningstar-esp-formats = { workspace = true, features = ["test-support"] }
+
+[features]
+# A NOR flash in RAM and the handles over it, for tests in this crate and in
+# the ones that take its handles. Their host tests need a critical-section
+# implementation, such as `critical-section`'s `std` feature.
+test-support = ["eveningstar-esp-formats/test-support"]
 
 [lints]
 workspace = true

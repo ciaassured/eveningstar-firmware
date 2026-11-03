@@ -17,6 +17,7 @@ eveningstar-esp-formats = { path = "crates/eveningstar-esp-formats" }
 eveningstar-storage     = { path = "crates/eveningstar-storage" }
 
 # Chip and logging features are project-wide, so they are set once here.
+critical-section       = "1.2.0"
 defmt                  = "1.0.1"
 embassy-embedded-hal   = { version = "0.6.0", features = ["defmt"] }
 embassy-executor       = { version = "0.10.0", features = ["defmt"] }
