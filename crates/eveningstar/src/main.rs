@@ -125,7 +125,7 @@ async fn main(spawner: Spawner) {
     )));
 
     let sha = sha::start(board.sha);
-    storage::start(
+    let ota = storage::start(
         spawner,
         board.internal_flash,
         board.flash_cache,
@@ -148,6 +148,13 @@ async fn main(spawner: Spawner) {
     {
         Ok(stack) => http::start(spawner, stack, http::AppState { system, reboot }),
         Err(err) => error!("Ethernet unavailable: {}", err),
+    }
+
+    // Built last, as it waits for the running slot's check. Nothing takes it
+    // yet: it stays in its `static`, and can't be built again, as the boot
+    // writers exist once per boot.
+    if let Some(ota) = ota {
+        ota.start().await;
     }
 }
 

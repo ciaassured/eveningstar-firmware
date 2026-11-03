@@ -12,6 +12,11 @@
 //! stops the boot: the worst outcome is the unverified tier, in which the
 //! firmware runs on its default configuration without saving it.
 //!
+//! In the boot tier, [`start`] also returns the parts of the OTA mechanism
+//! ([`OtaParts`]): the boot writers and the modules [`Ota`] reads. Building
+//! it ([`OtaParts::start`]) waits for the running slot's check, so it runs
+//! after the check task is spawned, and places it in a `static`.
+//!
 //! An image the bootloader started as `PendingVerify` can only be confirmed in
 //! the boot tier. In the layout tier, [`start`] logs it and requests no
 //! reboot: that tier's bootloader isn't known to roll back, and one that
@@ -35,7 +40,10 @@ use esp_hal::peripherals::{FLASH, SPI0};
 use esp_storage::{FlashStorage, FlashStorageError};
 use eveningstar_boot::{App, AppSlot, Bootloader, Otadata, PartitionTable};
 use eveningstar_esp_formats::pace::Yield;
-use eveningstar_storage::chain::{Handles, LayoutHandles, Located, Report, Storage, Tier, split};
+use eveningstar_ota::Ota;
+use eveningstar_storage::chain::{
+    BootWriters, Handles, LayoutHandles, Located, Report, Storage, Tier, split,
+};
 use eveningstar_storage::nor::{NorDevice, Reader, State as StateTable};
 use eveningstar_storage::otadata::State;
 use eveningstar_storage::roles::{self, AlternateApp, CurrentApp, FoundApp, FoundTable};
@@ -62,7 +70,8 @@ const MMU_MAX_PAGE_SIZE: u32 = 0x1_0000;
 
 /// Splits the internal flash, places the content modules in `static`s,
 /// loads and logs what they hold, and spawns the app check task on
-/// `spawner`, hashing with `sha` and supervised by `wd`.
+/// `spawner`, hashing with `sha` and supervised by `wd`. Returns the parts of
+/// the OTA mechanism in the boot tier.
 ///
 /// When the running image is `PendingVerify` in the layout tier, where it
 /// can't be confirmed, it logs a warning.
@@ -81,7 +90,7 @@ pub(crate) async fn start(
     cache: SPI0<'static>,
     sha: Sha,
     wd: WatchdogHandle<wd::AppCheck>,
-) {
+) -> Option<OtaParts> {
     static INTERNAL_FLASH: StaticCell<InternalFlash> = StaticCell::new();
     static STATE: ConstStaticCell<StateTable> = ConstStaticCell::new(StateTable::new());
 
@@ -106,12 +115,13 @@ pub(crate) async fn start(
         partition_table,
         handles,
     } = storage;
-    // The configuration and diag writers and the boot writers have no owner
-    // yet, so they are dropped here; they can't be made again, as the flash
-    // is split once per boot.
+    // The configuration and diag writers have no owner yet, so they are
+    // dropped here; they can't be made again, as the flash is split once per
+    // boot.
     let placed = match handles {
         Handles::Unverified(located) => place_located(located),
-        Handles::Layout(handles) | Handles::Boot(handles, _) => place_layout(handles),
+        Handles::Layout(handles) => place_layout(handles, None),
+        Handles::Boot(handles, writers) => place_layout(handles, Some(writers)),
     };
     let modules = place(bootloader, partition_table, placed, &report);
     let loaded = modules
@@ -133,6 +143,7 @@ pub(crate) async fn start(
         sha,
         wd
     )));
+    modules.ota
 }
 
 /// The content modules, each in its `static`.
@@ -145,6 +156,8 @@ struct Modules {
     app: App<'static, 'static>,
     /// The spans the unverified tier located, for the log.
     located: Option<LocatedSpans>,
+    /// The parts of the OTA mechanism, in the boot tier.
+    ota: Option<OtaParts>,
 }
 
 /// The spans of the readers the unverified tier located.
@@ -184,6 +197,7 @@ fn place(
         otadata,
         app,
         located,
+        ota,
     } = placed;
     Modules {
         bootloader: init(&BOOTLOADER, bootloader, Bootloader::new),
@@ -191,6 +205,7 @@ fn place(
         otadata,
         app,
         located,
+        ota,
     }
 }
 
@@ -201,6 +216,7 @@ struct Placed {
     otadata: Option<&'static Otadata<'static>>,
     app: App<'static, 'static>,
     located: Option<LocatedSpans>,
+    ota: Option<OtaParts>,
 }
 
 /// The modules of what the unverified tier located, and the spans located.
@@ -221,13 +237,15 @@ fn place_located(located: Located<'static>) -> Placed {
             .map(|reader| init(&OTADATA, reader, Otadata::found)),
         app: App::found(located.app.map(|reader| init(&FOUND, reader, AppSlot::new))),
         located: Some(spans),
+        ota: None,
     }
 }
 
-/// The modules of the layout and boot tiers' readers. The configuration and
-/// diag writers are dropped.
+/// The modules of the layout and boot tiers' readers, and the parts of the
+/// OTA mechanism when `writers`, the boot writers, are given. The
+/// configuration and diag writers are dropped.
 #[inline(never)]
-fn place_layout(handles: LayoutHandles<'static>) -> Placed {
+fn place_layout(handles: LayoutHandles<'static>, writers: Option<BootWriters<'static>>) -> Placed {
     static OTADATA: StaticCell<Otadata<'static>> = StaticCell::new();
     static CURRENT: StaticCell<AppSlot<'static, CurrentApp>> = StaticCell::new();
     static ALTERNATE: StaticCell<AppSlot<'static, AlternateApp>> = StaticCell::new();
@@ -240,6 +258,12 @@ fn place_layout(handles: LayoutHandles<'static>) -> Placed {
         otadata: Some(otadata),
         app: App::layout(current, alternate),
         located: None,
+        ota: writers.map(|writers| OtaParts {
+            writers,
+            current,
+            alternate,
+            otadata,
+        }),
     }
 }
 
@@ -259,6 +283,39 @@ fn warn_unconfirmed(otadata: Option<&Otadata<'_>>, slot: Option<Slot>) {
             "The running image is unconfirmed and can't be confirmed in the layout tier; \
              a bootloader that supports rollback starts the previous image at the next boot"
         );
+    }
+}
+
+/// The parts of the OTA mechanism, in the boot tier: the boot writers, and
+/// the modules [`Ota`] reads.
+pub(crate) struct OtaParts {
+    writers: BootWriters<'static>,
+    current: &'static AppSlot<'static, CurrentApp>,
+    alternate: &'static AppSlot<'static, AlternateApp>,
+    otadata: &'static Otadata<'static>,
+}
+
+impl OtaParts {
+    /// Builds the OTA mechanism in its `static`, and logs its readiness and
+    /// the boot state. Completes once the running slot's check has kept its
+    /// result, so the check task has to run.
+    ///
+    /// # Panics
+    ///
+    /// If called more than once, which the one [`OtaParts`] of a boot
+    /// prevents.
+    pub(crate) async fn start(self) -> &'static mut Ota<'static> {
+        static OTA: StaticCell<Ota<'static>> = StaticCell::new();
+
+        let Self {
+            writers,
+            current,
+            alternate,
+            otadata,
+        } = self;
+        let ota = OTA.init(Ota::new(writers, current, alternate, otadata).await);
+        log::ota(ota);
+        ota
     }
 }
 

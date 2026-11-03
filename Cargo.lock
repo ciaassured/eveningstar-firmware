@@ -1084,6 +1084,7 @@ dependencies = [
  "eveningstar-board",
  "eveningstar-boot",
  "eveningstar-esp-formats",
+ "eveningstar-ota",
  "eveningstar-storage",
  "heapless 0.9.3",
  "picoserve",
