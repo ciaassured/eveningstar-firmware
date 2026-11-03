@@ -138,6 +138,100 @@
 //! }
 //! ```
 //!
+//! A reader reads through snapshots, which fail once the region is written
+//! ([`Snapshot`]). Only a reader of a [`Publishable`](crate::roles::Publishable)
+//! role publishes views ([`Published`]), whose bytes may leave the device:
+//!
+//! ```
+//! use eveningstar_storage::nor::Reader;
+//! use eveningstar_storage::roles::{AlternateApp, Bootloader, FoundApp};
+//! use eveningstar_storage::{Epoch, Span};
+//!
+//! fn export(app: &Reader<'_, AlternateApp>, boot: &Reader<'_, Bootloader>, found: &Reader<'_, FoundApp>, epoch: Epoch) {
+//!     let _ = app.publish(epoch, Span::new(0, 4), &[]);
+//!     let _ = boot.publish(epoch, Span::new(0, 4), &[]);
+//!     let _ = found.publish(epoch, Span::new(0, 4), &[]);
+//! }
+//! ```
+//!
+//! The otadata, the sensitive roles and the whole chip have no `publish`,
+//! whatever the tier:
+//!
+//! ```compile_fail,E0599
+//! use eveningstar_storage::nor::Reader;
+//! use eveningstar_storage::roles::Otadata;
+//! use eveningstar_storage::{Epoch, Span};
+//!
+//! fn export(otadata: &Reader<'_, Otadata>, epoch: Epoch) {
+//!     let _ = otadata.publish(epoch, Span::new(0, 4), &[]);
+//! }
+//! ```
+//!
+//! ```compile_fail,E0599
+//! use eveningstar_storage::nor::Reader;
+//! use eveningstar_storage::roles::FoundOtadata;
+//! use eveningstar_storage::{Epoch, Span};
+//!
+//! fn export(otadata: &Reader<'_, FoundOtadata>, epoch: Epoch) {
+//!     let _ = otadata.publish(epoch, Span::new(0, 4), &[]);
+//! }
+//! ```
+//!
+//! ```compile_fail,E0599
+//! use eveningstar_storage::nor::Reader;
+//! use eveningstar_storage::roles::Diag;
+//! use eveningstar_storage::{Epoch, Span};
+//!
+//! fn export(diag: &Reader<'_, Diag>, epoch: Epoch) {
+//!     let _ = diag.publish(epoch, Span::new(0, 4), &[]);
+//! }
+//! ```
+//!
+//! ```compile_fail,E0599
+//! use eveningstar_storage::nor::Reader;
+//! use eveningstar_storage::roles::CurrentConfig;
+//! use eveningstar_storage::{Epoch, Span};
+//!
+//! fn export(config: &Reader<'_, CurrentConfig>, epoch: Epoch) {
+//!     let _ = config.publish(epoch, Span::new(0, 4), &[]);
+//! }
+//! ```
+//!
+//! ```compile_fail,E0599
+//! use eveningstar_storage::nor::Reader;
+//! use eveningstar_storage::roles::Factory;
+//! use eveningstar_storage::{Epoch, Span};
+//!
+//! fn export(factory: &Reader<'_, Factory>, epoch: Epoch) {
+//!     let _ = factory.publish(epoch, Span::new(0, 4), &[]);
+//! }
+//! ```
+//!
+//! ```compile_fail,E0599
+//! use eveningstar_storage::nor::Reader;
+//! use eveningstar_storage::roles::Chip;
+//! use eveningstar_storage::{Epoch, Span};
+//!
+//! fn export(chip: &Reader<'_, Chip>, epoch: Epoch) {
+//!     let _ = chip.publish(epoch, Span::new(0, 4), &[]);
+//! }
+//! ```
+//!
+//! Only the crate's views are published views:
+//!
+//! ```compile_fail,E0277
+//! use eveningstar_storage::{Epoch, PublicRead, Span, ViewError};
+//!
+//! struct Raw;
+//!
+//! impl PublicRead for Raw {
+//!     fn len(&self) -> u32 { 0 }
+//!     fn epoch(&self) -> Epoch { unimplemented!() }
+//!     fn sanitized(&self) -> &[Span] { &[] }
+//!     async fn read(&self, _: u32, _: &mut [u8]) -> Result<(), ViewError> { Ok(()) }
+//! }
+//! ```
+//!
 //! A session borrows its writer mutably, so a region has one session at a
 //! time:
 //!
@@ -153,10 +247,12 @@
 //! ```
 
 mod handle;
+mod published;
 mod snapshot;
 mod state;
 
 pub use handle::{Reader, Session, Writer};
+pub use published::Published;
 pub use snapshot::Snapshot;
 pub use state::State;
 
