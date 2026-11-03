@@ -92,8 +92,11 @@ fn consistent(storage: &Storage<'_>) {
     assert_eq!(report.failed.is_none(), report.tier == Tier::Boot);
     if let Some(step) = report.failed {
         assert!(!report.passed(step));
+        // In the unverified tier, the first of steps 2 to 6 that failed; in
+        // the layout tier, the bootloader's.
+        assert_eq!(step == Step::Bootloader, report.tier == Tier::Layout);
         assert!(
-            Step::ALL
+            Step::ALL[1..]
                 .iter()
                 .take_while(|s| **s != step)
                 .all(|s| report.passed(*s))
@@ -383,7 +386,7 @@ fn a_board_flashed_by_cargo_run_is_unverified_with_espflash_s_table() {
     let storage = split_on(&flash, 0x1_0000);
     let report = storage.report;
     assert_eq!(report.tier, Tier::Unverified);
-    assert_eq!(report.failed, Some(Step::Bootloader));
+    assert_eq!(report.failed, Some(Step::Layout));
     assert_eq!(report.table.search, Some(Found::One(TABLE_OFFSET)));
     assert!(report.passed(Step::TableOffset));
     assert!(report.passed(Step::Table));
@@ -441,7 +444,7 @@ fn a_moved_table_is_found_and_unverified() {
         let report = storage.report;
         assert_eq!(report.table.search, Some(Found::One(offset)));
         assert_eq!(report.table.source, Some(TableSource::Searched));
-        assert_eq!(report.failed, Some(Step::Bootloader));
+        assert_eq!(report.failed, Some(Step::Layout));
         assert!(!report.passed(Step::Layout));
         assert_eq!(report.tier, Tier::Unverified);
         assert_eq!(storage.bootloader.span(), Span::new(0, offset));
@@ -470,6 +473,7 @@ fn an_unknown_bootloader_with_a_leftover_second_table_is_unverified() {
     assert_eq!(report.table.offset, None);
     assert_eq!(report.table.verdict, None);
     assert!(!report.passed(Step::TableOffset));
+    assert_eq!(report.failed, Some(Step::TableOffset));
     assert_eq!(report.tier, Tier::Unverified);
     // No table is located, so the app is the image at the booted offset.
     assert_eq!(
@@ -794,11 +798,16 @@ fn the_first_step_that_failed_is_reported() {
         report.evaluate(),
         (Tier::Unverified, Some(Step::TableOffset))
     );
+    // In the unverified tier the bootloader isn't what kept the tier down.
     report.bootloader.known = None;
     assert_eq!(
         report.evaluate(),
-        (Tier::Unverified, Some(Step::Bootloader))
+        (Tier::Unverified, Some(Step::TableOffset))
     );
+    // In the layout tier it is.
+    let mut report = split_on(board(nix_board()), OTA_0.offset).report;
+    report.bootloader.known = None;
+    assert_eq!(report.evaluate(), (Tier::Layout, Some(Step::Bootloader)));
 }
 
 #[test]

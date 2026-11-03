@@ -318,7 +318,7 @@ fn check_tier(checks: &mut Checks, bootloader: &[u8], table: &[u8], app: &[u8]) 
     match report.failed {
         None => checks.check(report.tier == Tier::Boot, "reaches the boot tier"),
         Some(step) => checks.fail(format!(
-            "reaches the {:?} tier only: the first step that failed is {step:?}",
+            "reaches the {:?} tier only, as the {step:?} step failed",
             report.tier
         )),
     }
