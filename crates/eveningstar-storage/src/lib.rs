@@ -1,6 +1,6 @@
 //! Storage on the internal flash: the partition layout, the verification
-//! chain that decides how far the board is trusted, the handles of its
-//! regions, and the OTA mechanism.
+//! chain that decides how far the board is trusted, and the handles of its
+//! regions.
 //!
 //! [`split`](chain::split) runs the verification chain once per boot through
 //! a [`NorDevice`](nor::NorDevice) and hands out the handles of the trust
@@ -11,25 +11,16 @@
 //! their region is written, and readers of publishable roles publish views
 //! ([`PublicRead`]), the only bytes meant to leave the device. Writers write
 //! only inside a session, whose erases and programs pass the guard of the
-//! protected spans.
-//!
-//! In the boot tier, [`Ota`] holds the boot writers ([`chain::BootWriters`])
-//! and alone writes the alternate slot and the otadata. An update is written
-//! and verified ([`Ota::begin_update`], [`Update::write`],
-//! [`Update::finish`]), the [`VerifiedImage`] it gives is selected for the
-//! next boot ([`Ota::activate`]), and the image that boots is confirmed
-//! ([`Ota::confirm`]) or rolled back ([`Ota::roll_back`]). Any booted image
-//! that isn't `Valid` needs a confirmation
-//! ([`otadata::BootState::needs_confirmation`]), and updates begin only from
-//! a `Valid` one. A power cut at any step leaves a selection that starts a
-//! whole image: the one running, or an activated one with its rollback
-//! armed. Nothing in the crate reboots.
+//! protected spans. The boot tier alone hands out the writers of the boot
+//! selection, the alternate slot's and the otadata's
+//! ([`chain::BootWriters`]). Nothing in the crate reboots.
 //!
 //! The formats on the flash (the partition table, ESP images and the otadata)
 //! are read by `eveningstar-esp-formats`, whose [`image`], [`otadata`] and
 //! [`table`] modules are re-exported. The crate is `no_std`, allocation-free,
 //! and also builds on the host. The `test-support` feature adds the
-//! `test_support` module: a NOR flash in RAM, and handles over it.
+//! `test_support` module: a NOR flash in RAM that takes power cuts, the
+//! simulated ESP-IDF bootloader run on it, and handles over it.
 
 #![cfg_attr(not(test), no_std)]
 
@@ -38,7 +29,6 @@ mod guard;
 pub mod known;
 pub mod layout;
 pub mod nor;
-mod ota;
 pub mod roles;
 mod span;
 mod state;
@@ -50,7 +40,6 @@ pub use chain::{Report, Storage, Tier, split};
 pub use eveningstar_esp_formats::{Entry, ReadError, Slot, Source, Text, image, otadata, table};
 pub use guard::AccessError;
 pub use nor::{DeviceError, SECTOR_SIZE, WORD_SIZE};
-pub use ota::{Ota, OtaError, Update, VerifiedImage};
 pub use span::Span;
 pub use state::{Epoch, WriteState};
 pub use view::{MAX_SANITIZED, PublicRead, PublishError, SnapshotError, ViewError};
