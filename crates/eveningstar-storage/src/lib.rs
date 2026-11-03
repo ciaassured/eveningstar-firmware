@@ -33,6 +33,7 @@
 #![cfg_attr(not(test), no_std)]
 
 mod board_table;
+pub mod chain;
 pub mod known;
 pub mod layout;
 pub mod nor;

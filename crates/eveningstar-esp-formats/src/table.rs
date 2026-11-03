@@ -815,10 +815,10 @@ impl Loaded {
     /// The app partitions kept: the factory app, the test app, then each OTA
     /// app by slot.
     pub fn apps(&self) -> impl Iterator<Item = Kept> + '_ {
-        [self.factory, self.test]
+        [&self.factory, &self.test]
             .into_iter()
-            .chain(self.ota)
-            .flatten()
+            .chain(&self.ota)
+            .filter_map(|kept| *kept)
     }
 }
 

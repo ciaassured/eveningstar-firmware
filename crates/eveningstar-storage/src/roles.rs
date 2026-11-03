@@ -18,8 +18,8 @@
 //! | [`Factory`] | `factory` | sensitive | yes | yes | |
 //! | [`Chip`] | the whole flash | sensitive | | | |
 //! | [`FoundTable`] | the sector of the one table a search finds | publishable | | | |
-//! | [`FoundApp`] | an app partition of the located table, or the image at the booted offset | publishable | | | |
-//! | [`FoundOtadata`] | the located table's `data`/`ota` partition | sensitive | | | |
+//! | [`FoundApp`] | the located table's app partition at the booted offset, or the image there when no valid table is located | publishable | | | |
+//! | [`FoundOtadata`] | the located table's last `data`/`ota` partition | sensitive | | | |
 //!
 //! Only [`Publishable`] roles have their contents published. The otadata is
 //! publishable at its compiled offset, where the layout places it; the
@@ -54,6 +54,7 @@
 
 use crate::layout;
 use crate::nor::SECTOR_SIZE;
+use crate::span::Span;
 
 mod sealed {
     /// Implemented by the roles and the device markers of this module only.
@@ -156,17 +157,35 @@ pub enum Chip {}
 #[derive(Debug)]
 pub enum FoundTable {}
 
-/// An app partition of the located table, or the image at the booted offset
-/// when no table is located.
+/// The app the bootloader started: the app partition at the booted offset of
+/// the located table, as the bootloader loads them, or the image at the
+/// booted offset when no valid table is located.
 #[derive(Debug)]
 pub enum FoundApp {}
 
-/// The located table's `data`/`ota` partition.
+/// The located table's `data`/`ota` partition, as the bootloader loads them:
+/// the last such entry.
 #[derive(Debug)]
 pub enum FoundOtadata {}
 
 const _: () = assert!(layout::OTA_0.size == layout::OTA_1.size);
 const _: () = assert!(layout::CONFIG_0.size == layout::CONFIG_1.size);
+
+/// The spans the compiled layout gives to sensitive data: `factory`, both
+/// configurations and `diag`.
+const SENSITIVE: [Span; 4] = [
+    Span::of(&layout::FACTORY),
+    Span::of(&layout::CONFIG_0),
+    Span::of(&layout::CONFIG_1),
+    Span::of(&layout::DIAG),
+];
+
+/// Whether `span`, absolute on the internal flash, shares a byte with a span
+/// the compiled layout gives to sensitive data. No view is published over
+/// one, and no reader of a role located at runtime is made over one.
+pub(crate) fn is_sensitive(span: Span) -> bool {
+    SENSITIVE.iter().any(|sensitive| sensitive.overlaps(span))
+}
 
 macro_rules! roles {
     ($($role:ident = $name:literal;)*) => {$(

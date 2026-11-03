@@ -12,7 +12,7 @@ use crate::region::{CHUNK_LEN, is_protected};
 use crate::roles::{Internal, Programmable, Role, Writable};
 use crate::span::Span;
 use crate::state::{Spans, WriteState};
-use crate::{AccessError, ReadError, Slot, Source};
+use crate::{AccessError, Entry, ReadError, Slot, Source};
 
 /// The absolute address of the `len` bytes at `offset` in `span`.
 pub(super) fn address(span: Span, offset: u32, len: usize) -> Result<u32, ReadError> {
@@ -95,6 +95,21 @@ impl<'f> Extent<'f> {
         })
     }
 
+    /// The extent of `span`, absolute, on `device`, cut to the device's
+    /// capacity: as much of it as lies inside, which may be nothing.
+    fn within(device: &'f dyn NorDevice, state: &'f State, span: Span) -> Self {
+        let capacity = device.capacity();
+        let offset = span.offset.min(capacity);
+        let end = span.end().unwrap_or(u32::MAX).min(capacity);
+        let span = Span::new(offset, end.saturating_sub(offset));
+        Self {
+            device,
+            state,
+            span,
+            spans: State::spans_of(span),
+        }
+    }
+
     /// The region's write state.
     pub(super) fn write_state(&self) -> WriteState {
         self.state.load(self.spans)
@@ -123,15 +138,20 @@ pub struct Reader<'f, R: Role<Device = Internal>> {
 impl<'f, R: Role<Device = Internal>> Reader<'f, R> {
     /// The reader of `span`, absolute, on `device`, or `None` when the span
     /// doesn't lie inside the device's capacity.
-    #[cfg_attr(
-        not(any(test, feature = "test-support")),
-        allow(dead_code, reason = "only the test support makes readers so far")
-    )]
     pub(crate) fn new(device: &'f dyn NorDevice, state: &'f State, span: Span) -> Option<Self> {
         Some(Self {
             extent: Extent::new(device, state, span)?,
             role: PhantomData,
         })
+    }
+
+    /// The reader of `span`, absolute, on `device`, cut to the device's
+    /// capacity: as much of it as lies inside, which may be nothing.
+    pub(crate) fn within(device: &'f dyn NorDevice, state: &'f State, span: Span) -> Self {
+        Self {
+            extent: Extent::within(device, state, span),
+            role: PhantomData,
+        }
     }
 
     /// The region's span, from the start of the device.
@@ -210,11 +230,10 @@ impl<'f, R: Writable<Device = Internal>> Writer<'f, R> {
     /// The writer of `span`, absolute, on `device`, while the app runs from
     /// `running`; `None` when the span doesn't lie inside the device's
     /// capacity or inside one physical span of the compiled layout, so every
-    /// byte it writes has a write state.
-    #[cfg_attr(
-        not(any(test, feature = "test-support")),
-        allow(dead_code, reason = "only the test support makes writers so far")
-    )]
+    /// byte it writes has a write state. Only the test support makes writers
+    /// of any span; `split` makes them of the layout's partitions
+    /// ([`of_partition`](Self::of_partition)).
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn new(
         device: &'f dyn NorDevice,
         state: &'f State,
@@ -229,6 +248,24 @@ impl<'f, R: Writable<Device = Internal>> Writer<'f, R> {
             running,
             role: PhantomData,
         })
+    }
+
+    /// The writer of `entry`, a partition of the compiled layout, on
+    /// `device`, while the app runs from `running`, cut to the device's
+    /// capacity. It is the writer `new` makes on a device that
+    /// holds the layout, as every partition of the layout is one physical
+    /// span; on a smaller one, it covers what lies inside the device.
+    pub(crate) fn of_partition(
+        device: &'f dyn NorDevice,
+        state: &'f State,
+        entry: &Entry,
+        running: Slot,
+    ) -> Self {
+        Self {
+            extent: Extent::within(device, state, Span::of(entry)),
+            running,
+            role: PhantomData,
+        }
     }
 
     /// The region's span, from the start of the device.
