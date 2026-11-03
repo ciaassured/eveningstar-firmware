@@ -368,7 +368,7 @@ pub struct BootWriters<'f> {
     slot: Slot,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl<'f> BootWriters<'f> {
     /// The boot writers `alternate_app` and `otadata`, for the app running
     /// from `slot`, made of any writers for the tests.
