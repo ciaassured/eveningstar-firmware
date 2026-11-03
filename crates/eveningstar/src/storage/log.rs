@@ -8,6 +8,7 @@ use eveningstar_boot::app::AppRole;
 use eveningstar_boot::bootloader::BootloaderModel;
 use eveningstar_boot::table::{Coverage, PartitionRow, TableModel, Valid};
 use eveningstar_boot::{AppSlot, Bootloader, LoadError, Otadata, PartitionTable};
+use eveningstar_ota::Ota;
 use eveningstar_storage::chain::{LayoutComparison, Report, Step, TableSource, Tier};
 use eveningstar_storage::otadata::{self, BootState, Sector, State, Validity};
 use eveningstar_storage::table::{Fields, Found, Label, Match};
@@ -358,7 +359,7 @@ fn entries(otadata: &otadata::Otadata) {
 
 /// Logs `state`, the boot state of the running image, and warns when the
 /// bootloader started another slot than the one selected.
-fn boot_state(state: &BootState) {
+pub(super) fn boot_state(state: &BootState) {
     info!(
         "Boot state: running {}, selected {}, state {}, rollback target {=bool}, needs confirmation {=bool}",
         Fmt(state.running),
@@ -417,6 +418,19 @@ pub(super) fn app_slot<R: AppRole>(
         ),
     }
     true
+}
+
+/// Logs the OTA mechanism's readiness and the boot state it reads.
+#[inline(never)]
+pub(super) fn ota(ota: &Ota<'_>) {
+    match ota.project() {
+        Ok(project) => info!("OTA ready: updates of project {}", Fmt(*project)),
+        Err(reason) => warn!("OTA unavailable: {}", Debug2Format(&reason)),
+    }
+    match ota.boot_state() {
+        Ok(state) => boot_state(&state),
+        Err(err) => warn!("OTA boot state not read: {}", Debug2Format(&err)),
+    }
 }
 
 /// A digest as hex digits.
