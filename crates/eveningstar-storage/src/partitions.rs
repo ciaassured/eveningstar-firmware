@@ -134,7 +134,7 @@ use core::marker::PhantomData;
 
 use embedded_storage_async::nor_flash::{ErrorType, MultiwriteNorFlash, NorFlash, ReadNorFlash};
 
-use crate::flash::{SECTOR_SIZE, WORD_SIZE};
+use crate::nor::{SECTOR_SIZE, WORD_SIZE};
 use crate::region::{AccessError, Region};
 use crate::{ReadError, Source, layout};
 

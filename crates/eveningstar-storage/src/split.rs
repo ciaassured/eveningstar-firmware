@@ -14,6 +14,7 @@
 use eveningstar_esp_formats::TYPE_APP;
 
 use crate::image::{self, ImageError};
+use crate::nor::NorDevice;
 use crate::ota::Ota;
 use crate::otadata::{self, BootState, State};
 use crate::partitions::{
@@ -22,8 +23,8 @@ use crate::partitions::{
 use crate::region::Region;
 use crate::table::{self, Found};
 use crate::{
-    Entry, Flash, LayoutComparison, ReadError, Slot, SlotPartitions as _, Text, compare_layout,
-    known, layout,
+    Entry, LayoutComparison, ReadError, Slot, SlotPartitions as _, Text, compare_layout, known,
+    layout,
 };
 
 /// How far the board is trusted, from least to most.
@@ -233,8 +234,8 @@ pub struct Storage<'f> {
 /// The table is compared when `split` is called, the rest when the future
 /// runs. The checks' state moves into the future rather than living in its
 /// frame, which holds the [`Storage`] it returns.
-pub fn split(flash: &mut dyn Flash, booted: u32) -> impl Future<Output = Storage<'_>> {
-    let flash: &dyn Flash = flash;
+pub fn split(flash: &mut dyn NorDevice, booted: u32) -> impl Future<Output = Storage<'_>> {
+    let flash: &dyn NorDevice = flash;
     let mut checks = Checks::new(flash, booted);
     async move {
         checks.verify_bootloader().await;
@@ -250,7 +251,7 @@ pub fn split(flash: &mut dyn Flash, booted: u32) -> impl Future<Output = Storage
 /// is found where it is needed rather than kept, to keep `split`'s frame
 /// small.
 struct Checks<'f> {
-    flash: &'f dyn Flash,
+    flash: &'f dyn NorDevice,
     booted: u32,
     comparison: LayoutComparison,
     found: Option<Found>,
@@ -259,7 +260,7 @@ struct Checks<'f> {
 
 impl<'f> Checks<'f> {
     /// Compares the table, and finds the board's when it doesn't match.
-    fn new(flash: &'f dyn Flash, booted: u32) -> Self {
+    fn new(flash: &'f dyn NorDevice, booted: u32) -> Self {
         let mut checks = Self {
             flash,
             booted,
@@ -466,7 +467,7 @@ fn board_table(comparison: &LayoutComparison, found: Option<Found>) -> Option<u3
 /// entry when the image doesn't read. A table that isn't the bootloader's
 /// can't widen it past the image.
 fn untrusted_app(
-    flash: &dyn Flash,
+    flash: &dyn NorDevice,
     table_offset: Option<u32>,
     booted: u32,
 ) -> Result<Region<'_>, ImageError> {
@@ -506,7 +507,7 @@ struct DataSpans<'f> {
 impl<'f> DataSpans<'f> {
     /// The spans, on a flash at least [`layout::FLASH_SIZE`] long, where every
     /// partition of the layout lies.
-    fn new(flash: &'f dyn Flash, slot: Slot) -> Self {
+    fn new(flash: &'f dyn NorDevice, slot: Slot) -> Self {
         let region = |entry: Entry| Region::clamped(flash, entry.offset, entry.size);
         Self {
             slot,

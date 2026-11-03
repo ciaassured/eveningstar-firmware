@@ -21,12 +21,13 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_time::Instant;
 use esp_hal::peripherals::{FLASH, SPI0};
 use esp_storage::{FlashStorage, FlashStorageError};
+use eveningstar_storage::nor::NorDevice;
 use eveningstar_storage::otadata::{self, Sector, State, Validity};
 use eveningstar_storage::partitions::{Partition, PartitionTable};
 use eveningstar_storage::table::{self, Fields, Found, Match};
 use eveningstar_storage::{
-    DeviceError, Entry, Flash, Limit, Report, SECTOR_SIZE, Slot, SlotPartitions as _, Storage,
-    Text, Tier, layout, split,
+    DeviceError, Entry, Limit, Report, SECTOR_SIZE, Slot, SlotPartitions as _, Storage, Text, Tier,
+    layout, split,
 };
 use static_cell::StaticCell;
 
@@ -165,7 +166,7 @@ impl InternalFlash {
     }
 }
 
-impl Flash for InternalFlash {
+impl NorDevice for InternalFlash {
     fn capacity(&self) -> u32 {
         self.capacity
     }

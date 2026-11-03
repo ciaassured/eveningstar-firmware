@@ -19,13 +19,13 @@ use crate::SlotPartitions as _;
 pub(crate) const FLASH_LEN: usize = crate::layout::FLASH_SIZE as usize;
 
 /// A flash in RAM with NOR semantics: an erase sets a sector to `0xFF`, a
-/// program ANDs the bytes in. A call that breaks the [`Flash`] contract
+/// program ANDs the bytes in. A call that breaks the [`NorDevice`] contract
 /// (misaligned, past the end, more than a sector programmed at once) panics,
 /// as it is a bug in the crate. Every erase and program is logged, and they
 /// can be made to fail after a number of them, the first that fails landing
 /// in part as a power cut leaves it.
 ///
-/// [`Flash`]: crate::Flash
+/// [`NorDevice`]: crate::nor::NorDevice
 #[derive(Debug)]
 pub(crate) struct RamFlash {
     bytes: Mutex<Vec<u8>>,
@@ -148,29 +148,29 @@ impl RamFlash {
 /// A [`RamFlash`] lent to [`crate::split`], which takes its flash mutably, while
 /// the test keeps reading it: the box is leaked, so the borrow lasts as long as
 /// `flash` does.
-pub(crate) fn lend(flash: &RamFlash) -> &mut dyn crate::Flash {
+pub(crate) fn lend(flash: &RamFlash) -> &mut dyn crate::nor::NorDevice {
     Box::leak(Box::new(Lent(flash)))
 }
 
-/// A shared [`RamFlash`] as a [`crate::Flash`], for [`lend`].
+/// A shared [`RamFlash`] as a [`crate::nor::NorDevice`], for [`lend`].
 struct Lent<'a>(&'a RamFlash);
 
-impl crate::Flash for Lent<'_> {
+impl crate::nor::NorDevice for Lent<'_> {
     fn capacity(&self) -> u32 {
-        crate::Flash::capacity(self.0)
+        crate::nor::NorDevice::capacity(self.0)
     }
     fn read(&self, address: u32, buf: &mut [u8]) -> Result<(), crate::DeviceError> {
-        crate::Flash::read(self.0, address, buf)
+        crate::nor::NorDevice::read(self.0, address, buf)
     }
     fn erase_sector(&self, address: u32) -> Result<(), crate::DeviceError> {
-        crate::Flash::erase_sector(self.0, address)
+        crate::nor::NorDevice::erase_sector(self.0, address)
     }
     fn program(&self, address: u32, bytes: &[u8]) -> Result<(), crate::DeviceError> {
-        crate::Flash::program(self.0, address, bytes)
+        crate::nor::NorDevice::program(self.0, address, bytes)
     }
 }
 
-impl crate::Flash for RamFlash {
+impl crate::nor::NorDevice for RamFlash {
     fn capacity(&self) -> u32 {
         self.bytes.lock().unwrap().len() as u32
     }

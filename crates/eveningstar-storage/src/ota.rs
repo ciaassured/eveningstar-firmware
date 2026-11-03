@@ -11,8 +11,8 @@
 use core::fmt;
 use core::marker::PhantomData;
 
-use crate::flash::{SECTOR_SIZE, WORD_SIZE};
 use crate::image::{self, App, ImageError};
+use crate::nor::{SECTOR_SIZE, WORD_SIZE};
 use crate::otadata::{self, BootState, PlanError, Write};
 use crate::region::{AccessError, Region};
 use crate::{Slot, Text, split};
@@ -523,9 +523,9 @@ fn len_u32(bytes: &[u8]) -> u32 {
 /// the other slot:
 ///
 /// ```
-/// use eveningstar_storage::{Flash, OtaError, split};
+/// use eveningstar_storage::{OtaError, nor::NorDevice, split};
 ///
-/// async fn switch_back(flash: &mut dyn Flash, booted: u32) -> Result<(), OtaError> {
+/// async fn switch_back(flash: &mut dyn NorDevice, booted: u32) -> Result<(), OtaError> {
 ///     let storage = split(flash, booted).await;
 ///     if let Some(mut ota) = storage.data.and_then(|data| data.ota) {
 ///         let image = ota.verify_other().await?;
@@ -538,9 +538,9 @@ fn len_u32(bytes: &[u8]) -> u32 {
 /// but not with an image kept from before a later `split`:
 ///
 /// ```compile_fail,E0499
-/// use eveningstar_storage::{Flash, OtaError, split};
+/// use eveningstar_storage::{OtaError, nor::NorDevice, split};
 ///
-/// async fn switch_back(flash: &mut dyn Flash, booted: u32) -> Result<(), OtaError> {
+/// async fn switch_back(flash: &mut dyn NorDevice, booted: u32) -> Result<(), OtaError> {
 ///     let mut ota = split(flash, booted).await.data.unwrap().ota.unwrap();
 ///     let image = ota.verify_other().await?;
 ///     drop(ota);

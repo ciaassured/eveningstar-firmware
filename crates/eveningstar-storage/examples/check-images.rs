@@ -23,8 +23,9 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use eveningstar_storage::image;
+use eveningstar_storage::nor::NorDevice;
 use eveningstar_storage::table::{self, Match};
-use eveningstar_storage::{DeviceError, Flash, Tier, known, layout, split};
+use eveningstar_storage::{DeviceError, Tier, known, layout, split};
 
 /// The share of an app slot an image may fill, in percent. The slots can't
 /// grow once boards ship, as the layout can't change over OTA, so the image
@@ -221,7 +222,7 @@ fn check_app(checks: &mut Checks, path: &Path, bytes: &[u8]) {
 /// A board's flash held in memory, read only: `split` never writes.
 struct Board(Vec<u8>);
 
-impl Flash for Board {
+impl NorDevice for Board {
     fn capacity(&self) -> u32 {
         u32::try_from(self.0.len()).unwrap_or(u32::MAX)
     }

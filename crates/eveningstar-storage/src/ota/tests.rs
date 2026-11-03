@@ -8,13 +8,14 @@ use sha2::{Digest as _, Sha256};
 use super::*;
 use crate::Slot::{Ota0, Ota1};
 use crate::layout::{OTA_0, OTA_1, OTADATA, TABLE_OFFSET};
+use crate::nor::NorDevice;
 use crate::otadata::{Otadata, Sector, State};
 use crate::test_support::{
     APP, BOOTLOADER, FLASH_LEN, ImageBuilder, OTADATA_AT, OTADATA_FIRST_BOOT, OTADATA_LEN, Op,
     RamFlash, Rng, TABLE, Tear, app_descriptor_bytes, block_on, boot_flash, data, idf_loads, lend,
     run, segment_at,
 };
-use crate::{DeviceError, Entry, Flash, ReadError, SlotPartitions as _, Tier, split};
+use crate::{DeviceError, Entry, ReadError, SlotPartitions as _, Tier, split};
 
 // Images.
 
@@ -1105,7 +1106,7 @@ fn without_a_valid_entry_an_update_follows_a_confirmation() {
 /// A flash whose programs of the otadata report success and change nothing.
 struct Forgetful<'a>(&'a RamFlash);
 
-impl Flash for Forgetful<'_> {
+impl NorDevice for Forgetful<'_> {
     fn capacity(&self) -> u32 {
         self.0.capacity()
     }

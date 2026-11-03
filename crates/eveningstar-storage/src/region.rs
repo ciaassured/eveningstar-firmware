@@ -23,7 +23,7 @@ use sha2::{Digest as _, Sha256};
 
 use eveningstar_esp_formats::pace::{Pace as _, Yield};
 
-use crate::flash::{Flash, SECTOR_SIZE, WORD_SIZE};
+use crate::nor::{NorDevice, SECTOR_SIZE, WORD_SIZE};
 use crate::{Entry, ReadError, Slot, SlotPartitions as _, Source, layout};
 
 /// The most bytes one step reads, hashes or programs.
@@ -108,7 +108,7 @@ pub(crate) fn is_protected(start: u32, end: u32, running: Option<Slot>) -> bool 
 /// A span of a flash.
 #[derive(Clone, Copy)]
 pub(crate) struct Region<'f> {
-    flash: &'f dyn Flash,
+    flash: &'f dyn NorDevice,
     offset: u32,
     len: u32,
 }
@@ -116,14 +116,14 @@ pub(crate) struct Region<'f> {
 impl<'f> Region<'f> {
     /// The `len` bytes of `flash` at `offset`, or `None` when they run past
     /// its capacity.
-    pub(crate) fn new(flash: &'f dyn Flash, offset: u32, len: u32) -> Option<Self> {
+    pub(crate) fn new(flash: &'f dyn NorDevice, offset: u32, len: u32) -> Option<Self> {
         let end = offset.checked_add(len)?;
         (end <= flash.capacity()).then_some(Self { flash, offset, len })
     }
 
     /// Up to `len` bytes of `flash` at `offset`: as many as lie inside its
     /// capacity, which may be none.
-    pub(crate) fn clamped(flash: &'f dyn Flash, offset: u32, len: u32) -> Self {
+    pub(crate) fn clamped(flash: &'f dyn NorDevice, offset: u32, len: u32) -> Self {
         let capacity = flash.capacity();
         let offset = offset.min(capacity);
         Self {
