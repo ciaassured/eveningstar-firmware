@@ -153,9 +153,11 @@
 //! ```
 
 mod handle;
+mod snapshot;
 mod state;
 
 pub use handle::{Reader, Session, Writer};
+pub use snapshot::Snapshot;
 pub use state::State;
 
 /// Size of a NOR flash sector, the unit of erasure, in bytes.

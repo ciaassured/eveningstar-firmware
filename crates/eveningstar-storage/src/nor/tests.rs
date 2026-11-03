@@ -8,9 +8,12 @@ use core::task::{Context, Poll, Waker};
 
 use super::*;
 use crate::layout::{FACTORY, FLASH_SIZE, OTA_0, OTA_1, RESERVED, TABLE_OFFSET};
-use crate::roles::{AlternateApp, AlternateConfig, CurrentConfig, Diag, Otadata};
+use crate::roles::{
+    AlternateApp, AlternateConfig, Chip, CurrentConfig, Diag, FoundApp, Internal, Otadata,
+    Programmable,
+};
 use crate::test_support::{Call, RamNor, TestFlash, block_on, run};
-use crate::{AccessError, ReadError, Slot, Source, Span, WriteState, layout};
+use crate::{AccessError, ReadError, Slot, SnapshotError, Source, Span, WriteState, layout};
 
 const SECTOR: u32 = SECTOR_SIZE;
 
@@ -301,7 +304,7 @@ fn a_session_changes_only_the_epoch_of_its_spans() {
     let (reader, _) = alternate(&flash);
     let mut config: Writer<'_, CurrentConfig> =
         flash.writer(Span::from(layout::CONFIG_0), Slot::Ota0);
-    let whole: Reader<'_, crate::roles::Chip> = flash.reader(Span::new(0, FLASH_SIZE));
+    let whole: Reader<'_, Chip> = flash.reader(Span::new(0, FLASH_SIZE));
     let before = stable(reader.write_state());
     let whole_before = stable(whole.write_state());
     run(config.begin().erase(0, SECTOR)).unwrap();
@@ -413,4 +416,198 @@ fn the_guard_refuses_every_protected_span() {
         flash.device().writes(),
         [Call::Erase(OTA_1.offset), Call::Erase(OTA_0.offset)]
     );
+}
+
+// Snapshots.
+
+/// Programs a word of zeros at `offset` of `writer`'s region in a session of
+/// its own, polled to completion.
+fn write_word<R: Programmable<Device = Internal>>(writer: &mut Writer<'_, R>, offset: u32) {
+    run(writer.begin().program(offset, &[0; 4])).unwrap();
+}
+
+/// The number of reads `flash`'s device received.
+fn reads(flash: &TestFlash) -> usize {
+    flash
+        .device()
+        .calls()
+        .iter()
+        .filter(|call| matches!(call, Call::Read(..)))
+        .count()
+}
+
+#[test]
+fn a_snapshot_reads_the_region_at_its_epoch() {
+    let flash = flash();
+    flash.device().poke(OTA_1.offset + 0x100, b"image");
+    let (reader, _) = alternate(&flash);
+    let snapshot = reader.snapshot(Span::new(0x100, 0x10)).unwrap();
+    assert_eq!(snapshot.epoch(), stable(reader.write_state()));
+    assert_eq!(snapshot.span(), Span::new(0x100, 0x10));
+    assert_eq!(snapshot.size(), 0x10);
+    let mut buf = [0; 5];
+    Source::read(&snapshot, 0, &mut buf).unwrap();
+    assert_eq!(&buf, b"image");
+    run(snapshot.read_async(0, &mut buf)).unwrap();
+    assert_eq!(&buf, b"image");
+    assert_eq!(
+        Source::read(&snapshot, 0xC, &mut buf),
+        Err(ReadError::OutOfRange)
+    );
+    assert_eq!(buf, [0; 5]);
+    assert_eq!(
+        run(snapshot.read_async(0xC, &mut buf)),
+        Err(ReadError::OutOfRange)
+    );
+}
+
+#[test]
+fn a_snapshot_lies_inside_its_region() {
+    let flash = flash();
+    let (reader, _) = alternate(&flash);
+    assert!(reader.snapshot(Span::new(0, OTA_1.size)).is_ok());
+    assert!(reader.snapshot(Span::new(OTA_1.size, 0)).is_ok());
+    assert_eq!(
+        reader.snapshot(Span::new(OTA_1.size, 1)).unwrap_err(),
+        SnapshotError::OutOfRange
+    );
+    assert_eq!(
+        reader.snapshot(Span::new(1, u32::MAX)).unwrap_err(),
+        SnapshotError::OutOfRange
+    );
+}
+
+#[test]
+fn no_snapshot_is_taken_during_a_session() {
+    let flash = flash();
+    let (reader, mut writer) = alternate(&flash);
+    let session = writer.begin();
+    assert_eq!(
+        reader.snapshot(Span::new(0, 4)).unwrap_err(),
+        SnapshotError::Busy
+    );
+    drop(session);
+    assert!(reader.snapshot(Span::new(0, 4)).is_ok());
+}
+
+#[test]
+fn a_snapshot_fails_once_the_region_is_written() {
+    let flash = flash();
+    let (reader, mut writer) = alternate(&flash);
+    let snapshot = reader.snapshot(Span::new(0, 8)).unwrap();
+    let mut buf = [0; 8];
+
+    let session = writer.begin();
+    assert_eq!(Source::read(&snapshot, 0, &mut buf), Err(ReadError::Stale));
+    drop(session);
+    // A session that issued no device call left the bytes as they were.
+    Source::read(&snapshot, 0, &mut buf).unwrap();
+
+    write_word(&mut writer, 4);
+    buf = [7; 8];
+    assert_eq!(Source::read(&snapshot, 0, &mut buf), Err(ReadError::Stale));
+    assert_eq!(buf, [0; 8], "a stale read keeps no bytes");
+    assert_eq!(run(snapshot.read_async(0, &mut buf)), Err(ReadError::Stale));
+    // A read of a region written since checks the state before it reaches
+    // the device: only the read between the sessions did.
+    assert_eq!(reads(&flash), 1);
+
+    let fresh = reader.snapshot(Span::new(0, 8)).unwrap();
+    Source::read(&fresh, 0, &mut buf).unwrap();
+    assert_eq!(buf, [0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0]);
+}
+
+#[test]
+fn a_read_that_straddles_a_session_is_stale() {
+    let flash = flash();
+    let (reader, mut writer) = alternate(&flash);
+    let snapshot = reader.snapshot(Span::new(0, 8)).unwrap();
+    // Another task's session runs between the read's first load of the state
+    // and its device call.
+    flash
+        .device()
+        .before_call(0, move || write_word(&mut writer, 0));
+    let mut buf = [7; 8];
+    assert_eq!(Source::read(&snapshot, 0, &mut buf), Err(ReadError::Stale));
+    assert_eq!(buf, [0; 8]);
+    assert_eq!(flash.device().at(OTA_1.offset, 4), [0; 4]);
+}
+
+#[test]
+fn a_read_that_straddles_a_session_without_calls_reads() {
+    let flash = flash();
+    let (reader, mut writer) = alternate(&flash);
+    let snapshot = reader.snapshot(Span::new(0, 8)).unwrap();
+    flash.device().before_call(0, move || drop(writer.begin()));
+    let mut buf = [0; 8];
+    Source::read(&snapshot, 0, &mut buf).unwrap();
+    assert_eq!(buf, [0xFF; 8]);
+}
+
+#[test]
+fn a_chunked_read_that_straddles_a_session_is_stale() {
+    let flash = flash();
+    flash.device().poke(OTA_1.offset, &[0x11; 0x3000]);
+    let (reader, mut writer) = alternate(&flash);
+    let snapshot = reader.snapshot(Span::new(0, 0x3000)).unwrap();
+    // The session runs before the read's second chunk, after the first
+    // chunk's bytes were read and checked.
+    flash
+        .device()
+        .before_call(1, move || write_word(&mut writer, 0x2000));
+    let mut buf = vec![0; 0x3000];
+    assert_eq!(run(snapshot.read_async(0, &mut buf)), Err(ReadError::Stale));
+    assert!(
+        buf.iter().all(|b| *b == 0),
+        "no chunk of a stale read is kept"
+    );
+    assert_eq!(reads(&flash), 2);
+}
+
+#[test]
+fn a_snapshot_over_several_spans_fails_when_any_is_written() {
+    let flash = flash();
+    let (_, mut app) = alternate(&flash);
+    let mut config: Writer<'_, CurrentConfig> =
+        flash.writer(Span::from(layout::CONFIG_0), Slot::Ota0);
+    let mut otadata: Writer<'_, Otadata> = flash.writer(Span::from(layout::OTADATA), Slot::Ota0);
+    let chip: Reader<'_, Chip> = flash.reader(Span::new(0, FLASH_SIZE));
+    // A found app from the otadata into the first slot, across the gap after
+    // the otadata.
+    let found: Reader<'_, FoundApp> = flash.reader(Span::new(0xB000, 0x6000));
+    let mut buf = [0; 4];
+
+    let chip_snapshot = chip.snapshot(Span::new(0, 4)).unwrap();
+    let found_snapshot = found.snapshot(Span::new(0x5000, 4)).unwrap();
+    write_word(&mut app, 0);
+    // A write anywhere in the chip fails its snapshot, even outside the
+    // snapshot's own span; the found app doesn't cover the alternate slot.
+    assert_eq!(
+        Source::read(&chip_snapshot, 0, &mut buf),
+        Err(ReadError::Stale)
+    );
+    Source::read(&found_snapshot, 0, &mut buf).unwrap();
+
+    // Each span the found app covers counts.
+    write_word(&mut otadata, 0x1000);
+    assert_eq!(
+        Source::read(&found_snapshot, 0, &mut buf),
+        Err(ReadError::Stale)
+    );
+    let found_snapshot = found.snapshot(Span::new(0, 4)).unwrap();
+    let mut current: Writer<'_, AlternateApp> = flash.writer(Span::from(OTA_0), Slot::Ota1);
+    write_word(&mut current, 0x1000);
+    assert_eq!(
+        Source::read(&found_snapshot, 0, &mut buf),
+        Err(ReadError::Stale)
+    );
+
+    let found_snapshot = found.snapshot(Span::new(0, 4)).unwrap();
+    let session = config.begin();
+    assert_eq!(
+        chip.snapshot(Span::new(0, 4)).unwrap_err(),
+        SnapshotError::Busy
+    );
+    Source::read(&found_snapshot, 0, &mut buf).unwrap();
+    drop(session);
 }

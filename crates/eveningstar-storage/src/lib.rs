@@ -37,6 +37,7 @@ mod split;
 mod state;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
+mod view;
 
 pub use board_table::{LayoutComparison, compare_layout};
 pub use eveningstar_esp_formats::{Entry, ReadError, Slot, Source, Text, image, otadata, table};
@@ -46,6 +47,7 @@ pub use region::AccessError;
 pub use span::Span;
 pub use split::{AppId, BootChain, BootloaderId, Data, Limit, Report, Storage, Tier, split};
 pub use state::{Epoch, WriteState};
+pub use view::SnapshotError;
 
 // The otadata partition holds the otadata's two sectors.
 const _: () = assert!(layout::OTADATA.size == 2 * otadata::SECTOR_SIZE);
