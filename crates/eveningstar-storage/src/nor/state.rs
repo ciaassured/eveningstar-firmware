@@ -88,6 +88,7 @@ impl State {
     }
 
     /// Whether `span`, absolute, lies inside one physical span.
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn inside_one(span: Span) -> bool {
         PHYSICAL.iter().any(|physical| physical.contains(span))
     }

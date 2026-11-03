@@ -7,19 +7,11 @@ use core::marker::PhantomData;
 use super::Reader;
 use super::handle::{Extent, read_chunked};
 use super::snapshot::read_checked;
+use crate::roles::is_sensitive;
 use crate::roles::{Internal, Publishable};
 use crate::state::{Epoch, WriteState};
 use crate::view::{MAX_SANITIZED, PublicRead, PublishError, Sealed, ViewError};
-use crate::{Entry, ReadError, Span, layout};
-
-/// The spans the compiled layout gives to sensitive data, which no view
-/// overlaps.
-const SENSITIVE: [Entry; 4] = [
-    layout::FACTORY,
-    layout::CONFIG_0,
-    layout::CONFIG_1,
-    layout::DIAG,
-];
+use crate::{ReadError, Span};
 
 /// Length of the buffer the sanitized spans are checked through.
 const CHECK_BUF_LEN: usize = 256;
@@ -81,10 +73,7 @@ impl<R: Publishable<Device = Internal>> Reader<'_, R> {
             .span
             .inner(span)
             .ok_or(PublishError::OutOfRange)?;
-        if SENSITIVE
-            .iter()
-            .any(|entry| Span::of(entry).overlaps(absolute))
-        {
+        if is_sensitive(absolute) {
             return Err(PublishError::Sensitive);
         }
         if sanitized.len() > MAX_SANITIZED {
