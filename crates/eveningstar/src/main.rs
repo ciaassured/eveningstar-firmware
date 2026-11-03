@@ -7,6 +7,7 @@
 mod ethernet;
 mod http;
 mod services;
+mod sha;
 mod shared_spi;
 mod storage;
 mod watchdog;
@@ -120,6 +121,8 @@ async fn main(spawner: Spawner) {
         reboot.graceful_only(),
     )
     .await;
+    // Nothing hashes yet; the handle is `Copy`, so dropping it is harmless.
+    let _sha = sha::start(board.sha);
 
     let seed = random_seed(board.rng.reborrow(), board.adc1.reborrow());
     match ethernet::start(
