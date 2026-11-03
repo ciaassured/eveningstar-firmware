@@ -637,9 +637,29 @@ where
 ///
 /// The first check that fails, as an [`ImageError`].
 pub async fn verify_bootloader<S: Source + ?Sized>(source: &S) -> Result<Bootloader, ImageError> {
-    let mut verifier = Verifier::new(source, Kind::Bootloader, Sha256::default());
+    verify_bootloader_with(source, Sha256::default(), &mut Yield).await
+}
+
+/// Verifies the bootloader image in `source` as [`verify_bootloader`] does,
+/// hashing with `sha`, a hash not yet fed, and running `pace` after every
+/// [`YIELD_INTERVAL`] bytes hashed.
+///
+/// # Errors
+///
+/// The first check that fails, as an [`ImageError`].
+pub async fn verify_bootloader_with<S, H, P>(
+    source: &S,
+    sha: H,
+    pace: &mut P,
+) -> Result<Bootloader, ImageError>
+where
+    S: Source + ?Sized,
+    H: Sha256Hasher,
+    P: Pace,
+{
+    let mut verifier = Verifier::new(source, Kind::Bootloader, sha);
     while !verifier.step()? {
-        Yield.pause().await;
+        pace.pause().await;
     }
     verifier.bootloader()
 }
