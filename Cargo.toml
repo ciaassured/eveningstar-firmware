@@ -17,6 +17,7 @@ eveningstar-boot        = { path = "crates/eveningstar-boot" }
 eveningstar-esp-formats = { path = "crates/eveningstar-esp-formats" }
 eveningstar-ota         = { path = "crates/eveningstar-ota" }
 eveningstar-storage     = { path = "crates/eveningstar-storage" }
+eveningstar-system      = { path = "crates/eveningstar-system" }
 
 # Chip and logging features are project-wide, so they are set once here. The
 # embassy crates that a host crate uses take `defmt` in each crate that logs

@@ -1,0 +1,27 @@
+[package]
+name = "eveningstar-system"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# Logging through defmt.
+defmt = ["dep:defmt", "embassy-time/defmt"]
+
+[dependencies]
+defmt = { workspace = true, optional = true }
+embassy-futures.workspace = true
+embassy-sync.workspace = true
+embassy-time.workspace = true
+heapless.workspace = true
+
+[dev-dependencies]
+critical-section = { workspace = true, features = ["std"] }
+# A time driver the tests advance by hand, and a timer queue that takes any
+# waker.
+embassy-time = { workspace = true, features = ["generic-queue-8", "mock-driver"] }
+
+[lints]
+workspace = true
