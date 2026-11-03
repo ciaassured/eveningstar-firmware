@@ -1,5 +1,5 @@
 //! The ESP-IDF partition table: reading its entries, comparing it with the
-//! generated layout, and finding it at another offset.
+//! partitions it is expected to hold, and finding it at another offset.
 //!
 //! The table is a list of 32-byte entries starting at the table offset, at
 //! most [`MAX_LEN`] bytes long. Each entry is the magic `0x50AA` (`u16`), the
@@ -9,8 +9,8 @@
 //! 16 bytes) or at an erased entry (magic, type and subtype all `0xFF`).
 //!
 //! The MD5 is checked against the bytes of every entry before it and reported
-//! in [`End::Md5`], and decides nothing else: the comparison with the layout is
-//! exact, so a table that matches is the table the layout describes whatever
+//! in [`End::Md5`], and decides nothing else: the comparison with the expected
+//! partitions is exact, so a table that matches is the table they describe whatever
 //! its MD5, and the discovery of a moved table relies on an app entry at the
 //! booted offset. The bytes between the MD5 entry's magic and its digest, and
 //! what follows the MD5 entry, are ignored.
@@ -20,7 +20,7 @@ use core::ops::BitOr;
 
 use crate::md5::Md5;
 use crate::source::{Source, read_array};
-use crate::{Entry, ReadError, TYPE_APP, Text, layout};
+use crate::{Entry, ReadError, TYPE_APP, Text};
 
 /// Maximum length of the table in bytes.
 pub const MAX_LEN: u32 = 0xC00;
@@ -112,7 +112,7 @@ impl RawEntry {
 }
 
 /// A set of entry fields, such as the fields in which an entry differs from
-/// the layout.
+/// the partition expected.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct Fields(u8);
 
@@ -417,9 +417,6 @@ impl<const N: usize> Comparison<N> {
     }
 }
 
-/// The comparison of the board's table with the generated layout.
-pub type LayoutComparison = Comparison<{ layout::PARTITIONS.len() }>;
-
 /// Compares the table at `offset` in `source` with `expected`: every field of
 /// every entry, in order, and that the list then ends with an MD5 or erased
 /// entry. What follows the end is ignored.
@@ -450,12 +447,6 @@ pub fn compare<S: Source + ?Sized, const N: usize>(
         extra,
         end: entries.finish(),
     }
-}
-
-/// Compares the table at [`layout::TABLE_OFFSET`] in `flash`, a source that
-/// starts at the start of the flash, with [`layout::PARTITIONS`].
-pub fn compare_layout<S: Source + ?Sized>(flash: &S) -> LayoutComparison {
-    compare(flash, layout::TABLE_OFFSET, &layout::PARTITIONS)
 }
 
 /// The tables [`find`] found that a bootloader could have read.

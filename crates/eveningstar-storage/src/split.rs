@@ -11,6 +11,8 @@
 //! | [`Tier::Data`] | otherwise | + [`Data`]: config, other config, diag, other app, otadata |
 //! | [`Tier::Full`] | + the bootloader is known and the running app's descriptor reads | + [`Ota`] |
 
+use eveningstar_esp_formats::TYPE_APP;
+
 use crate::image::{self, ImageError};
 use crate::ota::Ota;
 use crate::otadata::{self, BootState, State};
@@ -18,8 +20,11 @@ use crate::partitions::{
     Bootloader, Config, Diag, Otadata, OtherApp, OtherConfig, Partition, PartitionTable, RunningApp,
 };
 use crate::region::Region;
-use crate::table::{self, Found, LayoutComparison};
-use crate::{Entry, Flash, ReadError, Slot, TYPE_APP, Text, known, layout};
+use crate::table::{self, Found};
+use crate::{
+    Entry, Flash, LayoutComparison, ReadError, Slot, SlotPartitions as _, Text, compare_layout,
+    known, layout,
+};
 
 /// How far the board is trusted, from least to most.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -258,7 +263,7 @@ impl<'f> Checks<'f> {
         let mut checks = Self {
             flash,
             booted,
-            comparison: table::compare_layout(&Region::clamped(flash, 0, flash.capacity())),
+            comparison: compare_layout(&Region::clamped(flash, 0, flash.capacity())),
             found: None,
             bootloader: Err(ImageError::PastEnd),
         };

@@ -4,7 +4,7 @@ use sha2::{Digest as _, Sha256};
 use super::*;
 use crate::layout::{CONFIG_0, CONFIG_1, DIAG, OTA_0, OTA_1, OTADATA};
 use crate::test_support::{APP, BOOTLOADER, Op, RamFlash, block_on, lend, nix_board, run};
-use crate::{Data, Entry, Slot, Storage, split};
+use crate::{Data, Entry, Slot, SlotPartitions as _, Storage, split};
 
 const SECTOR: u32 = SECTOR_SIZE;
 

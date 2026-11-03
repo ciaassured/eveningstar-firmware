@@ -556,8 +556,9 @@ whichever image comes up.
   on the Nix bootloader and table and on the release app, and fails on a
   bootloader missing from `known.rs` (printing its entry), a table that isn't
   the layout, or an app over 75% of its slot.
-- The crate's tests read fixtures built by Nix and real captures in
-  `crates/eveningstar-storage/testdata/` (see its README). The `build` group
+- The tests of the crate and of `eveningstar-esp-formats` read fixtures built
+  by Nix and real captures in `crates/eveningstar-esp-formats/testdata/` (see
+  its README). The `build` group
   fails when the Nix-built ones are stale.
 - The OTA tests cut the power after any erase or program, in each way a NOR
   program can be cut, and boot a simulated bootloader afterwards, from a first

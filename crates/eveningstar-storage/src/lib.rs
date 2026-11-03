@@ -1,5 +1,4 @@
-//! Storage on the internal flash: the partition layout, the formats on the
-//! flash (the partition table, ESP images and the otadata), the checks of the
+//! Storage on the internal flash: the partition layout, the checks of the
 //! board's table and bootloader, the typed handles to the partitions, and the
 //! OTA mechanism.
 //!
@@ -18,121 +17,52 @@
 //! whole image: the one running, or an activated one with its rollback
 //! armed. Nothing in the crate reboots.
 //!
-//! The crate is `no_std`, allocation-free, and also builds on the host. Every
-//! parser reads through [`Source`], with buffers of at most 256 bytes on the
-//! stack, and returns an error rather than panicking on any input.
-//!
-//! An image's verification hashes through a [`hash::Sha256Hasher`] and hands
-//! control back between its steps through a [`pace::Pace`]: SHA-256 in
-//! software and a yield, unless the caller gives others
-//! ([`image::verify_app_with`]).
+//! The formats on the flash (the partition table, ESP images and the otadata)
+//! are read by `eveningstar-esp-formats`, whose [`image`], [`otadata`] and
+//! [`table`] modules are re-exported. The crate is `no_std`, allocation-free,
+//! and also builds on the host.
 
 #![cfg_attr(not(test), no_std)]
 
+mod board_table;
 mod flash;
-mod future;
-pub mod hash;
-pub mod image;
 pub mod known;
 pub mod layout;
-mod md5;
 mod ota;
-pub mod otadata;
-pub mod pace;
 pub mod partitions;
 mod region;
-mod source;
 mod split;
-pub mod table;
 #[cfg(test)]
 mod test_support;
-mod text;
 
+pub use board_table::{LayoutComparison, compare_layout};
+pub use eveningstar_esp_formats::{Entry, ReadError, Slot, Source, Text, image, otadata, table};
 pub use flash::{DeviceError, Flash, SECTOR_SIZE, WORD_SIZE};
 pub use ota::{Ota, OtaError, Update, VerifiedImage};
 pub use region::AccessError;
-pub use source::{ReadError, Source};
 pub use split::{AppId, BootChain, BootloaderId, Data, Limit, Report, Storage, Tier, split};
-pub use text::Text;
 
-/// Partition type of an application image.
-pub const TYPE_APP: u8 = 0x00;
+// The otadata partition holds the otadata's two sectors.
+const _: () = assert!(layout::OTADATA.size == 2 * otadata::SECTOR_SIZE);
 
-/// Partition type of data.
-pub const TYPE_DATA: u8 = 0x01;
+/// The partitions the layout assigns to an app slot.
+pub trait SlotPartitions {
+    /// The slot's app partition.
+    fn partition(self) -> Entry;
 
-/// Entry flag: the partition is read-only. The bit is the one the ESP-IDF
-/// partition table format uses.
-pub const FLAG_READONLY: u32 = 1 << 1;
-
-/// One partition of the table, with the fields the table stores for it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Entry {
-    /// Name, at most 16 bytes.
-    pub label: &'static str,
-    /// Partition type (`kind`, as `type` is a keyword).
-    pub kind: u8,
-    /// Partition subtype, which depends on the type.
-    pub subtype: u8,
-    /// Offset from the start of the flash, in bytes.
-    pub offset: u32,
-    /// Size in bytes.
-    pub size: u32,
-    /// Flag bits, such as [`FLAG_READONLY`].
-    pub flags: u32,
+    /// The configuration partition paired with the slot.
+    fn config(self) -> Entry;
 }
 
-impl Entry {
-    /// Offset of the first byte after the partition.
-    #[must_use]
-    pub const fn end(&self) -> u32 {
-        self.offset + self.size
-    }
-}
-
-/// One of the two app slots.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Slot {
-    /// [`layout::OTA_0`].
-    Ota0,
-    /// [`layout::OTA_1`].
-    Ota1,
-}
-
-impl Slot {
-    /// Both slots, in order.
-    pub const ALL: [Self; 2] = [Self::Ota0, Self::Ota1];
-
-    /// The slot's number: 0 for `ota_0`, 1 for `ota_1`.
-    #[must_use]
-    pub const fn number(self) -> u32 {
-        match self {
-            Self::Ota0 => 0,
-            Self::Ota1 => 1,
-        }
-    }
-
-    /// The other slot.
-    #[must_use]
-    pub const fn other(self) -> Self {
-        match self {
-            Self::Ota0 => Self::Ota1,
-            Self::Ota1 => Self::Ota0,
-        }
-    }
-
-    /// The slot's partition.
-    #[must_use]
-    pub const fn partition(self) -> Entry {
+impl SlotPartitions for Slot {
+    fn partition(self) -> Entry {
         match self {
             Self::Ota0 => layout::OTA_0,
             Self::Ota1 => layout::OTA_1,
         }
     }
 
-    /// The configuration partition paired with the slot.
-    #[must_use]
-    pub const fn config(self) -> Entry {
+    fn config(self) -> Entry {
         match self {
             Self::Ota0 => layout::CONFIG_0,
             Self::Ota1 => layout::CONFIG_1,
@@ -145,6 +75,8 @@ mod tests {
     use super::layout::{
         CONFIG_0, CONFIG_1, FLASH_SIZE, OTA_0, OTA_1, OTADATA, PARTITIONS, TABLE_OFFSET,
     };
+    use eveningstar_esp_formats::{TYPE_APP, TYPE_DATA};
+
     use super::*;
 
     const SECTOR_SIZE: u32 = 4096;

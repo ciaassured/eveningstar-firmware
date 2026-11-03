@@ -21,9 +21,10 @@ use core::fmt;
 use embedded_storage_async::nor_flash::{NorFlashError, NorFlashErrorKind};
 use sha2::{Digest as _, Sha256};
 
+use eveningstar_esp_formats::pace::{Pace as _, Yield};
+
 use crate::flash::{Flash, SECTOR_SIZE, WORD_SIZE};
-use crate::future::yield_now;
-use crate::{Entry, ReadError, Slot, Source, layout};
+use crate::{Entry, ReadError, Slot, SlotPartitions as _, Source, layout};
 
 /// The most bytes one step reads, hashes or programs.
 pub(crate) const CHUNK_LEN: u32 = 4096;
@@ -172,7 +173,7 @@ impl<'f> Region<'f> {
             self.read(at, chunk)?;
             at = at.checked_add(chunk_len).ok_or(ReadError::OutOfRange)?;
             if chunk_len == CHUNK_LEN {
-                yield_now().await;
+                Yield.pause().await;
             }
         }
         Ok(())
@@ -192,7 +193,7 @@ impl<'f> Region<'f> {
             self.hash(&mut sha, at, step)?;
             at += step;
             if step == CHUNK_LEN {
-                yield_now().await;
+                Yield.pause().await;
             }
         }
         Ok(sha.finalize().into())
@@ -249,7 +250,7 @@ impl<'f> Region<'f> {
                 .erase_sector(address)
                 .map_err(|_| AccessError::Device)?;
             address = next;
-            yield_now().await;
+            Yield.pause().await;
         }
         Ok(())
     }
@@ -287,7 +288,7 @@ impl<'f> Region<'f> {
                 .program(address, chunk)
                 .map_err(|_| AccessError::Device)?;
             address = next;
-            yield_now().await;
+            Yield.pause().await;
         }
         Ok(())
     }
