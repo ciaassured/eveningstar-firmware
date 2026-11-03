@@ -17,7 +17,7 @@ defmt.workspace = true
 embassy-executor.workspace = true
 embassy-futures.workspace = true
 embassy-time.workspace = true
-embassy-sync.workspace = true
+embassy-sync = { workspace = true, features = ["defmt"] }
 embassy-net.workspace = true
 embassy-net-wiznet.workspace = true
 embedded-hal-async.workspace = true

@@ -4,7 +4,7 @@
 use core::fmt;
 
 use crate::span::Span;
-use crate::state::{self, Spans, Word, WriteState};
+use crate::state::{self, Spans, Waiters, Word, WriteState};
 use crate::{SECTOR_SIZE, layout};
 
 /// The number of physical spans: the bootloader's, the table's sector, and
@@ -63,6 +63,8 @@ const _: () = assert!(disjoint(&PHYSICAL));
 /// no write state: no writer covers them.
 pub struct State {
     words: [Word; SPANS],
+    /// The tasks waiting for a region to change.
+    waiters: Waiters,
 }
 
 impl State {
@@ -71,6 +73,7 @@ impl State {
     pub const fn new() -> Self {
         Self {
             words: [const { Word::new() }; SPANS],
+            waiters: Waiters::new(),
         }
     }
 
@@ -100,9 +103,16 @@ impl State {
     }
 
     /// Marks the write session open on `spans` ended, at a new epoch when it
-    /// issued a device call (`written`).
+    /// issued a device call (`written`), and wakes every task waiting for a
+    /// region of the device to change.
     pub(crate) fn end(&self, spans: Spans, written: bool) {
         state::end(&self.words, spans, written);
+        self.waiters.wake();
+    }
+
+    /// The tasks waiting for a region to change.
+    pub(crate) const fn waiters(&self) -> &Waiters {
+        &self.waiters
     }
 }
 
@@ -116,7 +126,8 @@ impl fmt::Debug for State {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("State")
             .field("words", &self.words)
-            .finish_non_exhaustive()
+            .field("waiters", &self.waiters)
+            .finish()
     }
 }
 

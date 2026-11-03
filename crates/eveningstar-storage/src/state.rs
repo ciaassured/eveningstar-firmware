@@ -24,8 +24,13 @@
 //! the span then reads as written to, and every snapshot of it fails, rather
 //! than an epoch repeating.
 
+use core::cell::RefCell;
 use core::fmt;
 use core::sync::atomic::{AtomicU32, Ordering};
+use core::task::Waker;
+
+use embassy_sync::blocking_mutex::CriticalSectionMutex;
+use embassy_sync::waitqueue::MultiWakerRegistration;
 
 /// The word of a span in which a counter ran out: odd, so the span stays
 /// written to, and never produced by a session's start, whose odd words are
@@ -165,6 +170,45 @@ impl WriteState {
     #[must_use]
     pub const fn is_stable(self) -> bool {
         matches!(self, Self::Stable(_))
+    }
+}
+
+/// The most tasks a device's waiters hold at once. Registering one more
+/// wakes every task held, each of which registers again when polled, so
+/// with more tasks waiting than this they keep waking each other until the
+/// region changes.
+pub(crate) const WAITERS: usize = 16;
+
+/// The tasks waiting for a region of one device to change.
+pub(crate) struct Waiters(CriticalSectionMutex<RefCell<MultiWakerRegistration<WAITERS>>>);
+
+impl Waiters {
+    /// No task waiting.
+    pub(crate) const fn new() -> Self {
+        Self(CriticalSectionMutex::new(RefCell::new(
+            MultiWakerRegistration::new(),
+        )))
+    }
+
+    /// Registers `waker`, then returns what `ready` returns, both in one
+    /// critical section. As the waker is registered before `ready` looks at
+    /// the state, a session that ends after the look wakes it.
+    pub(crate) fn register_then(&self, waker: &Waker, ready: impl FnOnce() -> bool) -> bool {
+        self.0.lock(|waiters| {
+            waiters.borrow_mut().register(waker);
+            ready()
+        })
+    }
+
+    /// Wakes every task waiting.
+    pub(crate) fn wake(&self) {
+        self.0.lock(|waiters| waiters.borrow_mut().wake());
+    }
+}
+
+impl fmt::Debug for Waiters {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Waiters").finish_non_exhaustive()
     }
 }
 
