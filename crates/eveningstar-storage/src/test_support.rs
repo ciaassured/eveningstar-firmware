@@ -1,6 +1,7 @@
-//! Test support: a NOR flash in RAM with a hook on its calls, and readers and
-//! writers over it made without `split`. The module allocates, and is built
-//! only for tests and with the `test-support` feature.
+//! Test support: a NOR flash in RAM with a hook on its calls and power cuts,
+//! the simulated ESP-IDF bootloader run on it, and readers and writers over
+//! it made without `split`. The module allocates, and is built only for tests
+//! and with the `test-support` feature.
 //!
 //! The RAM device and the state table lock through `critical-section`, so a
 //! host test needs an implementation of it, such as `critical-section`'s
@@ -33,15 +34,18 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 use core::fmt;
+use core::ops::Range;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use embassy_sync::blocking_mutex::CriticalSectionMutex;
 
-pub use eveningstar_esp_formats::test_support::{Run, block_on, run};
+pub(crate) use eveningstar_esp_formats::test_support::{OTADATA_LEN, boot, idf_loads};
+pub use eveningstar_esp_formats::test_support::{Run, Tear, block_on, run};
 
+use crate::chain::BootWriters;
 use crate::nor::{self, NorDevice, SECTOR_SIZE, WORD_SIZE};
-use crate::roles::{Internal, Role, Writable};
-use crate::{DeviceError, Slot, Span};
+use crate::roles::{AlternateApp, Internal, Otadata, Role, Writable};
+use crate::{DeviceError, Slot, SlotPartitions as _, Span, layout};
 
 #[cfg(test)]
 mod board;
@@ -62,24 +66,40 @@ pub enum Call {
 /// A hook run before a call.
 type Hook = Box<dyn FnOnce() + Send>;
 
+/// A power cut armed on a [`RamNor`]: the erase or program at index `at` of
+/// its log of writes fails, and every later one, the first of them landing as
+/// `tear` says when it is a program.
+#[derive(Clone, Copy, Debug)]
+struct Cut {
+    at: usize,
+    tear: Option<Tear>,
+}
+
 /// A NOR flash in RAM: an erase sets a sector to `0xFF`, a program ANDs the
 /// bytes in, and bytes never written read as `0xFF`. Only the sectors written
 /// take memory.
 ///
-/// Every call is logged ([`calls`](Self::calls)), and a hook can run before
+/// Every call is logged ([`calls`](Self::calls)), the erases and programs
+/// also on their own ([`writes`](Self::writes)), and a hook can run before
 /// any of them ([`before_call`](Self::before_call)), which stands for a task
-/// that runs between two calls. A call that breaks the [`NorDevice`] contract
-/// (misaligned, past the capacity, more than a sector programmed) panics, as
-/// it is a bug in the caller.
+/// that runs between two calls. Erases and programs fail on request, changing
+/// nothing ([`fail_writes`](Self::fail_writes),
+/// [`fail_after`](Self::fail_after)), or as a power cut leaves them
+/// ([`cut_after`](Self::cut_after)). A call that breaks the [`NorDevice`]
+/// contract (misaligned, past the capacity, more than a sector programmed)
+/// panics, as it is a bug in the caller.
 pub struct RamNor {
     capacity: u32,
     sectors: CriticalSectionMutex<RefCell<BTreeMap<u32, Vec<u8>>>>,
     calls: CriticalSectionMutex<RefCell<Vec<Call>>>,
+    writes: CriticalSectionMutex<RefCell<Vec<Call>>>,
     hooks: CriticalSectionMutex<RefCell<Vec<(usize, Hook)>>>,
     /// The number of calls received.
     count: AtomicUsize,
     /// Whether erases and programs fail, changing nothing.
     failing: AtomicBool,
+    /// The power cut armed, if any.
+    cut: CriticalSectionMutex<RefCell<Option<Cut>>>,
 }
 
 impl RamNor {
@@ -89,9 +109,11 @@ impl RamNor {
             capacity,
             sectors: CriticalSectionMutex::new(RefCell::new(BTreeMap::new())),
             calls: CriticalSectionMutex::new(RefCell::new(Vec::new())),
+            writes: CriticalSectionMutex::new(RefCell::new(Vec::new())),
             hooks: CriticalSectionMutex::new(RefCell::new(Vec::new())),
             count: AtomicUsize::new(0),
             failing: AtomicBool::new(false),
+            cut: CriticalSectionMutex::new(RefCell::new(None)),
         }
     }
 
@@ -103,6 +125,23 @@ impl RamNor {
             flash.poke(*address, bytes);
         }
         flash
+    }
+
+    /// A flash of the same capacity holding the same bytes, with nothing
+    /// logged, hooked or failing.
+    #[must_use]
+    pub fn copy(&self) -> Self {
+        let copy = Self::erased(self.capacity);
+        let sectors = self.sectors.lock(|sectors| sectors.borrow().clone());
+        copy.sectors.lock(|to| *to.borrow_mut() = sectors);
+        copy
+    }
+
+    /// The flash as a device [`split`](crate::split) can take mutably, while
+    /// the caller keeps reading, hooking and cutting it. The adapter is
+    /// leaked, so it lives as long as the flash.
+    pub fn lend(&self) -> &mut dyn NorDevice {
+        Box::leak(Box::new(Lent(self)))
     }
 
     /// Runs `hook` before the call that is the `n`-th from now, counting
@@ -120,17 +159,44 @@ impl RamNor {
         self.failing.store(failing, Ordering::SeqCst);
     }
 
+    /// Makes every erase and program fail without changing a bit once `n`
+    /// more have been received.
+    pub fn fail_after(&self, n: usize) {
+        self.arm(n, None);
+    }
+
+    /// Cuts the power once `n` more erases and programs have been received:
+    /// the next one fails and every later one, and when the first to fail is
+    /// a program, it lands as `tear` says all the same. An erase cut lands
+    /// not at all.
+    pub fn cut_after(&self, n: usize, tear: Tear) {
+        self.arm(n, Some(tear));
+    }
+
+    /// Arms the failure of the erases and programs from the `n`-th from now.
+    fn arm(&self, n: usize, tear: Option<Tear>) {
+        let at = self.writes.lock(|writes| writes.borrow().len()) + n;
+        self.cut
+            .lock(|cut| *cut.borrow_mut() = Some(Cut { at, tear }));
+    }
+
+    /// Lets every erase and program succeed again, after a cut, a
+    /// [`fail_after`](Self::fail_after) or a
+    /// [`fail_writes`](Self::fail_writes).
+    pub fn heal(&self) {
+        self.cut.lock(|cut| *cut.borrow_mut() = None);
+        self.failing.store(false, Ordering::SeqCst);
+    }
+
     /// The calls received so far, in order.
     pub fn calls(&self) -> Vec<Call> {
         self.calls.lock(|calls| calls.borrow().clone())
     }
 
-    /// The erases and programs received so far, in order.
+    /// The erases and programs received so far, in order, those that failed
+    /// included.
     pub fn writes(&self) -> Vec<Call> {
-        self.calls()
-            .into_iter()
-            .filter(|call| !matches!(call, Call::Read(..)))
-            .collect()
+        self.writes.lock(|writes| writes.borrow().clone())
     }
 
     /// A copy of the `len` bytes at `address`.
@@ -146,8 +212,10 @@ impl RamNor {
         self.check(address, bytes.len());
         self.sectors.lock(|sectors| {
             let mut sectors = sectors.borrow_mut();
-            for (at, byte) in (address..).zip(bytes) {
-                Self::sector(&mut sectors, at)[Self::index(at)] = *byte;
+            for (at, piece) in Self::pieces(address, bytes.len()) {
+                let index = Self::index(at);
+                Self::sector(&mut sectors, at)[index..index + piece.len()]
+                    .copy_from_slice(&bytes[piece]);
             }
         });
     }
@@ -169,6 +237,23 @@ impl RamNor {
         (address % SECTOR_SIZE) as usize
     }
 
+    /// The pieces of the `len` bytes at `address`, which lie inside the
+    /// capacity, that each lie in one sector: the address of each, and its
+    /// range in the bytes.
+    fn pieces(address: u32, len: usize) -> impl Iterator<Item = (u32, Range<usize>)> {
+        let mut done = 0;
+        core::iter::from_fn(move || {
+            if done == len {
+                return None;
+            }
+            let at = address + u32::try_from(done).expect("the bytes lie inside the capacity");
+            let room = SECTOR_SIZE as usize - Self::index(at);
+            let piece = done..len.min(done + room);
+            done = piece.end;
+            Some((at, piece))
+        })
+    }
+
     /// The sector holding `address`, erased when it was never written.
     fn sector(sectors: &mut BTreeMap<u32, Vec<u8>>, address: u32) -> &mut Vec<u8> {
         sectors
@@ -180,12 +265,49 @@ impl RamNor {
         self.check(address, buf.len());
         self.sectors.lock(|sectors| {
             let sectors = sectors.borrow();
-            for (at, byte) in (address..).zip(buf.iter_mut()) {
-                *byte = sectors
-                    .get(&(at / SECTOR_SIZE))
-                    .map_or(0xFF, |sector| sector[Self::index(at)]);
+            for (at, piece) in Self::pieces(address, buf.len()) {
+                let to = &mut buf[piece];
+                match sectors.get(&(at / SECTOR_SIZE)) {
+                    Some(sector) => {
+                        let index = Self::index(at);
+                        to.copy_from_slice(&sector[index..index + to.len()]);
+                    }
+                    None => to.fill(0xFF),
+                }
             }
         });
+    }
+
+    /// The end of the last sector of `span` that holds bytes written, from
+    /// the start of the flash, or the span's offset when none does: past it,
+    /// the span reads erased.
+    fn written_end(&self, span: Span) -> u32 {
+        let first = span.offset / SECTOR_SIZE;
+        let last = (span.offset + span.len).div_ceil(SECTOR_SIZE);
+        self.sectors.lock(|sectors| {
+            sectors
+                .borrow()
+                .range(first..last)
+                .next_back()
+                .map_or(span.offset, |(sector, _)| (sector + 1) * SECTOR_SIZE)
+        })
+    }
+
+    /// Whether the erase or program logged last fails, and the tear it
+    /// lands with: the armed cut's, which the first program that fails
+    /// takes.
+    fn fails(&self, program: bool) -> (bool, Option<Tear>) {
+        if self.failing.load(Ordering::SeqCst) {
+            return (true, None);
+        }
+        let index = self.writes.lock(|writes| writes.borrow().len()) - 1;
+        self.cut.lock(|cut| match cut.borrow_mut().as_mut() {
+            Some(cut) if cut.at <= index => {
+                let tear = cut.tear.take();
+                (true, tear.filter(|_| program))
+            }
+            _ => (false, None),
+        })
     }
 
     /// Counts and logs `call`, after running the hooks due before it.
@@ -202,6 +324,9 @@ impl RamNor {
             hook();
         }
         self.calls.lock(|calls| calls.borrow_mut().push(call));
+        if !matches!(call, Call::Read(..)) {
+            self.writes.lock(|writes| writes.borrow_mut().push(call));
+        }
     }
 }
 
@@ -221,7 +346,7 @@ impl NorDevice for RamNor {
         assert!(address.is_multiple_of(SECTOR_SIZE), "erase at {address:#x}");
         self.check(address, SECTOR_SIZE as usize);
         self.receive(Call::Erase(address));
-        if self.failing.load(Ordering::SeqCst) {
+        if self.fails(false).0 {
             return Err(DeviceError);
         }
         self.sectors.lock(|sectors| {
@@ -239,13 +364,23 @@ impl NorDevice for RamNor {
         assert!(len <= SECTOR_SIZE, "program of {len} bytes in one call");
         self.check(address, bytes.len());
         self.receive(Call::Program(address, len));
-        if self.failing.load(Ordering::SeqCst) {
+        let (fails, tear) = self.fails(true);
+        if fails {
+            if let Some(tear) = tear {
+                let mut landed = self.at(address, bytes.len());
+                tear.land(&mut landed, bytes);
+                self.poke(address, &landed);
+            }
             return Err(DeviceError);
         }
         self.sectors.lock(|sectors| {
             let mut sectors = sectors.borrow_mut();
-            for (at, byte) in (address..).zip(bytes) {
-                Self::sector(&mut sectors, at)[Self::index(at)] &= *byte;
+            for (at, piece) in Self::pieces(address, bytes.len()) {
+                let index = Self::index(at);
+                let sector = &mut Self::sector(&mut sectors, at)[index..index + piece.len()];
+                for (old, new) in sector.iter_mut().zip(&bytes[piece]) {
+                    *old &= *new;
+                }
             }
         });
         Ok(())
@@ -259,6 +394,45 @@ impl fmt::Debug for RamNor {
             .field("count", &self.count)
             .finish_non_exhaustive()
     }
+}
+
+/// A shared [`RamNor`] as a device, for [`RamNor::lend`].
+struct Lent<'a>(&'a RamNor);
+
+impl NorDevice for Lent<'_> {
+    fn capacity(&self) -> u32 {
+        self.0.capacity()
+    }
+    fn read(&self, address: u32, buf: &mut [u8]) -> Result<(), DeviceError> {
+        self.0.read(address, buf)
+    }
+    fn erase_sector(&self, address: u32) -> Result<(), DeviceError> {
+        self.0.erase_sector(address)
+    }
+    fn program(&self, address: u32, bytes: &[u8]) -> Result<(), DeviceError> {
+        self.0.program(address, bytes)
+    }
+}
+
+/// One boot of `device`, a flash holding the compiled layout, by the
+/// simulated ESP-IDF bootloader
+/// ([`boot`](eveningstar_esp_formats::test_support::boot)), which loads a
+/// slot when [`idf_loads`](eveningstar_esp_formats::test_support::idf_loads)
+/// says so and writes the otadata back, without logging, as the bootloader
+/// does. Returns the slot started, `None` when none loads.
+///
+/// Each slot is judged on its bytes up to a sector past the last of its
+/// sectors that holds bytes written, as it reads erased beyond.
+pub fn boot_device(device: &RamNor) -> Option<Slot> {
+    let loadable = Slot::ALL.map(|slot| {
+        let span = Span::of(&slot.partition());
+        let end = (device.written_end(span) + SECTOR_SIZE).min(span.offset + span.len);
+        idf_loads(&device.at(span.offset, (end - span.offset) as usize))
+    });
+    let mut otadata = device.at(layout::OTADATA.offset, OTADATA_LEN);
+    let booted = boot(&mut otadata, loadable);
+    device.poke(layout::OTADATA.offset, &otadata);
+    booted
 }
 
 /// A [`RamNor`] and a state table, both leaked so the handles made over them
@@ -303,4 +477,23 @@ impl TestFlash {
         nor::Writer::new(self.device, self.state, span, running)
             .expect("the span lies inside the device and one physical span")
     }
+
+    /// Boot writers for the app running from `running`, of any spans:
+    /// `alternate`, absolute, as the alternate slot, and `otadata` as the
+    /// otadata. Panics as [`writer`](Self::writer) does.
+    pub fn boot_writers(
+        &self,
+        alternate: Span,
+        otadata: Span,
+        running: Slot,
+    ) -> BootWriters<'static> {
+        BootWriters::new(
+            self.writer::<AlternateApp>(alternate, running),
+            self.writer::<Otadata>(otadata, running),
+            running,
+        )
+    }
 }
+
+#[cfg(test)]
+mod tests;
