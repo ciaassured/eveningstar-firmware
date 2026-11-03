@@ -313,7 +313,7 @@ impl<'f> Checks<'f> {
             size: bootloader.size(),
             digest: *bootloader.digest(),
             file_sha256: *bootloader.file_sha256(),
-            name: known::name(bootloader.digest()),
+            name: known::find(bootloader.digest()).map(|known| known.name),
         });
     }
 
