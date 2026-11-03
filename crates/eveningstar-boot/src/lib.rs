@@ -33,6 +33,7 @@ pub mod bootloader;
 mod digest;
 mod error;
 mod pace;
+pub mod table;
 #[cfg(test)]
 mod test_support;
 
@@ -40,3 +41,4 @@ pub use bootloader::Bootloader;
 pub use digest::{Digest, PAUSE_INTERVAL, digest};
 pub use error::{ImageFailure, LoadError, Unpublished};
 pub use pace::Progress;
+pub use table::PartitionTable;
