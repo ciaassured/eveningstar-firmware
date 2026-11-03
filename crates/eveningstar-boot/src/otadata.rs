@@ -5,9 +5,9 @@
 //! in the unverified tier. The otadata is sensitive: nothing of it is
 //! published as bytes, and its epochs never leave the device.
 //!
-//! Its model, [`OtadataModel`], holds both entries as read, labels
-//! included, for the firmware's own use: the boot state, the active entry,
-//! and the entries the OTA planners read. [`OtadataModel::fields`] gives the
+//! Its model, [`OtadataModel`], holds both entries with every field as read,
+//! labels included, and the epoch, and gives the active entry and the boot
+//! state; it stays inside the device. [`OtadataModel::fields`] gives the
 //! fields that may leave the device, as a type of its own
 //! ([`OtadataFields`]), so a function that sends them takes that type and
 //! nothing that holds more. For each entry, its validity always; and only

@@ -15,9 +15,8 @@
 //! session on the slot that ends at a new epoch. A check a session
 //! interrupts keeps no result and runs again at the new epoch. The slot
 //! keeps the last result, its model ([`AppModel`]), for the epoch it was
-//! verified at; [`AppSlot::verdict`] waits for the result at a given epoch,
-//! so a writer of the slot learns whether what it wrote verifies without
-//! hashing it again.
+//! verified at; [`AppSlot::verdict`] gives the result at a given epoch once
+//! the check has kept it, so no image is hashed twice for one epoch.
 //!
 //! The view of a slot is the image, the digest included, once verified at
 //! the region's epoch now; the bytes after it are never published, and an

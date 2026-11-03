@@ -1,5 +1,5 @@
 //! The partition table: the table the chain located, judged as the
-//! bootloader judges it, beside the layout the firmware expects.
+//! bootloader judges it, beside the compiled layout.
 //!
 //! [`PartitionTable`] owns the reader of the compiled table's sector and, in
 //! the unverified tier, the reader of the table the search found alone. The
@@ -56,7 +56,7 @@ use crate::digest::{Digest, digest};
 use crate::error::{LoadError, Unpublished, at, publish, whole};
 use crate::pace::Progress;
 
-/// The layout the firmware expects, in the shape of the found partitions:
+/// The compiled layout, in the shape of the found partitions:
 /// the bootloader's and the table's regions, and the partitions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Expected {
@@ -68,7 +68,7 @@ pub struct Expected {
     pub partitions: &'static [Entry],
 }
 
-/// The layout the firmware expects.
+/// The compiled layout ([`layout`]).
 pub const EXPECTED: Expected = Expected {
     bootloader: Span::new(0, layout::TABLE_OFFSET),
     table: Span::new(layout::TABLE_OFFSET, SECTOR_SIZE),
