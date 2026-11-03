@@ -1,14 +1,16 @@
 //! Checks a bootloader, a partition table and, optionally, an app image with
 //! the code the firmware runs at boot, before they are flashed or released:
 //!
-//! - the table compared with the generated layout, entry by entry, and its MD5
-//!   entry, when it ends at one, checked against its entries;
+//! - the table judged as the bootloader judges it, with an MD5 entry and no
+//!   entry after it, and its partitions compared with the generated layout
+//!   by label;
 //! - the bootloader verified and looked up in the known list, printing the
-//!   entry to add to `known.rs` when it isn't there;
+//!   entry to add to `known.rs` when it isn't there, and its entry's table
+//!   offset and rollback checked;
 //! - the app verified as an ESP32-C6 image of the `eveningstar` project that
 //!   fits `ota_0`, its size measured against [`SLOT_BUDGET_PERCENT`], and the
-//!   three of them, flashed as `flash-all` writes them, reaching the full
-//!   tier.
+//!   three of them, flashed as `flash-all` writes them, reaching the boot
+//!   tier through the verification chain.
 //!
 //! ```text
 //! check-images --bootloader FILE --partition-table FILE [--app FILE]
@@ -22,10 +24,11 @@ use core::task::{Context, Poll, Waker};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use eveningstar_storage::chain::{Tier, split};
 use eveningstar_storage::image;
-use eveningstar_storage::nor::NorDevice;
+use eveningstar_storage::nor::{NorDevice, State};
 use eveningstar_storage::table::{self, Match};
-use eveningstar_storage::{DeviceError, Tier, known, layout, split};
+use eveningstar_storage::{DeviceError, known, layout};
 
 /// The share of an app slot an image may fill, in percent. The slots can't
 /// grow once boards ship, as the layout can't change over OTA, so the image
@@ -119,8 +122,38 @@ fn read(path: &Path) -> Result<Vec<u8>, String> {
 
 fn check_table(checks: &mut Checks, path: &Path, bytes: &[u8]) {
     println!("partition table {}", path.display());
-    let comparison = table::compare(bytes, 0, &layout::PARTITIONS);
-    for (expected, result) in layout::PARTITIONS.iter().zip(comparison.partitions) {
+    // The chip size the bootloader checks the table against: the layout's
+    // flash size, which the Nix bootloader's header names.
+    let verified = match table::verify(bytes, 0, layout::FLASH_SIZE) {
+        Ok(verified) => verified,
+        Err(error) => {
+            return checks.fail(format!(
+                "isn't valid as the bootloader judges it: {error:?}"
+            ));
+        }
+    };
+    checks.pass(format!(
+        "valid as the bootloader judges it: {} partitions, end entry at {}",
+        verified.partitions(),
+        verified.end
+    ));
+    checks.check(
+        verified.md5.is_some(),
+        "has an MD5 entry, whose digest is the MD5 of the entries before it",
+    );
+    checks.check(
+        !verified.md5_read_as_partition(),
+        "no entry lies between the MD5 entry and the end entry",
+    );
+    let partitions: Result<Vec<_>, _> = table::partitions(bytes, 0, &verified)
+        .map(|partition| partition.map(|(_, entry)| entry))
+        .collect();
+    let partitions = match partitions {
+        Ok(partitions) => partitions,
+        Err(error) => return checks.fail(format!("its partitions don't read: {error:?}")),
+    };
+    let comparison = table::compare_labels(partitions, &layout::PARTITIONS);
+    for (expected, result) in layout::PARTITIONS.iter().zip(comparison.expected) {
         let what = format!(
             "{:<10} {:#09x} {:#09x}",
             expected.label, expected.offset, expected.size
@@ -132,14 +165,10 @@ fn check_table(checks: &mut Checks, path: &Path, bytes: &[u8]) {
         }
     }
     if comparison.extra > 0 {
-        checks.fail(format!("{} entries past the layout's", comparison.extra));
-    }
-    match comparison.end {
-        Ok(end) => checks.pass(format!("the list ends after {} entries", end.partitions())),
-        Err(error) => checks.fail(format!("the table isn't well formed: {error:?}")),
-    }
-    if let Ok(table::End::Md5 { matches, .. }) = comparison.end {
-        checks.check(matches, "the MD5 entry's digest is the MD5 of the entries");
+        checks.fail(format!(
+            "{} partitions with no label of the layout, or a label repeated",
+            comparison.extra
+        ));
     }
 }
 
@@ -160,8 +189,8 @@ fn check_bootloader(checks: &mut Checks, path: &Path, bytes: &[u8]) {
     ));
     let digest = bootloader.digest();
     checks.check(
-        u32::try_from(bytes.len()).is_ok_and(|len| len <= layout::TABLE_OFFSET),
-        format!("fits below the table at {:#x}", layout::TABLE_OFFSET),
+        bootloader.size() <= layout::TABLE_OFFSET,
+        format!("ends before the table at {:#x}", layout::TABLE_OFFSET),
     );
     if let Some(known) = known::find(digest) {
         checks.pass(format!(
@@ -264,7 +293,8 @@ impl NorDevice for Board {
 }
 
 /// Flashes the images into an erased flash as `flash-all` lays them out, with
-/// blank otadata, and runs `split` on it as the app in `ota_0`.
+/// blank otadata, and runs the verification chain on it as the app in
+/// `ota_0`, which has to reach the boot tier.
 fn check_tier(checks: &mut Checks, bootloader: &[u8], table: &[u8], app: &[u8]) {
     println!("a board flashed with these, booting ota_0");
     let mut flash = vec![0xFF; usize::try_from(layout::FLASH_SIZE).unwrap_or(0)];
@@ -282,13 +312,14 @@ fn check_tier(checks: &mut Checks, bootloader: &[u8], table: &[u8], app: &[u8]) 
         }
     }
     let mut board = Board(flash);
-    let storage = block_on(split(&mut board, layout::OTA_0.offset));
+    let mut state = State::new();
+    let storage = block_on(split(&mut board, &mut state, layout::OTA_0.offset));
     let report = storage.report;
-    match report.limit {
-        None => checks.check(report.tier() == Tier::Full, "reaches the full tier"),
-        Some(limit) => checks.fail(format!(
-            "reaches the {:?} tier only: {limit:?}",
-            report.tier()
+    match report.failed {
+        None => checks.check(report.tier == Tier::Boot, "reaches the boot tier"),
+        Some(step) => checks.fail(format!(
+            "reaches the {:?} tier only: the first step that failed is {step:?}",
+            report.tier
         )),
     }
 }
