@@ -2,7 +2,7 @@
 //! board's table and bootloader, the typed handles to the partitions, and the
 //! OTA mechanism.
 //!
-//! [`split`] reads the board through a [`Flash`] once per boot and hands out
+//! [`split`] reads the board through a [`NorDevice`](nor::NorDevice) once per boot and hands out
 //! the handles of the trust tier it reaches ([`Storage`]); the
 //! [`partitions`] module documents the handles.
 //!
@@ -25,9 +25,9 @@
 #![cfg_attr(not(test), no_std)]
 
 mod board_table;
-mod flash;
 pub mod known;
 pub mod layout;
+pub mod nor;
 mod ota;
 pub mod partitions;
 mod region;
@@ -37,7 +37,7 @@ mod test_support;
 
 pub use board_table::{LayoutComparison, compare_layout};
 pub use eveningstar_esp_formats::{Entry, ReadError, Slot, Source, Text, image, otadata, table};
-pub use flash::{DeviceError, Flash, SECTOR_SIZE, WORD_SIZE};
+pub use nor::{DeviceError, SECTOR_SIZE, WORD_SIZE};
 pub use ota::{Ota, OtaError, Update, VerifiedImage};
 pub use region::AccessError;
 pub use split::{AppId, BootChain, BootloaderId, Data, Limit, Report, Storage, Tier, split};

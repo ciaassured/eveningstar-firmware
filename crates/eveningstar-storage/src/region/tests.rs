@@ -593,7 +593,7 @@ fn the_debug_output_shows_the_span_only() {
 
 impl<'f> Region<'f> {
     /// The partition `entry`, which lies inside `flash`.
-    fn of_entry(flash: &'f dyn Flash, entry: Entry) -> Self {
+    fn of_entry(flash: &'f dyn NorDevice, entry: Entry) -> Self {
         Self::new(flash, entry.offset, entry.size).unwrap()
     }
 }
