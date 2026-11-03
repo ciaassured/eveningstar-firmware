@@ -62,6 +62,10 @@ writes, and those carry over. Four things change:
   with how it was located.
 - The table is judged exactly as the bootloader judges it: no check of the
   MD5 or of the entries is stricter than the bootloader's.
+- Bytes between verified values that nothing reads, such as the table's MD5
+  entry padding, are served as `0xFF` and reported as sanitized. Unused space
+  elsewhere is cut, not exported. In the unverified tier a table with no MD5
+  entry publishes no bytes, and entries after the MD5 entry are cut off.
 - A bootloader image with a verifying SHA-256 is published whether or not it
   is a known one; being known only decides the tier.
 - The boot writers (alternate slot and otadata) are handed out only at the
@@ -316,17 +320,33 @@ Bytes leave the device only through a `Published<'_, R>` view.
 
 ```rust
 impl<'r, R: Publishable> Snapshot<'r, R> {
-    /// The bytes `range` of the snapshot, for export.
-    pub fn publish(self, range: Range<u32>) -> Result<Published<'r, R>, PublishError>;
+    /// The bytes `range` of the snapshot, for export, with the bytes of each
+    /// `erased` range (inside `range`, at most `MAX_ERASED`) served as `0xFF`
+    /// whatever the flash holds.
+    pub fn publish(
+        self,
+        range: Range<u32>,
+        erased: &[Range<u32>],
+    ) -> Result<Published<'r, R>, PublishError>;
 }
 
 /// A published view: bytes that may leave the device, as of one epoch.
 pub trait PublicRead {
     fn len(&self) -> u32;
     fn epoch(&self) -> Epoch;
+    /// The ranges served as `0xFF` that hold something else on the flash.
+    fn sanitized(&self) -> &[Range<u32>];
     fn read(&self, offset: u32, buf: &mut [u8]) -> impl Future<Output = Result<(), ViewError>>;
 }
 ```
+
+**Sanitized bytes.** A view may serve bytes that sit between verified values,
+which nothing reads or checks, as `0xFF`, the value of erased flash. The view
+records every such range whose flash bytes aren't `0xFF` already
+(`sanitized`), and the API reports them, so a download that differs from a
+dump of the flash says where and why. A transport digest covers the bytes as
+served. Unused space that isn't between verified values, such as the space
+after an image, is cut, not sanitized.
 
 A byte is published only when all three allow rules hold. The first two are
 enforced by the storage crate, the third by the content module.
@@ -350,16 +370,18 @@ enforced by the storage crate, the third by the content module.
      which the ROM accepts on its checksum alone, isn't published: an XOR
      checksum proves nothing about what the bytes are. The space after an
      image in its region is never published.
-   - **The partition table**, when it is the located table. Its entries are
-     covered by their equality with the compiled layout in the layout and
+   - **The partition table**, when it is the located table: the entries,
+     the MD5 entry and the end entry, as the bootloader read them. Its entries
+     are covered by their equality with the compiled layout in the layout and
      boot tiers, and by the table's MD5 entry in the unverified tier. The
-     bytes no check covers are published only when every one of them is
-     `0xFF`: the MD5 entry's 14 bytes between its magic and its digest, and
-     the end entry's 28 bytes after its magic, type and subtype. Otherwise the
-     view ends before them. Entries after the MD5 entry, which the bootloader
-     accepts but the MD5 doesn't cover, end the view at the MD5 entry in the
-     unverified tier. With no MD5 entry in the unverified tier, nothing is
-     published. When the search finds several tables, none is the located
+     bytes the bootloader ignores are sanitized: the MD5 entry's 14 bytes
+     between its magic and its digest, and the end entry's 28 bytes after its
+     magic, type and subtype. In the unverified tier, entries after the MD5
+     entry, which the bootloader accepts but the MD5 doesn't cover, end the
+     view after the MD5 entry, and a table with no MD5 entry publishes no
+     bytes and no labels: its offset and each entry's type, subtype, offset,
+     size and flags are still reported, as they say where regions lie, not
+     what they hold. When the search finds several tables, none is the located
      table: their offsets are reported, and neither their entries nor their
      bytes.
    - **The otadata**: parsed fields only, in every tier. For each entry: its
@@ -596,7 +618,8 @@ Each step is a PR on a stack, each passing `nix run .#checks`:
 - Publication: an app slot publishes its image and not the bytes after it; an
   image without an appended SHA-256 publishes nothing; a found app entry over
   leftover data whose SHA-256 doesn't verify publishes nothing; a table's
-  uncovered bytes that aren't `0xFF` end its view; several candidate tables
+  ignored bytes that aren't `0xFF` are served as `0xFF` and listed as
+  sanitized, and ones that are `0xFF` aren't listed; several candidate tables
   publish nothing; the otadata publishes no label and no unknown state value.
 - The chain: today's fixtures and board captures, plus a table without an MD5
   entry, a table with a bad MD5, entries after the MD5 entry, and an end entry
