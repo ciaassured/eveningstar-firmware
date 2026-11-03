@@ -33,7 +33,9 @@
 //!
 //! Long jobs, hashing an image or a digest, take the caller's hasher
 //! ([`Sha256Hasher`]), pace ([`Pace`]) and progress hook ([`Progress`]): the
-//! hook is called and the pace run after each KiB hashed.
+//! hook is called and the pace run after each KiB hashed. The app checks
+//! ([`App::run`]) also tell the hook when they wait for a slot to change
+//! ([`Progress::idle`]).
 //!
 //! The crate is `no_std`, allocation-free, and also builds on the host.
 //!
