@@ -6,6 +6,7 @@
 
 mod ethernet;
 mod http;
+mod reset;
 mod services;
 mod sha;
 mod shared_spi;
@@ -21,12 +22,11 @@ use esp_hal::rng::{Trng, TrngSource};
 use esp_hal::timer::timg::TimerGroup;
 use eveningstar_api::DeviceId;
 use eveningstar_board::{Board, CfgButton, StatusLed};
+use eveningstar_system::watchdog::WatchdogHandle;
 use static_cell::StaticCell;
 
-use crate::services::reboot;
+use crate::services::reboot::{self, Holder};
 use crate::services::system::System;
-use crate::watchdog::WatchdogHandle;
-use crate::wd::Blinky;
 
 #[panic_handler]
 #[expect(
@@ -62,20 +62,53 @@ esp_bootloader_esp_idf::esp_app_desc!();
 static LAYOUT_RECORD: eveningstar_storage::CompiledLayoutRecord =
     eveningstar_storage::LAYOUT_RECORD;
 
+/// The supervised tasks, each with its marker type and timeout.
 mod wd {
-    use crate::watchdog;
     use embassy_time::Duration;
+    use eveningstar_system::reboot::RebootWatchdog;
+    use eveningstar_system::watchdog::TaskWatchdog;
 
-    watchdog::watchdog! {
-        blinky: Blinky = Duration::from_millis(5000),
-        // Tolerates two missed probes.
-        ethernet: EthernetProbe = Duration::from_ticks(crate::ethernet::PROBE_INTERVAL.as_ticks() * 3),
-        // Tolerates two missed checks.
-        link: LinkMonitor = Duration::from_ticks(crate::ethernet::LINK_CHECK_INTERVAL.as_ticks() * 3),
-        reboot: Reboot = crate::services::reboot::WATCHDOG_TIMEOUT,
-        app_check: AppCheck = crate::storage::WATCHDOG_TIMEOUT,
-        confirmation: Confirmation = crate::storage::CONFIRMATION_WATCHDOG_TIMEOUT,
-    }
+    /// Marker of the blink task's watchdog.
+    pub(crate) enum Blinky {}
+    /// Marker of the Ethernet probe's watchdog.
+    pub(crate) enum EthernetProbe {}
+    /// Marker of the link monitor's watchdog.
+    pub(crate) enum LinkMonitor {}
+    /// Marker of the app check task's watchdog.
+    pub(crate) enum AppCheck {}
+    /// Marker of the confirmation window's watchdog.
+    pub(crate) enum Confirmation {}
+
+    pub(crate) const BLINKY: TaskWatchdog<Blinky> =
+        TaskWatchdog::new("blinky", Duration::from_millis(5000));
+    /// Tolerates two missed probes.
+    pub(crate) const ETHERNET: TaskWatchdog<EthernetProbe> = TaskWatchdog::new(
+        "ethernet",
+        Duration::from_ticks(crate::ethernet::PROBE_INTERVAL.as_ticks() * 3),
+    );
+    /// Tolerates two missed checks.
+    pub(crate) const LINK: TaskWatchdog<LinkMonitor> = TaskWatchdog::new(
+        "link",
+        Duration::from_ticks(crate::ethernet::LINK_CHECK_INTERVAL.as_ticks() * 3),
+    );
+    pub(crate) const REBOOT: TaskWatchdog<RebootWatchdog> = eveningstar_system::reboot::WATCHDOG;
+    pub(crate) const APP_CHECK: TaskWatchdog<AppCheck> =
+        TaskWatchdog::new("app_check", crate::storage::WATCHDOG_TIMEOUT);
+    pub(crate) const CONFIRMATION: TaskWatchdog<Confirmation> = TaskWatchdog::new(
+        "confirmation",
+        crate::storage::CONFIRMATION_WATCHDOG_TIMEOUT,
+    );
+
+    /// The supervisor's slots, one per task above.
+    pub(crate) const SLOTS: usize = [
+        BLINKY.name(),
+        ETHERNET.name(),
+        LINK.name(),
+        REBOOT.name(),
+        APP_CHECK.name(),
+        CONFIRMATION.name(),
+    ]
+    .len();
 }
 
 const BLINK_PERIOD: Duration = Duration::from_millis(1000);
@@ -112,17 +145,24 @@ async fn main(spawner: Spawner) {
 
     let timg0 = TimerGroup::new(board.timg0);
     let rtc = esp_hal::rtc_cntl::Rtc::new(board.rtc_timer);
-    let (wd_supervisor, wd_handles) = wd::supervisor(rtc.rwdt, timg0.wdt);
+    let reset = reset::take();
+    let mut wd_supervisor = watchdog::supervisor(rtc.rwdt, timg0.wdt, reset);
+    let blinky_wd = wd_supervisor.register(wd::BLINKY);
+    let ethernet_wd = wd_supervisor.register(wd::ETHERNET);
+    let link_wd = wd_supervisor.register(wd::LINK);
+    let reboot_wd = wd_supervisor.register(wd::REBOOT);
+    let app_check_wd = wd_supervisor.register(wd::APP_CHECK);
+    let confirmation_wd = wd_supervisor.register(wd::CONFIRMATION);
 
     esp_rtos::start(timg0.timer0, board.from_cpu_intr0);
     info!("Embassy initialized");
-    spawner.spawn(defmt::unwrap!(wd::supervise(wd_supervisor)));
-    let reboot = reboot::start(spawner, wd_handles.reboot);
+    spawner.spawn(defmt::unwrap!(watchdog::supervise(wd_supervisor)));
+    let reboot = reboot::start(spawner, reset, reboot_wd);
 
     spawner.spawn(defmt::unwrap!(blink(
         board.status_led,
         board.cfg_button,
-        wd_handles.blinky
+        blinky_wd
     )));
 
     let sha = sha::start(board.sha);
@@ -131,9 +171,9 @@ async fn main(spawner: Spawner) {
         board.internal_flash,
         board.flash_cache,
         sha,
-        wd_handles.app_check,
+        app_check_wd,
         reboot.graceful_only(),
-        wd_handles.confirmation,
+        confirmation_wd,
     )
     .await;
 
@@ -144,12 +184,20 @@ async fn main(spawner: Spawner) {
         system.name(),
         seed,
         reboot.graceful_only(),
-        wd_handles.ethernet,
-        wd_handles.link,
+        ethernet_wd,
+        link_wd,
     )
     .await
     {
-        Ok(stack) => http::start(spawner, stack, http::AppState { system, reboot }),
+        Ok(stack) => http::start(
+            spawner,
+            stack,
+            http::AppState {
+                system,
+                reboot,
+                reboot_holder: reboot.register_holder(Holder::Http),
+            },
+        ),
         Err(err) => error!("Ethernet unavailable: {}", err),
     }
 
@@ -169,7 +217,7 @@ fn random_seed(rng: RNG<'_>, adc1: ADC1<'_>) -> u64 {
 }
 
 #[embassy_executor::task]
-async fn blink(mut led: StatusLed, button: CfgButton, wd: WatchdogHandle<Blinky>) -> ! {
+async fn blink(mut led: StatusLed, button: CfgButton, wd: WatchdogHandle<wd::Blinky>) -> ! {
     let mut ticker = Ticker::every(BOOT_FLASH_PERIOD / 2);
     for _ in 0..BOOT_FLASHES {
         led.set_on();

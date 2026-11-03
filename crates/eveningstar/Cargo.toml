@@ -27,6 +27,7 @@ eveningstar-boot.workspace = true
 eveningstar-esp-formats.workspace = true
 eveningstar-ota.workspace = true
 eveningstar-storage.workspace = true
+eveningstar-system = { workspace = true, features = ["defmt"] }
 esp-bootloader-esp-idf.workspace = true
 esp-hal.workspace = true
 esp-rtos.workspace = true

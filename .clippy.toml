@@ -3,10 +3,11 @@ stack-size-threshold = 1024
 # Names written in prose, on top of clippy's defaults (`..`).
 doc-valid-idents = ["OpenAPI", ".."]
 
-# Resetting the chip is reserved for the reboot service, the task watchdog
-# supervisor and the panic handler, which each expect this lint. The internal
-# flash is reached only through `eveningstar::storage`, which expects it at its
-# one `FlashStorage::new`.
+# Resetting the chip is reserved for the panic handler and the firmware's
+# `eveningstar_system::Reset`, which the reboot service and the task watchdog
+# supervisor reset through; each expects this lint. The internal flash is
+# reached only through `eveningstar::storage`, which expects it at its one
+# `FlashStorage::new`.
 disallowed-methods = [
     { path = "esp_hal::system::software_reset", reason = "reboots go through the reboot service" },
     { path = "esp_hal::system::software_reset_cpu", reason = "reboots go through the reboot service" },

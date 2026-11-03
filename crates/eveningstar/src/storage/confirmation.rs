@@ -32,8 +32,8 @@ use eveningstar_storage::otadata::BootState;
 
 use super::log::Fmt;
 use crate::services::reboot::{GracefulReboot, Reason};
-use crate::watchdog::WatchdogHandle;
 use crate::wd;
+use eveningstar_system::watchdog::WatchdogHandle;
 
 /// How long from boot the running image has to be confirmed by default:
 /// 10 minutes.
