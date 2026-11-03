@@ -13,10 +13,9 @@
 //! methods they keep, so the handle types are interchangeable wherever only
 //! those methods are used.
 //!
-//! [`RebootRequest`] requests graceful reboots with reasons of another type,
-//! which convert to `R` with `From`. It is object-safe, so a crate with
-//! reasons of its own takes a `&dyn RebootRequest` of its reason type and
-//! names neither `R` nor the service.
+//! [`RebootRequest`] requests graceful reboots with reasons of another type
+//! `S`, which convert to `R` with `From`. It is object-safe, and a
+//! `&dyn RebootRequest<S>` names neither `R` nor the service.
 //!
 //! A graceful reboot waits until no [`RebootHold`] is alive, so a task can hold
 //! it off while it has work it must finish, such as flushing logged data. The
