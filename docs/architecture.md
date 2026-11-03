@@ -956,8 +956,9 @@ one byte flipped, selected as `New`, is refused by the bootloader, which starts
 `ota_0`; the firmware logs that the bootloader fell back and that the boot
 state needs confirming, and the alternate slot's check fails on the checksum.
 
-The ESP-IDF bootloader skips an image's checksum and SHA-256 while a debugger
-is attached (`esp_cpu_dbgr_is_attached()` in
+The bootloader's check of the image it starts, which activation and the
+fallback above rely on, holds only without a debugger attached. The ESP-IDF
+bootloader skips an image's checksum and SHA-256 while a debugger is attached (`esp_cpu_dbgr_is_attached()` in
 `bootloader_support/src/esp_image_format.c`), so with probe-rs attached during
 a boot it starts a corrupt image. The firmware's own check still fails the
 image, and OTA refuses every write (`Descriptor(Checksum)`). Board tests of
