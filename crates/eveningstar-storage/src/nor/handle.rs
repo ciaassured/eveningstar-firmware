@@ -476,6 +476,16 @@ impl<'w, R: Writable<Device = Internal>> Session<'w, R> {
         })
         .await
     }
+
+    /// Ends the session, as dropping it does, and returns the region's write
+    /// state after: `Stable` at a new epoch when it issued a device call,
+    /// else at the epoch it started from, unless its counter ran out.
+    #[must_use]
+    pub fn finish(self) -> WriteState {
+        let extent = self.extent;
+        drop(self);
+        extent.write_state()
+    }
 }
 
 impl<R: Programmable<Device = Internal>> Session<'_, R> {
