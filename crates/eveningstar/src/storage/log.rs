@@ -328,8 +328,31 @@ fn otadata(module: &Otadata<'_>, slot: Option<Slot>) {
         info!("Otadata:");
     }
     entries(model.otadata());
+    if !module.is_found() {
+        published_entries(module, &model);
+    }
     if let Some(slot) = slot {
         boot_state(&model.boot_state(slot));
+    }
+}
+
+/// Logs which otadata entries are published, and whether a label of one is
+/// served sanitized.
+fn published_entries(module: &Otadata<'_>, model: &eveningstar_boot::otadata::OtadataModel) {
+    for sector in Sector::ALL {
+        match module.published(model, sector) {
+            Ok(view) => info!(
+                "  otadata[{}] published: {=u32} bytes, {=usize} spans sanitized",
+                sector.index(),
+                view.len(),
+                view.sanitized().len()
+            ),
+            Err(err) => info!(
+                "  otadata[{}] isn't published: {}",
+                sector.index(),
+                Debug2Format(&err)
+            ),
+        }
     }
 }
 
