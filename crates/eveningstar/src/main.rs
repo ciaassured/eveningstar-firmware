@@ -74,6 +74,7 @@ mod wd {
         link: LinkMonitor = Duration::from_ticks(crate::ethernet::LINK_CHECK_INTERVAL.as_ticks() * 3),
         reboot: Reboot = crate::services::reboot::WATCHDOG_TIMEOUT,
         app_check: AppCheck = crate::storage::WATCHDOG_TIMEOUT,
+        confirmation: Confirmation = crate::storage::CONFIRMATION_WATCHDOG_TIMEOUT,
     }
 }
 
@@ -131,6 +132,8 @@ async fn main(spawner: Spawner) {
         board.flash_cache,
         sha,
         wd_handles.app_check,
+        reboot.graceful_only(),
+        wd_handles.confirmation,
     )
     .await;
 

@@ -2,8 +2,8 @@
 //!
 //! Faults (a panic, a missed task watchdog deadline, a hung executor) reset the
 //! chip at once, because the system's state can't be trusted. Other causes,
-//! such as the Ethernet link staying down or a fresh OTA update being ready,
-//! request a reboot instead, with a [`Reason`].
+//! such as the Ethernet link staying down or the running image staying
+//! unconfirmed, request a reboot instead, with a [`Reason`].
 //!
 //! Requesting a reboot takes a handle. [`start`] spawns the reboot task and
 //! returns the one [`Reboot`], which requests graceful and immediate reboots.
@@ -59,6 +59,9 @@ pub(crate) enum Reason {
     LinkDown,
     /// A client requested it through the API.
     Api,
+    /// The running image wasn't confirmed `Valid` within the confirmation
+    /// window after boot.
+    Unconfirmed,
 }
 
 /// What holds off a graceful reboot, as named in the [`Status`].
