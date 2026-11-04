@@ -531,3 +531,107 @@ fn the_module_can_be_shared_from_a_static() {
     fn shared<T: Sync + Send>() {}
     shared::<Otadata<'static>>();
 }
+
+/// The boot state of the image running from `running` over an otadata
+/// partition holding `first` and `second`.
+fn boot_of(first: &[u8; 32], second: &[u8; 32], running: Slot) -> BootState {
+    let (module, _) = module_of(first, second);
+    module.parse().unwrap().boot_state(running)
+}
+
+#[test]
+fn an_image_confirmed_valid_awaits_no_confirmation() {
+    let boot = boot_of(&entry(1, State::Valid), &[0xFF; 32], Slot::Ota0);
+    assert_eq!(boot.state, Some(State::Valid));
+    assert!(!awaits_confirmation(Some(&boot)));
+}
+
+#[test]
+fn an_activation_not_booted_yet_leaves_the_running_image_confirmed() {
+    let boot = boot_of(&entry(1, State::Valid), &entry(2, State::New), Slot::Ota0);
+    assert_eq!(boot.selected, Some(Slot::Ota1));
+    assert_eq!(boot.state, Some(State::Valid));
+    assert!(!awaits_confirmation(Some(&boot)));
+}
+
+#[test]
+fn every_state_but_valid_of_the_selected_image_awaits_a_confirmation() {
+    for state in [
+        State::New,
+        State::PendingVerify,
+        State::Undefined,
+        State::Unknown(5),
+    ] {
+        let boot = boot_of(&entry(1, state), &[0xFF; 32], Slot::Ota0);
+        assert_eq!(boot.selected, Some(Slot::Ota0), "{state:?}");
+        assert_eq!(boot.state, Some(state));
+        assert!(awaits_confirmation(Some(&boot)), "{state:?}");
+    }
+}
+
+#[test]
+fn an_invalid_or_aborted_image_awaits_a_confirmation() {
+    for state in [State::Invalid, State::Aborted] {
+        let boot = boot_of(&entry(1, State::Valid), &entry(2, state), Slot::Ota1);
+        assert_eq!(boot.state, Some(state));
+        assert!(awaits_confirmation(Some(&boot)), "{state:?}");
+    }
+}
+
+#[test]
+fn an_image_no_entry_selects_awaits_a_confirmation() {
+    let boot = boot_of(&[0xFF; 32], &[0xFF; 32], Slot::Ota0);
+    assert_eq!((boot.selected, boot.state), (None, None));
+    assert!(awaits_confirmation(Some(&boot)));
+
+    let boot = boot_of(&entry(1, State::Valid), &[0xFF; 32], Slot::Ota1);
+    assert_eq!((boot.selected, boot.state), (Some(Slot::Ota0), None));
+    assert!(awaits_confirmation(Some(&boot)));
+}
+
+#[test]
+fn a_fallback_awaits_a_confirmation_even_from_a_valid_entry() {
+    // The selected slot failed to load, so the bootloader started the slot
+    // of the older entry, which is `Valid`.
+    let boot = boot_of(
+        &entry(1, State::Valid),
+        &entry(2, State::PendingVerify),
+        Slot::Ota0,
+    );
+    assert_eq!(boot.selected, Some(Slot::Ota1));
+    assert_eq!(boot.state, Some(State::Valid));
+    assert!(awaits_confirmation(Some(&boot)));
+}
+
+#[test]
+fn an_otadata_whose_entries_dont_read_awaits_a_confirmation() {
+    let otadata = format::Otadata {
+        entries: [Err(ReadError::Device); 2],
+    };
+    let boot = otadata.boot_state(Slot::Ota0);
+    assert_eq!((boot.selected, boot.state), (None, None));
+    assert!(awaits_confirmation(Some(&boot)));
+}
+
+#[test]
+fn no_boot_state_awaits_a_confirmation() {
+    // An otadata that doesn't parse, as a write session is open on it.
+    let (module, flash) = module_of(&entry(1, State::Valid), &[0xFF; 32]);
+    let mut writer = flash.writer::<roles::Otadata>(Span::from(layout::OTADATA), Slot::Ota0);
+    let session = writer.begin();
+    let boot = module
+        .parse()
+        .ok()
+        .map(|model| model.boot_state(Slot::Ota0));
+    assert_eq!(boot, None);
+    assert!(awaits_confirmation(boot.as_ref()));
+    drop(session);
+    let boot = module
+        .parse()
+        .ok()
+        .map(|model| model.boot_state(Slot::Ota0));
+    assert!(!awaits_confirmation(boot.as_ref()));
+
+    // No otadata, or no running slot.
+    assert!(awaits_confirmation(None));
+}
