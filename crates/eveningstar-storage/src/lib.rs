@@ -17,7 +17,9 @@
 //!
 //! The formats on the flash (the partition table, ESP images and the otadata)
 //! are read by `eveningstar-esp-formats`, whose [`image`], [`otadata`] and
-//! [`table`] modules are re-exported. The crate is `no_std`, allocation-free,
+//! [`table`] modules are re-exported. [`LAYOUT_RECORD`] is the compiled
+//! layout as a layout record, the form in which an app image embeds the
+//! layout it is built for. The crate is `no_std`, allocation-free,
 //! and also builds on the host. The `test-support` feature adds the
 //! `test_support` module: a NOR flash in RAM that takes power cuts, the
 //! simulated ESP-IDF bootloader run on it, and handles over it.
@@ -46,6 +48,20 @@ pub use view::{MAX_SANITIZED, PublicRead, PublishError, SnapshotError, ViewError
 
 // The otadata partition holds the otadata's two sectors.
 const _: () = assert!(layout::OTADATA.size == 2 * otadata::SECTOR_SIZE);
+
+/// The layout record of the compiled layout, with one entry per partition.
+pub type CompiledLayoutRecord = image::LayoutRecord<{ layout::PARTITIONS.len() }>;
+
+/// The compiled layout as a layout record ([`image::LayoutRecord`]): the
+/// table's offset, the flash size and every partition, in table order.
+pub const LAYOUT_RECORD: CompiledLayoutRecord = match image::LayoutRecord::new(
+    layout::TABLE_OFFSET,
+    layout::FLASH_SIZE,
+    &layout::PARTITIONS,
+) {
+    Some(record) => record,
+    None => panic!("the compiled layout has a label longer than 16 bytes or too many partitions"),
+};
 
 /// The partitions the layout assigns to an app slot.
 pub trait SlotPartitions {
@@ -164,5 +180,28 @@ mod tests {
     #[test]
     fn end_is_offset_plus_size() {
         assert_eq!(OTA_0.end(), 0x31_0000);
+    }
+
+    #[test]
+    fn the_layout_record_holds_the_table_nix_builds() {
+        use eveningstar_esp_formats::test_support::{
+            FLASH_SIZE as BOARD_FLASH_SIZE, TABLE, TABLE_OFFSET as BOARD_TABLE_OFFSET, app_image,
+            board_layout_record, with_layout,
+        };
+
+        assert_eq!(LAYOUT_RECORD.table_offset(), TABLE_OFFSET);
+        assert_eq!(LAYOUT_RECORD.flash_size(), FLASH_SIZE);
+        assert_eq!(LAYOUT_RECORD.entries().len(), PARTITIONS.len());
+        for (i, entry) in LAYOUT_RECORD.entries().iter().enumerate() {
+            assert_eq!(&entry[..], &TABLE[i * 32..i * 32 + 32], "entry {i}");
+        }
+        // The board the formats crate's fixtures describe is this layout.
+        assert_eq!(
+            (TABLE_OFFSET, FLASH_SIZE),
+            (BOARD_TABLE_OFFSET, BOARD_FLASH_SIZE)
+        );
+        let image = with_layout(&app_image().build(), &board_layout_record());
+        let embedded = image::app_layout(&image[..]).unwrap().unwrap();
+        assert_eq!(embedded.matches(&image[..], &LAYOUT_RECORD), Ok(true));
     }
 }
