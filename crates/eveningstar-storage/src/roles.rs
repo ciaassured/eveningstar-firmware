@@ -9,7 +9,7 @@
 //! |---|---|---|---|---|---|
 //! | [`Bootloader`] | 0x0 up to the located table, or up to the compiled table offset | publishable | | | |
 //! | [`PartitionTable`] | the compiled table's sector | publishable | yes | yes | |
-//! | [`Otadata`] | `otadata` | sensitive | yes | yes | erases and programs |
+//! | [`Otadata`] | `otadata` | publishable | yes | yes | erases and programs |
 //! | [`CurrentApp`] | the slot that booted | publishable | yes | | |
 //! | [`AlternateApp`] | the other slot | publishable | yes | | erases and programs |
 //! | [`CurrentConfig`] | the current slot's configuration | sensitive | yes | | erases and programs |
@@ -21,7 +21,10 @@
 //! | [`FoundApp`] | an app partition of the located table, or the image at the booted offset | publishable | | | |
 //! | [`FoundOtadata`] | the located table's `data`/`ota` partition | sensitive | | | |
 //!
-//! Only [`Publishable`] roles have their contents published. Roles with a
+//! Only [`Publishable`] roles have their contents published. The otadata is
+//! publishable at its compiled offset, where the layout places it; the
+//! located otadata of the unverified tier isn't, as only its location is
+//! known, not that it is the otadata. Roles with a
 //! writer are [`Writable`]; those whose writer also programs are
 //! [`Programmable`]. Every trait here is sealed.
 //!
@@ -221,7 +224,7 @@ macro_rules! mark {
     )*};
 }
 
-mark!(Publishable: Bootloader, PartitionTable, CurrentApp, AlternateApp, FoundTable, FoundApp);
+mark!(Publishable: Bootloader, PartitionTable, Otadata, CurrentApp, AlternateApp, FoundTable, FoundApp);
 mark!(Writable: Otadata, AlternateApp, CurrentConfig, AlternateConfig, Diag);
 mark!(Programmable: Otadata, AlternateApp, CurrentConfig, Diag);
 
@@ -268,6 +271,7 @@ mod tests {
     #[test]
     fn roles_name_themselves_and_their_device() {
         assert_eq!(publishable::<FoundApp>(), "found app");
+        assert_eq!(publishable::<Otadata>(), "otadata");
         assert_eq!(programmable::<Otadata>(), "otadata");
         assert_eq!(<<Chip as Role>::Device as Device>::NAME, "internal");
     }
