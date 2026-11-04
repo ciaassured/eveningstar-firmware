@@ -128,7 +128,6 @@ impl<T: WatchdogType> WatchdogHandle<T> {
     /// Replaces the timeout with `time` until the next [`feed`](Self::feed),
     /// while the task waits for that long. The chip resets as for a missed
     /// deadline if no feed comes within `time`.
-    #[expect(dead_code, reason = "no supervised task sleeps yet")]
     pub(crate) fn sleep(&self, time: Duration) {
         self.mailbox.signal(Message::Sleep(time));
     }

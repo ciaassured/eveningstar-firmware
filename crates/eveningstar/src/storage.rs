@@ -17,13 +17,10 @@
 //! it ([`OtaParts::start`]) waits for the running slot's check, so it runs
 //! after the check task is spawned, and places it in a `static`.
 //!
-//! An image the bootloader started as `PendingVerify` can only be confirmed in
-//! the boot tier. In the layout tier, [`start`] logs it and requests no
-//! reboot: that tier's bootloader isn't known to roll back, and one that
-//! doesn't would start the same image after every reboot, so a reboot there
-//! could repeat for good on a board with no reset button. A rollback
-//! bootloader rolls the image back at the next boot, whatever causes it.
-//! Nothing is requested in the unverified tier.
+//! In every tier, [`start`] also opens the confirmation window
+//! ([`confirmation`]) when the running image isn't confirmed `Valid`: unless
+//! it is confirmed within [`confirmation::WINDOW`] of boot, the board
+//! reboots.
 //!
 //! [`InternalFlash`] is the one `FlashStorage`: every read, erase and program
 //! of the internal flash goes through it, one at a time. Its state table
@@ -42,22 +39,24 @@ use eveningstar_boot::{App, AppSlot, Bootloader, Otadata, PartitionTable};
 use eveningstar_esp_formats::pace::Yield;
 use eveningstar_ota::Ota;
 use eveningstar_storage::chain::{
-    BootWriters, Handles, LayoutHandles, Located, Report, Storage, Tier, split,
+    BootWriters, Handles, LayoutHandles, Located, Report, Storage, split,
 };
 use eveningstar_storage::nor::{NorDevice, Reader, State as StateTable};
-use eveningstar_storage::otadata::State;
 use eveningstar_storage::roles::{self, AlternateApp, CurrentApp, FoundApp, FoundTable};
-use eveningstar_storage::{DeviceError, SECTOR_SIZE, Slot, Span};
+use eveningstar_storage::{DeviceError, SECTOR_SIZE, Span};
 use static_cell::{ConstStaticCell, StaticCell};
 
+use crate::services::reboot::GracefulReboot;
 use crate::sha::Sha;
 use crate::watchdog::WatchdogHandle;
 use crate::wd;
 
 mod check;
+mod confirmation;
 mod log;
 
 pub(crate) use check::WATCHDOG_TIMEOUT;
+pub(crate) use confirmation::WATCHDOG_TIMEOUT as CONFIRMATION_WATCHDOG_TIMEOUT;
 
 /// The booted offset `split` is given when MMU entry 0 maps no page: past the
 /// end of any flash, so no partition starts there and the tier is
@@ -73,8 +72,9 @@ const MMU_MAX_PAGE_SIZE: u32 = 0x1_0000;
 /// `spawner`, hashing with `sha` and supervised by `wd`. Returns the parts of
 /// the OTA mechanism in the boot tier.
 ///
-/// When the running image is `PendingVerify` in the layout tier, where it
-/// can't be confirmed, it logs a warning.
+/// When the running image isn't confirmed `Valid`, it also spawns the
+/// confirmation task ([`confirmation`]), which reboots through `reboot` and
+/// is supervised by `confirmation_wd`; otherwise `confirmation_wd` retires.
 ///
 /// # Panics
 ///
@@ -90,6 +90,8 @@ pub(crate) async fn start(
     cache: SPI0<'static>,
     sha: Sha,
     wd: WatchdogHandle<wd::AppCheck>,
+    reboot: GracefulReboot,
+    confirmation_wd: WatchdogHandle<wd::Confirmation>,
 ) -> Option<OtaParts> {
     static INTERNAL_FLASH: StaticCell<InternalFlash> = StaticCell::new();
     static STATE: ConstStaticCell<StateTable> = ConstStaticCell::new(StateTable::new());
@@ -133,9 +135,13 @@ pub(crate) async fn start(
         "Content modules loaded in {} ms",
         started.elapsed().as_millis()
     );
-    if report.tier == Tier::Layout {
-        warn_unconfirmed(modules.otadata, report.slot);
-    }
+    confirmation::start(
+        spawner,
+        modules.otadata,
+        report.slot,
+        reboot,
+        confirmation_wd,
+    );
 
     spawner.spawn(defmt::unwrap!(check::task(
         modules.app,
@@ -264,25 +270,6 @@ fn place_layout(handles: LayoutHandles<'static>, writers: Option<BootWriters<'st
             alternate,
             otadata,
         }),
-    }
-}
-
-/// Warns when the running image is `PendingVerify` in the layout tier, where
-/// it can't be confirmed, `otadata` being the otadata's module and `slot`
-/// the slot that booted.
-#[inline(never)]
-fn warn_unconfirmed(otadata: Option<&Otadata<'_>>, slot: Option<Slot>) {
-    let (Some(slot), Some(otadata)) = (slot, otadata) else {
-        return;
-    };
-    let Ok(model) = otadata.parse() else {
-        return;
-    };
-    if model.boot_state(slot).state == Some(State::PendingVerify) {
-        warn!(
-            "The running image is unconfirmed and can't be confirmed in the layout tier; \
-             a bootloader that supports rollback starts the previous image at the next boot"
-        );
     }
 }
 
