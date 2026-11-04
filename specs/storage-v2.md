@@ -109,9 +109,9 @@ was asleep, so they are recorded here to be confirmed or changed.
   start-up. `eveningstar-ota` was to request a reboot through an object
   (`&'static dyn RebootRequest<ota::Reason>`), not a type parameter;
   superseded, as it requests none.
-- The confirmation window runs only in the boot tier, where confirming is
-  possible. Below it nothing reboots except as today: a `PendingVerify` image
-  in the layout tier, which the bootloader rolls back.
+- The confirmation window was to run only in the boot tier; superseded by the
+  user's decision that it runs in every tier (see "Decided during
+  implementation").
 - `activate` doesn't hash the slot again: the slot's epoch proves no write
   touched it since it verified, and the bootloader verifies the image at boot
   and falls back if it fails.
@@ -130,16 +130,50 @@ The code follows these where the sections below say otherwise.
   which spans they are, so epochs of regions over different spans never
   compare equal. A counter that would wrap leaves its span written to for
   good (every snapshot of it fails) rather than an epoch repeating.
-- **No reboot below the boot tier.** The layout tier's bootloader isn't known
-  to roll back, and one that doesn't would start the same `PendingVerify`
-  image after every reboot, so a reboot there could repeat for good on a
-  board with no reset button. The firmware logs a `PendingVerify` image in
-  the layout tier instead, and requests nothing; a bootloader that rolls back
-  does so at the next boot, whatever causes it. This replaces "Rolling back an
-  image that can't be confirmed" under "OTA" and the reboot in the
-  confirmation-window bullet above. `eveningstar-ota` therefore requests no
-  reboot and doesn't depend on `eveningstar-system`; the confirmation
-  window's reboot belongs to the OTA service.
+- **The confirmation window** (decided by the user, replacing "no reboot below
+  the boot tier"). In every tier, when the running image awaits a
+  confirmation, the firmware requests a graceful reboot 10 minutes after boot
+  (`crates/eveningstar/src/storage/confirmation.rs`, `Reason::Unconfirmed`,
+  the API's `cannot_confirm`). An image awaits one when
+  `eveningstar_boot::otadata::awaits_confirmation` says so: it has no boot
+  state, or its boot state `needs_confirmation`. That is any state but
+  `Valid`, a fallback, no otadata or one that doesn't read, the unverified
+  tier without a located otadata, and a board started by `cargo run`. The
+  task reads the boot state again when the window ends, so a confirmation from
+  any path cancels the reboot. A rollback bootloader turns a `PendingVerify`
+  image into `Aborted` at the next boot and starts the previous image; with
+  no rollback target the board reboots every 10 minutes, which is accepted
+  over a lockout. The task has its own watchdog handle, retired once it is
+  done and at boot when no window opens. `EVENINGSTAR_CONFIRM_WINDOW_S` at
+  build time shortens the window, as a test aid. The window belongs to the
+  firmware, not to `eveningstar-ota`, which requests no reboot and doesn't
+  depend on `eveningstar-system`. Nothing calls `Ota::confirm` yet, as no
+  endpoint does, so an activated update rolls back after 10 minutes until one
+  exists. This replaces "Rolling back an image that can't be confirmed" under
+  "OTA" and the confirmation-window bullet above.
+- **The layout record.** Every app image embeds the compiled layout right
+  after its app descriptor, at offset 0x100 of the first segment's data: a
+  32-byte header (the magic `EVENINGSTAR-LYT1`, the table's offset, the flash
+  size and the entry count as little-endian `u32`, four zero bytes) and the
+  entries in the ESP-IDF table's 32-byte encoding
+  (`eveningstar_esp_formats::image::LayoutRecord`, read by `app_layout`; the
+  compiled one is `eveningstar_storage::LAYOUT_RECORD`). The firmware links it
+  into `.flash.appdesc.layout`, which esp-hal 1.2.2's `rodata.x` places after
+  `.flash.appdesc` in the first output section, and the record's alignment of
+  1 leaves no gap after the descriptor. The offset is fixed so that a reader
+  finds the record without a symbol table; `app_layout` gives none when the
+  first segment ends before the record does, the magic differs, the reserved
+  bytes aren't zero or the count exceeds the table's 96 entries.
+  `AppSlot::layout` (the `App` module) compares a verified image's record
+  with the compiled one, at the model's epoch. `Update::finish` and `Ota::verify_other`, so
+  `roll_back` too, refuse an image whose record is missing or differs
+  (`OtaError::Layout`), after the project name. `check-images`, in the `build`
+  group, fails when the release app lacks the record or it isn't the
+  generated layout. Reason: the layout can't change over OTA, and an update
+  built for another layout would boot into the unverified tier and could
+  leave a remote board on its default configuration. Consequence: after an
+  update from firmware without the record, a manual `roll_back` to it is
+  refused; the bootloader's own rollback isn't affected.
 - **OTA readiness.** `Ota::new` waits for the current slot's check, and OTA
   refuses every write, `confirm` included, until the running image verified
   and its descriptor reads (`Unavailable`). Readiness is judged once. A change
@@ -706,24 +740,29 @@ the checks live.
   an image is written, and dropping it ends the session.
 - `Update::finish` programs the last word, ends the session, then awaits
   `App`'s verification of the slot at the new epoch, and checks the length
-  written and the project name. `VerifiedImage` holds that epoch; `activate`
+  written, the project name and the layout record (see "The layout record"
+  under "Decided during implementation"). `VerifiedImage` holds that epoch;
+  `activate`
   refuses it once the slot's epoch has moved. It doesn't hash the slot again:
   the epoch proves nothing wrote it since, and the bootloader verifies the
   image at boot and falls back if it fails.
 - **An image that can't be confirmed** (superseded: see "Decided during
   implementation"). The bootloader starts a newly activated image once in the
   state `PendingVerify` and rolls it back at the next boot unless the firmware
-  confirms it. Confirming writes the otadata, which needs the boot writers.
-  Below the boot tier nothing reboots: the firmware logs a `PendingVerify`
-  image in the layout tier, and nothing in the unverified tier, where the
-  otadata read may come from a leftover table.
-- **The confirmation window**, the OTA service's policy, runs only in the
-  boot tier: after a boot whose image needs confirming
-  (`BootState::needs_confirmation`), a user has 10 minutes to confirm it,
-  which calls `Ota::confirm`. On timeout the service requests a graceful
-  reboot in every case, including when there is no rollback target, so a
-  board reboots every 10 minutes until someone confirms. That is accepted so
-  that a user can confirm whichever image comes up.
+  confirms it. Confirming writes the otadata, which needs the boot writers, so
+  it is possible in the boot tier only. `eveningstar-ota` requests no reboot;
+  the firmware's confirmation window does, in every tier.
+- **The confirmation window** (see "Decided during implementation"): in every
+  tier, 10 minutes after a boot whose image awaits a confirmation
+  (`awaits_confirmation`), the firmware reads the boot state again and, unless
+  the image is `Valid`, requests a graceful reboot (`Reason::Unconfirmed`) in
+  every case, including when there is no rollback target, so a board reboots
+  every 10 minutes until someone confirms. That is accepted over a lockout. A
+  confirmation, which calls `Ota::confirm`, cancels it.
+- **The layout record.** `Update::finish` and `Ota::verify_other` (so
+  `roll_back` too) refuse an image whose layout record is missing or differs
+  from the compiled layout (`OtaError::Layout`); see "Decided during
+  implementation".
 
 ## Protected paths (later)
 
@@ -792,8 +831,8 @@ table's MD5), without their API and firmware parts.
    supervisor moved out of the firmware. Built apart from this stack (#74);
    the firmware here still has `services/reboot.rs` and `watchdog.rs`.
 6. **`eveningstar-ota`:** `Ota` on `BootWriters`, with the OTA and otadata
-   power-cut tests moved over. No rollback reboot (see "Decided during
-   implementation").
+   power-cut tests moved over. No reboot in the crate: the confirmation window
+   is the firmware's (see "Decided during implementation").
 7. **Firmware:** the storage glue without write counting, `App`'s check task.
    The system crate is wired in when it lands.
 8. **Docs:** `docs/architecture.md` ("Storage") rewritten, `CLAUDE.md`
@@ -869,10 +908,11 @@ table's MD5), without their API and firmware parts.
 - **OTA service.** It owns `Ota` (built at boot in the boot tier, in a
   `static`, and taken by nothing yet) and decides how updates arrive and are
   authenticated: `VerifiedImage` means intact and meant for this board, not
-  authentic. Its confirmation window is above ("OTA"): in the boot tier only,
-  10 minutes after a boot whose image needs confirming, then a graceful reboot
-  in every case, through `eveningstar-system` once it lands. Images in the
-  layout tier are only logged.
+  authentic.
+- **The confirm endpoint.** Nothing calls `Ota::confirm` yet, as the API has
+  no endpoint for it. The confirmation window ("OTA") reboots a board 10
+  minutes after a boot whose image awaits a confirmation, so until an
+  endpoint exists, an activated update rolls back after 10 minutes.
 - **The API's view and the web UI** (see "What the API gets"): the regions,
   the published views and their digests, the report (tier, the step that
   failed, the table comparison, the bootloader, the slot booted), OTA's
@@ -904,11 +944,15 @@ chip reset mid-copy (the running slot boots, the half-written slot fails its
 check on the checksum); the bootloader's fallback from a corrupt selected
 image (one byte flipped in `ota_1`, selected as `New`: `ota_0` starts, the
 firmware logs the fallback and that the boot state needs confirming, and the
-alternate slot's check fails on the checksum); and a corrupt image started
-with a debugger attached, which the firmware's check fails and OTA refuses
-(`Descriptor(Checksum)`). From the first design: the booted offset for both
-slots and the first boot after `flash-all` writing otadata entry 0 with
-sequence 1 and `Valid`.
+alternate slot's check fails on the checksum); the confirmation window, built
+with `EVENINGSTAR_CONFIRM_WINDOW_S=60` (a confirmed image retires the
+window's watchdog handle at boot; a `New` entry booted as `PendingVerify`
+rebooted after the 60 s and the bootloader marked it `Aborted`; with no
+rollback target, the same image then rebooted every window); and a corrupt
+image started with a debugger attached, which the firmware's check fails and
+OTA refuses (`Descriptor(Checksum)`). From the first design: the booted offset
+for both slots and the first boot after `flash-all` writing otadata entry 0
+with sequence 1 and `Valid`.
 
 Not verified:
 
@@ -917,7 +961,10 @@ Not verified:
   bootloader.
 - The unverified tier under `cargo run` (espflash's bootloader and table, the
   search) with this design; the host tests cover it.
-- The warning logged for a `PendingVerify` image in the layout tier.
+- The confirmation window's cancel path on hardware: an image confirmed
+  through `Ota::confirm` after the window opened, which the task's second read
+  of the boot state sees. The host tests cover `awaits_confirmation`, and none
+  of the board runs confirmed an image inside a window.
 - The interrupt latency of sector erases next to Ethernet traffic.
 - The stack high-water mark with `esp-storage`'s 4 KiB read buffer.
 - The path where MMU entry 0 is invalid, so the booted offset is unknown and
