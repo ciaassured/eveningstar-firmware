@@ -103,7 +103,7 @@ in
           # The bootloader and table Nix builds and the app image of the release
           # build, checked by the code the firmware runs at boot: the table
           # against the layout, the bootloader against the known list, and the
-          # app's chip, project and size against its slot.
+          # app's chip, project, layout record and size against its slot.
           # shellcheck disable=SC2329 # run through run_check
           check_images() {
             local bootloader table dir result=0
