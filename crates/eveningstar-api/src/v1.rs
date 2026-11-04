@@ -336,9 +336,8 @@ pub enum RebootReason {
     LinkDown,
     /// A client requested it through the API.
     Api,
-    /// The running firmware is an update that hasn't been confirmed, and the
-    /// device's flash isn't laid out as that firmware needs to confirm it. The
-    /// reboot returns to the previous firmware.
+    /// The running firmware wasn't confirmed within 10 minutes of the boot.
+    /// When it is an update, the bootloader returns to the previous firmware.
     CannotConfirm,
     /// A reason this version of the crate does not know.
     #[serde(other)]
