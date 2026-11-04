@@ -5,7 +5,7 @@ use core::fmt;
 use core::marker::PhantomData;
 
 use eveningstar_boot::LoadError;
-use eveningstar_boot::app::{AppModel, AppSlot};
+use eveningstar_boot::app::{AppModel, AppSlot, Layout};
 use eveningstar_esp_formats::{Slot, Text};
 use eveningstar_storage::nor::{SECTOR_SIZE, Session, WORD_SIZE};
 use eveningstar_storage::roles::AlternateApp;
@@ -107,8 +107,9 @@ impl<'o, 'f> Update<'o, 'f> {
     /// programmed, and the session ends at a new epoch of the slot. Then it
     /// waits for the slot's check to verify the slot at that epoch (header,
     /// chip, segments, checksum and the appended SHA-256), compares the
-    /// image's length with the bytes written and its project name with the
-    /// running app's, and returns the [`VerifiedImage`] of that epoch.
+    /// image's length with the bytes written, its project name with the
+    /// running app's and the layout record it embeds with the compiled
+    /// layout's, and returns the [`VerifiedImage`] of that epoch.
     ///
     /// # Errors
     ///
@@ -116,9 +117,10 @@ impl<'o, 'f> Update<'o, 'f> {
     /// when programming the partial word fails, [`OtaError::Image`] when the
     /// image doesn't verify or its descriptor doesn't read,
     /// [`OtaError::Length`] when the bytes written are more or fewer than the
-    /// image, [`OtaError::Project`] when it names another project, and
-    /// [`OtaError::Changed`] when the slot was written again before the check
-    /// kept its result, or its write state records no epoch.
+    /// image, [`OtaError::Project`] when it names another project,
+    /// [`OtaError::Layout`] when it embeds no layout record or one of another
+    /// layout, and [`OtaError::Changed`] when the slot was written again
+    /// before the check kept its result, or its write state records no epoch.
     pub async fn finish(mut self) -> Result<VerifiedImage<'f>, OtaError> {
         if self.failed {
             return Err(OtaError::Interrupted);
@@ -297,16 +299,33 @@ fn version_of(
     }
 }
 
+/// Whether the image `model` describes embeds the compiled layout's record,
+/// read at the model's epoch. Never inlined, so the reads stay out of its
+/// caller's frame.
+#[inline(never)]
+fn built_for_the_layout(
+    module: &AppSlot<'_, AlternateApp>,
+    model: &AppModel<AlternateApp>,
+) -> Result<(), OtaError> {
+    match module.layout(model) {
+        Ok(Ok(Layout::Compiled)) => Ok(()),
+        Ok(Ok(Layout::Other | Layout::Missing)) => Err(OtaError::Layout),
+        Ok(Err(failure)) => Err(OtaError::Image(failure)),
+        Err(_) => Err(OtaError::Changed),
+    }
+}
+
 /// The [`VerifiedImage`] of `verdict`, the result of `module`'s check, when
-/// it is as `expected`. Never inlined, so the model and the descriptor stay
-/// out of the callers' frames.
+/// it is as `expected`, checked in this order. Never inlined, so the model
+/// and the descriptor stay out of the callers' frames.
 ///
 /// # Errors
 ///
 /// [`OtaError::Changed`] when the verdict found the slot written,
 /// [`OtaError::Image`] when the image doesn't verify or its descriptor
 /// doesn't read, [`OtaError::Length`] when its length isn't the bytes
-/// written, and [`OtaError::Project`] when it names another project.
+/// written, [`OtaError::Project`] when it names another project, and
+/// [`OtaError::Layout`] when it doesn't embed the compiled layout's record.
 #[inline(never)]
 fn verified<'f>(
     module: &AppSlot<'_, AlternateApp>,
@@ -329,6 +348,7 @@ fn verified<'f>(
         });
     }
     let version = version_of(module, model, &expected.project)?;
+    built_for_the_layout(module, model)?;
     Ok(VerifiedImage {
         slot: expected.slot,
         size: image.size(),
@@ -342,8 +362,9 @@ fn verified<'f>(
 
 /// An image in the alternate slot that verified, from [`Update::finish`] or
 /// [`Ota::verify_other`](crate::Ota::verify_other): an ESP32-C6 app of the
-/// running app's project, intact, at the slot's epoch when the slot's check
-/// verified it. It says nothing of who made it.
+/// running app's project, built for the compiled partition layout, intact,
+/// at the slot's epoch when the slot's check verified it. It says nothing of
+/// who made it.
 ///
 /// [`Ota::activate`](crate::Ota::activate) takes it, and only while no update
 /// has begun since it was made and the slot is still at that epoch. It

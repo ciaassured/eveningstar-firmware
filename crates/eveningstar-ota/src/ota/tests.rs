@@ -6,14 +6,20 @@
 use core::future::Future;
 use core::pin::{Pin, pin};
 use core::task::{Context, Poll, Waker};
+use std::sync::LazyLock;
 
+use super::*;
+use crate::test_support::{Checks, ota_on_spans, ota_over};
+use crate::{OtaError, Unavailable, VerifiedImage};
+use Slot::{Ota0, Ota1};
 use eveningstar_boot::ImageFailure;
 use eveningstar_esp_formats::Entry;
 use eveningstar_esp_formats::image;
 use eveningstar_esp_formats::otadata::{Otadata as Selection, PlanError, Sector, State};
 use eveningstar_esp_formats::test_support::{
-    APP, BOOTLOADER, ImageBuilder, OTADATA_FIRST_BOOT, OTADATA_LEN, Rng, TABLE, Tear,
-    app_descriptor_bytes, boot, data, idf_loads, segment_at,
+    APP as UNLAID_APP, BOOTLOADER, ImageBuilder, OTADATA_FIRST_BOOT, OTADATA_LEN, PARTITIONS, Rng,
+    TABLE, Tear, app_descriptor_bytes, board_layout_record, boot, data, idf_loads,
+    layout_record_bytes, restamp, segment_at, with_layout,
 };
 use eveningstar_storage::layout::{FLASH_SIZE, OTA_0, OTA_1, OTADATA, TABLE_OFFSET};
 use eveningstar_storage::nor::{NorDevice, Reader};
@@ -22,34 +28,18 @@ use eveningstar_storage::test_support::{Call, RamNor, TestFlash, block_on, boot_
 use eveningstar_storage::{
     DeviceError, SECTOR_SIZE, SlotPartitions as _, SnapshotError, Span, WORD_SIZE,
 };
-use sha2::{Digest as _, Sha256};
-
-use super::*;
-use crate::test_support::{Checks, ota_on_spans, ota_over};
-use crate::{OtaError, Unavailable, VerifiedImage};
-use Slot::{Ota0, Ota1};
 
 /// The otadata partition's offset.
 const OTADATA_AT: u32 = OTADATA.offset;
 
 // Images.
 
-/// `image` with `edit` made to its segment data, and its checksum and digest
-/// made again to match.
-fn restamp(image: &[u8], edit: impl FnOnce(&mut [u8])) -> Vec<u8> {
-    let mut stamped = image.to_vec();
-    edit(&mut stamped);
-    let end = stamped.len() - 32;
-    // The checksum is the XOR of the segment data, so it changes by the XOR
-    // of the bytes changed.
-    let change = image[..end]
-        .iter()
-        .zip(&stamped[..end])
-        .fold(0, |change, (old, new)| change ^ old ^ new);
-    stamped[end - 1] ^= change;
-    let digest = Sha256::digest(&stamped[..end]);
-    stamped[end..].copy_from_slice(&digest);
-    stamped
+/// The firmware's image, with the board's layout record written after its
+/// descriptor: the fixture predates the record.
+fn app() -> &'static [u8] {
+    static APP: LazyLock<Vec<u8>> =
+        LazyLock::new(|| with_layout(UNLAID_APP, &board_layout_record()));
+    &APP
 }
 
 /// `text`, NUL padded, in the `field` of an app descriptor.
@@ -63,23 +53,24 @@ const DESCRIPTOR: usize = 24 + 8;
 
 /// The firmware's image with its descriptor naming `version`.
 fn app_version(version: &str) -> Vec<u8> {
-    restamp(APP, |image| {
+    restamp(app(), |image| {
         set_text(&mut image[DESCRIPTOR + 16..DESCRIPTOR + 48], version);
     })
 }
 
 /// The firmware's image with its descriptor naming `project`.
 fn app_project(project: &str) -> Vec<u8> {
-    restamp(APP, |image| {
+    restamp(app(), |image| {
         set_text(&mut image[DESCRIPTOR + 48..DESCRIPTOR + 80], project);
     })
 }
 
-/// A small image of `project` and `version`, with `extra` words of data in
-/// its first segment.
+/// A small image of `project` and `version`, with the board's layout record
+/// and `extra` words of data in its first segment.
 fn small_image(project: &str, version: &str, extra: usize) -> Vec<u8> {
     let mut rng = Rng::new(0x5A11 + extra as u64);
     let mut first = app_descriptor_bytes(project, version);
+    first.extend(board_layout_record());
     first.extend(data(&mut rng, 0x1F00 + 4 * extra));
     ImageBuilder::new(vec![
         (0x4200_0020, first),
@@ -111,12 +102,12 @@ fn the_test_images_verify_with_what_they_name() {
         assert_eq!(descriptor.project_name().to_str(), Some(project));
         assert_eq!(descriptor.version().to_str(), Some(version));
     }
-    assert_ne!(app_version("0.2.0"), APP);
-    assert!(idf_loads(APP));
-    let mut broken = APP.to_vec();
+    assert_ne!(app_version("0.2.0"), app());
+    assert!(idf_loads(app()));
+    let mut broken = app().to_vec();
     broken[0x1000] ^= 1;
     assert!(!idf_loads(&broken));
-    assert!(!idf_loads(&APP[..APP.len() - 1]));
+    assert!(!idf_loads(&app()[..app().len() - 1]));
     assert!(!idf_loads(&[0xFF; 64]));
 }
 
@@ -274,7 +265,7 @@ fn entry_ops(at: u32) -> [Call; 4] {
 
 #[test]
 fn an_update_is_written_activated_booted_and_confirmed_and_then_another() {
-    let old = APP;
+    let old = app();
     let new = app_version("0.2.0");
     let newer = app_version("0.3.0");
     let mut rng = Rng::new(0x07A);
@@ -406,7 +397,7 @@ fn the_parts_an_image_arrives_in_dont_change_what_is_written() {
 #[test]
 fn each_sector_is_erased_just_before_the_first_bytes_programmed_into_it() {
     let new = app_version("0.2.0");
-    let flash = flashed(APP);
+    let flash = flashed(app());
     // Zeros, which nothing programmed over them could set back.
     flash.poke(OTA_1.offset, &vec![0; OTA_1.size as usize]);
     let (mut ota, checks) = ota_on(&flash, Ota0);
@@ -459,7 +450,7 @@ fn each_sector_is_erased_just_before_the_first_bytes_programmed_into_it() {
 
 #[test]
 fn a_partial_word_is_held_until_it_is_completed_or_the_update_finishes() {
-    let flash = flashed(APP);
+    let flash = flashed(app());
     let (mut ota, checks) = ota_on(&flash, Ota0);
     let at = OTA_1.offset;
     checks.run(async {
@@ -497,7 +488,7 @@ fn a_partial_word_is_held_until_it_is_completed_or_the_update_finishes() {
 
 #[test]
 fn an_update_with_nothing_or_a_few_bytes_written_is_refused() {
-    let flash = flashed(APP);
+    let flash = flashed(app());
     let (mut ota, checks) = ota_on(&flash, Ota0);
     assert_eq!(
         finish_with(&mut ota, checks, &[]),
@@ -505,11 +496,11 @@ fn an_update_with_nothing_or_a_few_bytes_written_is_refused() {
     );
     // The header, then erased bytes where the first segment's header goes.
     assert_eq!(
-        finish_with(&mut ota, checks, &APP[..24]),
+        finish_with(&mut ota, checks, &app()[..24]),
         Err(OtaError::Image(ImageFailure::SegmentLength { index: 0 }))
     );
     assert!(matches!(
-        finish_with(&mut ota, checks, &APP[..1000]),
+        finish_with(&mut ota, checks, &app()[..1000]),
         Err(OtaError::Image(_))
     ));
 }
@@ -517,7 +508,7 @@ fn an_update_with_nothing_or_a_few_bytes_written_is_refused() {
 #[test]
 fn a_truncated_image_is_refused() {
     let new = app_version("0.2.0");
-    let flash = flashed(APP);
+    let flash = flashed(app());
     let (mut ota, checks) = ota_on(&flash, Ota0);
     for cut in [
         1,
@@ -566,7 +557,7 @@ fn a_write_short_of_bytes_the_padding_puts_back_is_refused() {
         .map(|n| small_app(&format!("1.0.{n}"), 0))
         .find(|image| image.last() == Some(&0xFF))
         .unwrap();
-    let flash = flashed(APP);
+    let flash = flashed(app());
     let (mut ota, checks) = ota_on(&flash, Ota0);
     let len = image.len() as u32;
     assert_eq!(
@@ -586,7 +577,7 @@ fn a_write_short_of_bytes_the_padding_puts_back_is_refused() {
 #[test]
 fn bytes_after_the_image_are_refused() {
     let new = app_version("0.2.0");
-    let flash = flashed(APP);
+    let flash = flashed(app());
     let (mut ota, checks) = ota_on(&flash, Ota0);
     for extra in [&[0xFF][..], &[0; 3], &[0xFF; 4], &[1; 100], &[0xFF; 4096]] {
         let mut bytes = new.clone();
@@ -606,7 +597,7 @@ fn bytes_after_the_image_are_refused() {
 #[test]
 fn a_changed_byte_anywhere_is_refused() {
     let new = app_version("0.2.0");
-    let flash = flashed(APP);
+    let flash = flashed(app());
     let (mut ota, checks) = ota_on(&flash, Ota0);
     let mut rng = Rng::new(0xB17);
     let len = new.len();
@@ -633,9 +624,9 @@ fn a_changed_byte_anywhere_is_refused() {
 
 #[test]
 fn an_image_for_another_chip_is_refused() {
-    let flash = flashed(APP);
+    let flash = flashed(app());
     let (mut ota, checks) = ota_on(&flash, Ota0);
-    let mut other = APP.to_vec();
+    let mut other = app().to_vec();
     // The ESP32-C3's, with the digest made again.
     other[12..14].copy_from_slice(&0x0005_u16.to_le_bytes());
     let other = restamp(&other, |_| {});
@@ -651,7 +642,7 @@ fn an_image_for_another_chip_is_refused() {
 
 #[test]
 fn an_image_of_another_project_is_refused() {
-    let flash = flashed(APP);
+    let flash = flashed(app());
     let (mut ota, checks) = ota_on(&flash, Ota0);
     let images = [
         app_project("another"),
@@ -668,12 +659,12 @@ fn an_image_of_another_project_is_refused() {
         assert_eq!(checks.run(ota.verify_other()), Err(OtaError::Project));
     }
     // Bytes after the name's NUL don't count, as they aren't part of it.
-    let padded = restamp(APP, |image| {
+    let padded = restamp(app(), |image| {
         image[DESCRIPTOR + 48 + 30] = b'x';
     });
     assert_eq!(
         finish_with(&mut ota, checks, &padded).map(|image| image.size()),
-        Ok(APP.len() as u32)
+        Ok(app().len() as u32)
     );
 }
 
@@ -684,7 +675,7 @@ fn the_project_is_the_running_app_s() {
     let theirs = small_image("another", "1.0.0", 0);
     let flash = flashed(&theirs);
     let (mut ota, checks) = ota_on(&flash, Ota0);
-    assert_eq!(finish_with(&mut ota, checks, APP), Err(OtaError::Project));
+    assert_eq!(finish_with(&mut ota, checks, app()), Err(OtaError::Project));
     let next = small_image("another", "2.0.0", 5);
     assert_eq!(
         finish_with(&mut ota, checks, &next).map(|image| image.size()),
@@ -692,9 +683,146 @@ fn the_project_is_the_running_app_s() {
     );
 }
 
+/// The firmware's image with layout records of other layouts after its
+/// descriptor: one entry changed in each field, an entry fewer, one more,
+/// and another table offset or flash size.
+fn other_layouts() -> Vec<Vec<u8>> {
+    let changes: [fn(&mut Vec<Entry>); 8] = [
+        |entries| entries[3].size -= 0x1_0000,
+        |entries| entries[4].offset += 0x1000,
+        |entries| entries[0].label = "factorx",
+        |entries| entries[6].kind = 0x40,
+        |entries| entries[6].subtype = 0x81,
+        |entries| entries[1].flags = 1,
+        |entries| entries.truncate(entries.len() - 1),
+        |entries| entries.push(entries[7]),
+    ];
+    let mut records: Vec<Vec<u8>> = changes
+        .into_iter()
+        .map(|change| {
+            let mut entries = PARTITIONS.to_vec();
+            change(&mut entries);
+            layout_record_bytes(TABLE_OFFSET, FLASH_SIZE, &entries)
+        })
+        .collect();
+    records.push(layout_record_bytes(0x9000, FLASH_SIZE, &PARTITIONS));
+    records.push(layout_record_bytes(
+        TABLE_OFFSET,
+        2 * FLASH_SIZE,
+        &PARTITIONS,
+    ));
+    records
+        .iter()
+        .map(|record| with_layout(UNLAID_APP, record))
+        .collect()
+}
+
+#[test]
+fn the_test_layouts_differ_from_the_compiled_one_only() {
+    assert_eq!(board_layout_record().len(), 32 + 32 * PARTITIONS.len());
+    let compiled = image::app_layout(app()).unwrap().unwrap();
+    assert_eq!(
+        compiled.matches(app(), &eveningstar_storage::LAYOUT_RECORD),
+        Ok(true)
+    );
+    for image in other_layouts() {
+        let layout = image::app_layout(&image[..]).unwrap().unwrap();
+        assert_eq!(
+            layout.matches(&image[..], &eveningstar_storage::LAYOUT_RECORD),
+            Ok(false)
+        );
+        assert!(run(image::verify_app(&image[..])).is_ok());
+        assert!(idf_loads(&image));
+    }
+}
+
+#[test]
+fn an_image_of_another_layout_is_refused() {
+    let flash = flashed(app());
+    let (mut ota, checks) = ota_on(&flash, Ota0);
+    for image in other_layouts() {
+        assert_eq!(finish_with(&mut ota, checks, &image), Err(OtaError::Layout));
+        assert_eq!(checks.run(ota.verify_other()), Err(OtaError::Layout));
+        assert!(holds(&flash, Ota1, &image));
+    }
+    // The board's layout is taken.
+    let image = finish_with(&mut ota, checks, app()).unwrap();
+    checks.run(ota.activate(image)).unwrap();
+    assert_eq!(reboot(&flash), Ota1);
+}
+
+#[test]
+fn an_image_without_a_layout_record_is_refused() {
+    let mut shifted = vec![0; 4];
+    shifted.extend(board_layout_record());
+    let mut cut = ImageBuilder::new(vec![
+        (0x4200_0020, app_descriptor_bytes("eveningstar", "1.0.0")),
+        (0x4080_0000, data(&mut Rng::new(0xC07), 0x100)),
+    ]);
+    cut.segments[0]
+        .1
+        .extend(&board_layout_record()[..32 + 32 * 7]);
+    let images = [
+        // The fixture, built before the record.
+        UNLAID_APP.to_vec(),
+        // The record four bytes further on.
+        with_layout(UNLAID_APP, &shifted),
+        // A first segment that ends inside the record.
+        cut.build(),
+    ];
+    let flash = flashed(app());
+    let (mut ota, checks) = ota_on(&flash, Ota0);
+    for image in images {
+        assert!(run(image::verify_app(&image[..])).is_ok());
+        assert_eq!(finish_with(&mut ota, checks, &image), Err(OtaError::Layout));
+        assert_eq!(checks.run(ota.verify_other()), Err(OtaError::Layout));
+    }
+}
+
+#[test]
+fn only_the_record_right_after_the_descriptor_counts() {
+    let mut other = PARTITIONS.to_vec();
+    other[2].offset += 0x1_0000;
+    let other = layout_record_bytes(TABLE_OFFSET, FLASH_SIZE, &other);
+    let flash = flashed(app());
+    let (mut ota, checks) = ota_on(&flash, Ota0);
+    // A second record after the board's changes nothing.
+    let mut two = board_layout_record();
+    two.extend(&other);
+    let image = with_layout(UNLAID_APP, &two);
+    assert_eq!(
+        finish_with(&mut ota, checks, &image).map(|image| image.size()),
+        Ok(image.len() as u32)
+    );
+    // Nor does the board's after another.
+    let mut two = other.clone();
+    two.extend(board_layout_record());
+    let image = with_layout(UNLAID_APP, &two);
+    assert_eq!(finish_with(&mut ota, checks, &image), Err(OtaError::Layout));
+}
+
+#[test]
+fn the_layout_is_checked_after_the_project() {
+    let flash = flashed(app());
+    let (mut ota, checks) = ota_on(&flash, Ota0);
+    let image = restamp(UNLAID_APP, |image| {
+        set_text(&mut image[DESCRIPTOR + 48..DESCRIPTOR + 80], "another");
+    });
+    assert_eq!(
+        finish_with(&mut ota, checks, &image),
+        Err(OtaError::Project)
+    );
+    // A board running an image from before the record still updates to one
+    // that has it.
+    let flash = flashed(UNLAID_APP);
+    let (mut ota, checks) = ota_on(&flash, Ota0);
+    assert_eq!(ota.readiness(), Ok(()));
+    assert!(finish_with(&mut ota, checks, &app_version("0.2.0")).is_ok());
+}
+
 #[test]
 fn writing_past_the_end_of_the_slot_is_refused_before_anything_is_written() {
-    let flash = flashed(APP);
+    let flash = flashed(app());
     let (mut ota, checks) = ota_on(&flash, Ota0);
     let slot = OTA_1.size as usize;
     checks.run(async {
@@ -733,7 +861,7 @@ fn writing_past_the_end_of_the_slot_is_refused_before_anything_is_written() {
 #[test]
 fn a_failed_write_ends_the_update() {
     let new = app_version("0.2.0");
-    let flash = flashed(APP);
+    let flash = flashed(app());
     let (mut ota, checks) = ota_on(&flash, Ota0);
     checks.run(async {
         let mut update = ota.begin_update().await.unwrap();
@@ -763,7 +891,7 @@ fn a_failed_write_ends_the_update() {
 #[test]
 fn an_update_begun_since_makes_a_verified_image_stale() {
     let new = app_version("0.2.0");
-    let flash = flashed(APP);
+    let flash = flashed(app());
     let (mut ota, checks) = ota_on(&flash, Ota0);
     let finished = finish_with(&mut ota, checks, &new).unwrap();
     let verified = checks.run(ota.verify_other()).unwrap();
@@ -786,7 +914,7 @@ fn an_update_begun_since_makes_a_verified_image_stale() {
 #[test]
 fn a_refused_update_still_makes_a_verified_image_stale() {
     let new = app_version("0.2.0");
-    let flash = flashed(APP);
+    let flash = flashed(app());
     update_and_boot(&flash, Ota0, &new, &mut Rng::new(1));
     let (mut ota, checks) = ota_on(&flash, Ota1);
     // The old image, which verifies, while the new one isn't confirmed.
@@ -807,7 +935,7 @@ fn an_image_changed_without_a_session_is_activated_and_the_bootloader_falls_back
     // slot again; the bootloader, which verifies the image, starts the
     // running slot instead.
     let new = app_version("0.2.0");
-    let flash = flashed(APP);
+    let flash = flashed(app());
     let (mut ota, checks) = ota_on(&flash, Ota0);
     let image = finish_with(&mut ota, checks, &new).unwrap();
     flash.poke(OTA_1.offset + 0x5000, &[new[0x5000] ^ 0x10]);
@@ -823,7 +951,7 @@ fn an_image_changed_without_a_session_is_activated_and_the_bootloader_falls_back
 
 #[test]
 fn verify_other_takes_the_check_of_what_the_other_slot_holds() {
-    let flash = flashed(APP);
+    let flash = flashed(app());
     let (mut ota, checks) = ota_on(&flash, Ota0);
     assert_eq!(
         checks.run(ota.verify_other()),
@@ -831,7 +959,7 @@ fn verify_other_takes_the_check_of_what_the_other_slot_holds() {
     );
     let mut rng = Rng::new(0x6A7);
     for bytes in [data(&mut rng, 0x4000), vec![0xE9]] {
-        let flash = flashed(APP);
+        let flash = flashed(app());
         flash.poke(OTA_1.offset, &bytes);
         let (mut ota, checks) = ota_on(&flash, Ota0);
         assert!(matches!(
@@ -840,7 +968,7 @@ fn verify_other_takes_the_check_of_what_the_other_slot_holds() {
         ));
     }
     let new = app_version("0.2.0");
-    let flash = flashed(APP);
+    let flash = flashed(app());
     flash.poke(OTA_1.offset, &new);
     let (mut ota, checks) = ota_on(&flash, Ota0);
     let image = checks.run(ota.verify_other()).unwrap();
@@ -852,7 +980,7 @@ fn verify_other_takes_the_check_of_what_the_other_slot_holds() {
 
 #[test]
 fn the_debug_output_names_the_slot_and_the_progress() {
-    let flash = flashed(APP);
+    let flash = flashed(app());
     let (mut ota, checks) = ota_on(&flash, Ota0);
     let image = finish_with(&mut ota, checks, &app_version("0.2.0")).unwrap();
     let debug = format!("{image:?}");
@@ -876,7 +1004,7 @@ fn the_debug_output_names_the_slot_and_the_progress() {
 
 #[test]
 fn an_image_is_activated_once() {
-    let flash = flashed(APP);
+    let flash = flashed(app());
     let (mut ota, checks) = ota_on(&flash, Ota0);
     let image = finish_with(&mut ota, checks, &app_version("0.2.0")).unwrap();
     let again = checks.run(ota.verify_other()).unwrap();
@@ -900,7 +1028,7 @@ fn an_image_is_activated_once() {
 
 #[test]
 fn an_image_isnt_activated_while_the_running_one_is_unconfirmed() {
-    let flash = flashed(APP);
+    let flash = flashed(app());
     update_and_boot(&flash, Ota0, &app_version("0.2.0"), &mut Rng::new(2));
     let (mut ota, checks) = ota_on(&flash, Ota1);
     let old = checks.run(ota.verify_other()).unwrap();
@@ -916,7 +1044,7 @@ fn an_image_isnt_activated_while_the_running_one_is_unconfirmed() {
 #[test]
 fn the_image_in_the_other_slot_is_activated_again() {
     let new = app_version("0.2.0");
-    let flash = updated(APP, &new);
+    let flash = updated(app(), &new);
     let (mut ota, checks) = ota_on(&flash, Ota1);
     let old = checks.run(ota.verify_other()).unwrap();
     assert_eq!(old.version().to_str(), Some("0.1.0"));
@@ -933,7 +1061,7 @@ fn the_image_in_the_other_slot_is_activated_again() {
 #[test]
 fn beginning_an_update_cancels_an_activation_not_yet_booted() {
     let new = app_version("0.2.0");
-    let flash = flashed(APP);
+    let flash = flashed(app());
     let (mut ota, checks) = ota_on(&flash, Ota0);
     let image = finish_with(&mut ota, checks, &new).unwrap();
     checks.run(ota.activate(image)).unwrap();
@@ -972,7 +1100,7 @@ fn beginning_an_update_cancels_an_activation_not_yet_booted() {
 #[test]
 fn after_a_fallback_an_update_follows_a_confirmation() {
     let new = app_version("0.2.0");
-    let flash = flashed(APP);
+    let flash = flashed(app());
     let (mut ota, checks) = ota_on(&flash, Ota0);
     let image = finish_with(&mut ota, checks, &new).unwrap();
     checks.run(ota.activate(image)).unwrap();
@@ -1036,9 +1164,9 @@ fn a_decayed_selected_image_leaves_the_other_running_until_it_is_confirmed() {
     // can't load the old image and falls back to the update, now aborted.
     let new = app_version("0.2.0");
     let newer = app_version("0.3.0");
-    let flash = flashed(APP);
+    let flash = flashed(app());
     update_and_boot(&flash, Ota0, &new, &mut Rng::new(11));
-    flash.poke(OTA_0.offset + 0x2000, &[!APP[0x2000]]);
+    flash.poke(OTA_0.offset + 0x2000, &[!app()[0x2000]]);
     assert_eq!(reboot(&flash), Ota1);
     let (mut ota, checks) = ota_on(&flash, Ota1);
     let state = ota.boot_state().unwrap();
@@ -1071,7 +1199,7 @@ fn a_decayed_selected_image_leaves_the_other_running_until_it_is_confirmed() {
 
 #[test]
 fn beginning_an_update_is_refused_while_the_running_image_is_unconfirmed() {
-    let flash = flashed(APP);
+    let flash = flashed(app());
     update_and_boot(&flash, Ota0, &app_version("0.2.0"), &mut Rng::new(3));
     let (mut ota, checks) = ota_on(&flash, Ota1);
     let ops = flash.writes().len();
@@ -1080,7 +1208,7 @@ fn beginning_an_update_is_refused_while_the_running_image_is_unconfirmed() {
         Some(OtaError::Plan(PlanError::Unconfirmed))
     );
     assert_eq!(flash.writes().len(), ops, "nothing written");
-    assert!(holds(&flash, Ota0, APP));
+    assert!(holds(&flash, Ota0, app()));
     checks.run(ota.confirm()).unwrap();
     assert!(checks.run(ota.begin_update()).is_ok());
 }
@@ -1100,7 +1228,7 @@ fn without_a_valid_entry_an_update_follows_a_confirmation() {
             (0, BOOTLOADER),
             (TABLE_OFFSET, TABLE),
             (OTADATA_AT, &otadata),
-            (OTA_1.offset, APP),
+            (OTA_1.offset, app()),
         ],
     );
     assert_eq!(reboot(&flash), Ota1);
@@ -1156,7 +1284,7 @@ impl NorDevice for Forgetful<'_> {
 
 #[test]
 fn beginning_an_update_stops_when_the_otadata_doesnt_keep_what_is_written() {
-    let flash = flashed(APP);
+    let flash = flashed(app());
     let mut forgetful = Forgetful(&flash);
     let (mut ota, checks) = ota_over(&mut forgetful, Ota0);
     assert_eq!(
@@ -1172,7 +1300,7 @@ fn beginning_an_update_stops_when_the_otadata_doesnt_keep_what_is_written() {
 
 #[test]
 fn confirming_rewrites_a_pending_image_s_entry_once() {
-    let flash = flashed(APP);
+    let flash = flashed(app());
     let (mut ota, checks) = ota_on(&flash, Ota0);
     checks.run(ota.confirm()).unwrap();
     assert_eq!(flash.writes(), [], "already valid");
@@ -1195,7 +1323,7 @@ fn confirming_rewrites_a_pending_image_s_entry_once() {
 
 #[test]
 fn confirming_leaves_an_activation_not_yet_booted() {
-    let flash = flashed(APP);
+    let flash = flashed(app());
     let (mut ota, checks) = ota_on(&flash, Ota0);
     let image = finish_with(&mut ota, checks, &app_version("0.2.0")).unwrap();
     checks.run(ota.activate(image)).unwrap();
@@ -1401,7 +1529,7 @@ fn a_cut_confirmation_boots_as_before() {
 #[test]
 fn an_update_that_isnt_confirmed_rolls_back_at_the_next_boot() {
     let new = app_version("0.2.0");
-    let flash = flashed(APP);
+    let flash = flashed(app());
     update_and_boot(&flash, Ota0, &new, &mut Rng::new(5));
     assert_eq!(reboot(&flash), Ota0);
     let (mut ota, checks) = ota_on(&flash, Ota0);
@@ -1437,7 +1565,7 @@ fn an_update_that_isnt_confirmed_rolls_back_at_the_next_boot() {
 fn rolling_back_starts_the_other_slot_at_the_next_boot() {
     let new = app_version("0.2.0");
     for confirmed in [false, true] {
-        let flash = flashed(APP);
+        let flash = flashed(app());
         update_and_boot(&flash, Ota0, &new, &mut Rng::new(6));
         let (mut ota, checks) = ota_on(&flash, Ota1);
         if confirmed {
@@ -1474,7 +1602,7 @@ fn rolling_back_starts_the_other_slot_at_the_next_boot() {
 
 #[test]
 fn rolling_back_needs_a_target() {
-    let flash = flashed(APP);
+    let flash = flashed(app());
     let (mut ota, checks) = ota_on(&flash, Ota0);
     assert_eq!(
         checks.run(ota.roll_back()),
@@ -1495,10 +1623,10 @@ fn rolling_back_needs_a_target() {
 
 #[test]
 fn rolling_back_needs_an_image_that_verifies() {
-    let flash = updated(APP, &app_version("0.2.0"));
+    let flash = updated(app(), &app_version("0.2.0"));
     let ops = flash.writes().len();
     // A byte of the old image decays.
-    flash.poke(OTA_0.offset + 0x9000, &[!APP[0x9000]]);
+    flash.poke(OTA_0.offset + 0x9000, &[!app()[0x9000]]);
     let (mut ota, checks) = ota_on(&flash, Ota1);
     assert!(matches!(
         checks.run(ota.roll_back()),
@@ -1508,10 +1636,16 @@ fn rolling_back_needs_an_image_that_verifies() {
     flash.poke(OTA_0.offset, &app_project("another"));
     let (mut ota, checks) = ota_on(&flash, Ota1);
     assert_eq!(checks.run(ota.roll_back()), Err(OtaError::Project));
+    // An image of another layout, and one from before the record.
+    for image in [&other_layouts()[0], UNLAID_APP] {
+        flash.poke(OTA_0.offset, image);
+        let (mut ota, checks) = ota_on(&flash, Ota1);
+        assert_eq!(checks.run(ota.roll_back()), Err(OtaError::Layout));
+    }
     assert_eq!(flash.writes().len(), ops, "nothing written");
     assert_eq!(reboot(&flash), Ota1);
     // Restored, it rolls back.
-    flash.poke(OTA_0.offset, APP);
+    flash.poke(OTA_0.offset, app());
     let (mut ota, checks) = ota_on(&flash, Ota1);
     checks.run(ota.roll_back()).unwrap();
     assert_eq!(reboot(&flash), Ota0);
@@ -1523,10 +1657,10 @@ fn rolling_back_needs_an_image_that_verifies() {
 fn no_operation_writes_outside_the_other_slot_and_the_otadata() {
     let new = app_version("0.2.0");
     let newer = app_version("0.3.0");
-    let ota_0_board = flashed(APP);
-    let ota_1_board = updated(APP, &new);
+    let ota_0_board = flashed(app());
+    let ota_1_board = updated(app(), &new);
     for (flash, running, running_image) in
-        [(&ota_0_board, Ota0, APP), (&ota_1_board, Ota1, &new[..])]
+        [(&ota_0_board, Ota0, app()), (&ota_1_board, Ota1, &new[..])]
     {
         let from = flash.writes().len();
         let mut rng = Rng::new(7);
@@ -1566,7 +1700,7 @@ fn no_operation_writes_outside_the_other_slot_and_the_otadata() {
 
 #[test]
 fn the_guard_refuses_what_a_wrong_span_would_write() {
-    let flash = TestFlash::new(flashed(APP));
+    let flash = TestFlash::new(flashed(app()));
     let device = flash.device();
     // The running slot in place of the other one.
     let (mut ota, checks) = ota_on_spans(&flash, Span::from(OTA_0), Span::from(OTADATA));
@@ -1581,7 +1715,7 @@ fn the_guard_refuses_what_a_wrong_span_would_write() {
         checks.run(ota.confirm()),
         Err(OtaError::Access(AccessError::Protected))
     );
-    assert!(holds(device, Ota0, APP));
+    assert!(holds(device, Ota0, app()));
     assert_eq!(device.at(0, BOOTLOADER.len()), BOOTLOADER);
     // Only the real otadata was written.
     confined(device, 0, Ota0);
@@ -1606,7 +1740,7 @@ fn watched() -> (
     Reader<'static, AlternateApp>,
     Reader<'static, OtadataRole>,
 ) {
-    let flash = TestFlash::new(flashed(APP));
+    let flash = TestFlash::new(flashed(app()));
     let (ota, checks) = ota_on_spans(&flash, Span::from(OTA_1), Span::from(OTADATA));
     let alternate = flash.reader(Span::from(OTA_1));
     let otadata = flash.reader(Span::from(OTADATA));
@@ -1779,12 +1913,12 @@ fn activating_reads_nothing_of_the_slot() {
 
 #[test]
 fn ota_is_unavailable_until_the_running_app_s_descriptor_reads() {
-    let mut broken = APP.to_vec();
+    let mut broken = app().to_vec();
     broken[0x1000] ^= 1;
     for current in [None, Some(&broken[..])] {
         let device = RamNor::with(
             FLASH_SIZE,
-            &[(OTADATA_AT, OTADATA_FIRST_BOOT), (OTA_1.offset, APP)],
+            &[(OTADATA_AT, OTADATA_FIRST_BOOT), (OTA_1.offset, app())],
         );
         if let Some(image) = current {
             device.poke(OTA_0.offset, image);
@@ -1809,7 +1943,7 @@ fn ota_is_unavailable_until_the_running_app_s_descriptor_reads() {
     }
     // With the image there, OTA is ready, and its project is the one updates
     // match.
-    let flash = flashed(APP);
+    let flash = flashed(app());
     let (ota, _) = ota_on(&flash, Ota0);
     assert_eq!(ota.readiness(), Ok(()));
     assert_eq!(
@@ -1823,7 +1957,7 @@ fn ota_is_unavailable_until_the_running_app_s_descriptor_reads() {
 #[test]
 fn long_operations_yield_to_the_executor() {
     let new = app_version("0.2.0");
-    let flash = flashed(APP);
+    let flash = flashed(app());
     let (mut ota, checks) = ota_on(&flash, Ota0);
     let image = checks
         .run(async {
@@ -2076,10 +2210,10 @@ fn a_cut_update_boots_the_old_image_or_the_new_one_once() {
 fn a_cut_update_of_the_firmware_image_boots_the_old_image_or_the_new_one_once() {
     let new = app_version("0.2.0");
     let next = small_app("3.0.0", 0);
-    let start = flashed(APP);
+    let start = flashed(app());
     let cuts = sweep(&start, Ota0, update_flow(&new, 0x1_0000), |flash, case| {
         confined(flash, 0, Ota0);
-        boots_back(flash, Ota0, APP, &[&new], case);
+        boots_back(flash, Ota0, app(), &[&new], case);
         recovers(flash, Ota0, &next, case);
     });
     assert!(cuts > 200, "{cuts}");
