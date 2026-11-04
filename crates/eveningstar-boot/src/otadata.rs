@@ -2,8 +2,7 @@
 //!
 //! [`Otadata`] owns the reader of the otadata partition: the compiled
 //! layout's in the layout and boot tiers, or the one the located table gives
-//! in the unverified tier. The otadata is sensitive: nothing of it is
-//! published as bytes, and its epochs never leave the device.
+//! in the unverified tier.
 //!
 //! Its model, [`OtadataModel`], holds both entries with every field as read,
 //! labels included, and the epoch, and gives the active entry and the boot
@@ -15,6 +14,26 @@
 //! state when that is a value ESP-IDF defines. A blank entry is given as
 //! blank, a corrupt one by its validity alone. The label and an unknown
 //! state value are never given.
+//!
+//! [`Otadata::published`] gives the view of one entry of the compiled
+//! otadata, its 32 bytes at the model's epoch, when the parser pins down
+//! every byte of it:
+//!
+//! - an entry whose 32 bytes are all `0xFF`;
+//! - an entry whose sequence number isn't `0xFFFFFFFF`, whose CRC matches it
+//!   and whose state is a value ESP-IDF defines, with its 20-byte label
+//!   served as `0xFF`, and listed as sanitized when the flash holds something
+//!   else there.
+//!
+//! Each byte published is then proven by the CRC (the sequence number), a
+//! function of it (the CRC), one of a known set of values (the state) or a
+//! constant (the label, as served), so the entry reveals nothing beyond the
+//! fields [`OtadataFields`] gives. The bootloader ignores the label, and the
+//! planner writes it erased. Any other entry has no view: a corrupt one, one
+//! with an unknown state value, and one whose sequence number is
+//! `0xFFFFFFFF` while its other bytes aren't all `0xFF`, as its fields give
+//! no state. The rest of each sector, after its entry, is never published,
+//! and neither is the otadata a located table gives.
 //!
 //! A function that takes the public fields can't be given the model:
 //!
@@ -62,12 +81,52 @@
 //! const FORGED: EntryFields = EntryFields { validity: Validity::Blank, seq: None, slot: None, state: None };
 //! ```
 
-use eveningstar_esp_formats::otadata::{self as format, BootState, Sector, State, Validity};
-use eveningstar_storage::nor::Reader;
+use eveningstar_esp_formats::otadata::{
+    self as format, BLANK_SEQ, BootState, Sector, SelectEntry, State, Validity,
+};
+use eveningstar_storage::nor::{Published, Reader};
 use eveningstar_storage::roles::{self, FoundOtadata, Internal, Role};
 use eveningstar_storage::{Epoch, ReadError, Slot, Span};
 
-use crate::error::{LoadError, whole};
+use crate::error::{LoadError, Unpublished, publish, whole};
+
+/// Length of an entry, and of its view, in bytes.
+const ENTRY_LEN: u32 = 32;
+
+/// The label's span, relative to the entry.
+const LABEL: Span = Span::new(4, 20);
+
+/// Whether an entry judged `validity` has a sequence number other than
+/// [`BLANK_SEQ`] and a CRC that matches it.
+const fn crc_matches(validity: Validity) -> bool {
+    matches!(
+        validity,
+        Validity::Valid | Validity::Invalid | Validity::Aborted
+    )
+}
+
+/// Whether the parser pins down every byte of `entry`, the label served as
+/// `0xFF`: all 32 bytes are `0xFF`, or its CRC matches and its state is a
+/// value ESP-IDF defines.
+const fn pinned(entry: &SelectEntry) -> bool {
+    let erased = entry.seq == BLANK_SEQ
+        && matches!(entry.state, State::Undefined)
+        && entry.crc == u32::MAX
+        && label_erased(&entry.label);
+    erased || (crc_matches(entry.validity()) && PublicState::of(entry.state).is_some())
+}
+
+/// Whether every byte of `label` is `0xFF`.
+const fn label_erased(label: &[u8; 20]) -> bool {
+    let mut at = 0;
+    while at < label.len() {
+        if label[at] != 0xFF {
+            return false;
+        }
+        at += 1;
+    }
+    true
+}
 
 /// An entry's image state, when it is a value ESP-IDF defines
 /// (`esp_ota_img_states_t`).
@@ -115,13 +174,9 @@ pub struct EntryFields {
 impl EntryFields {
     /// The fields of `entry`: its validity, and the rest only when its CRC
     /// matches.
-    const fn of(entry: &format::SelectEntry) -> Self {
+    const fn of(entry: &SelectEntry) -> Self {
         let validity = entry.validity();
-        let crc_matches = matches!(
-            validity,
-            Validity::Valid | Validity::Invalid | Validity::Aborted
-        );
-        if crc_matches {
+        if crc_matches(validity) {
             Self {
                 validity,
                 seq: Some(entry.seq),
@@ -262,7 +317,8 @@ impl OtadataFields {
 
 /// The otadata as read, as of one epoch: both entries with every field,
 /// labels included. It stays inside the device; [`fields`](Self::fields)
-/// gives what may leave it.
+/// gives the fields that may leave it, and [`Otadata::published`] the
+/// entries whose bytes may.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OtadataModel {
     epoch: Epoch,
@@ -378,6 +434,36 @@ impl<'f> Otadata<'f> {
             OtadataReader::Compiled(reader) => parse(reader),
             OtadataReader::Found(reader) => parse(reader),
         }
+    }
+
+    /// The view of the entry of `sector` that `model` describes: its 32
+    /// bytes, the label served as `0xFF`, when the parser pins down every
+    /// byte of it, as the module's documentation describes.
+    ///
+    /// # Errors
+    ///
+    /// [`Unpublished::Unverified`] for the otadata a located table gives, and
+    /// for an entry that couldn't be read or isn't pinned down,
+    /// [`Unpublished::Stale`] once the region isn't stable at the model's
+    /// epoch, and [`Unpublished::Refused`] for the storage crate's other
+    /// refusals.
+    pub fn published(
+        &self,
+        model: &OtadataModel,
+        sector: Sector,
+    ) -> Result<Published<'_, roles::Otadata>, Unpublished> {
+        let OtadataReader::Compiled(reader) = &self.reader else {
+            return Err(Unpublished::Unverified);
+        };
+        let entry = model
+            .otadata
+            .entry(sector)
+            .map_err(|_| Unpublished::Unverified)?;
+        if !pinned(&entry) {
+            return Err(Unpublished::Unverified);
+        }
+        let span = Span::new(sector.offset(), ENTRY_LEN);
+        publish(reader, model.epoch, span, &[LABEL]).map_err(Unpublished::from)
     }
 }
 
