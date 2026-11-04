@@ -8,9 +8,10 @@
 //!   entry to add to `known.rs` when it isn't there, and its entry's table
 //!   offset and rollback checked;
 //! - the app verified as an ESP32-C6 image of the `eveningstar` project that
-//!   fits `ota_0`, its size measured against [`SLOT_BUDGET_PERCENT`], and the
-//!   three of them, flashed as `flash-all` writes them, reaching the boot
-//!   tier through the verification chain.
+//!   fits `ota_0`, the layout record right after its descriptor equal to the
+//!   generated layout's, its size measured against [`SLOT_BUDGET_PERCENT`],
+//!   and the three of them, flashed as `flash-all` writes them, reaching the
+//!   boot tier through the verification chain.
 //!
 //! ```text
 //! check-images --bootloader FILE --partition-table FILE [--app FILE]
@@ -28,7 +29,7 @@ use eveningstar_storage::chain::{Tier, split};
 use eveningstar_storage::image;
 use eveningstar_storage::nor::{NorDevice, State};
 use eveningstar_storage::table::{self, Match};
-use eveningstar_storage::{DeviceError, known, layout};
+use eveningstar_storage::{DeviceError, LAYOUT_RECORD, known, layout};
 
 /// The share of an app slot an image may fill, in percent. The slots can't
 /// grow once boards ship, as the layout can't change over OTA, so the image
@@ -246,6 +247,7 @@ fn check_app(checks: &mut Checks, path: &Path, bytes: &[u8]) {
         }
         Err(error) => checks.fail(format!("no descriptor: {error:?}")),
     }
+    check_layout_record(checks, bytes);
     let slot = u64::from(layout::OTA_0.size);
     let size = u64::from(app.size());
     let budget = slot * SLOT_BUDGET_PERCENT / 100;
@@ -263,6 +265,46 @@ fn check_app(checks: &mut Checks, path: &Path, bytes: &[u8]) {
             per_mille % 10
         ),
     );
+}
+
+/// The app's layout record, right after its descriptor, compared with the
+/// generated layout in every byte.
+fn check_layout_record(checks: &mut Checks, bytes: &[u8]) {
+    let embedded = match image::app_layout(bytes) {
+        Ok(Some(embedded)) => embedded,
+        Ok(None) => {
+            return checks.fail(format!(
+                "no layout record at offset {:#x} of the first segment, right after the descriptor",
+                image::LAYOUT_AT
+            ));
+        }
+        Err(error) => return checks.fail(format!("no layout record: {error:?}")),
+    };
+    let what = format!(
+        "layout record: table at {:#x}, flash of {:#x} bytes, {} entries",
+        embedded.table_offset(),
+        embedded.flash_size(),
+        embedded.entry_count()
+    );
+    match embedded.matches(bytes, &LAYOUT_RECORD) {
+        Ok(true) => checks.pass(format!("{what}, the generated layout's")),
+        Ok(false) => {
+            checks.fail(format!("{what}, not the generated layout's"));
+            let expected = LAYOUT_RECORD.entries();
+            for index in 0..embedded.entry_count().max(len_u32(expected.len())) {
+                let found = embedded.entry(bytes, index).ok().flatten();
+                let wanted = usize::try_from(index).ok().and_then(|i| expected.get(i));
+                if found.as_ref() != wanted {
+                    println!("        entry {index} differs");
+                }
+            }
+        }
+        Err(error) => checks.fail(format!("{what}, unreadable: {error:?}")),
+    }
+}
+
+fn len_u32(len: usize) -> u32 {
+    u32::try_from(len).unwrap_or(u32::MAX)
 }
 
 /// A board's flash held in memory, read only: `split` never writes.
