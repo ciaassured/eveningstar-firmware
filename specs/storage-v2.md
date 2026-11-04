@@ -891,6 +891,16 @@ table's MD5), without their API and firmware parts.
 
 ## Left to build
 
+- **Layout migration.** The ESP table stays as it is; dividing up `reserved`
+  happens inside that partition: a firmware-owned, versioned header at its
+  start and roles over its sub-regions, so the table and the layout record
+  don't change and old and new firmware stay compatible. Changing the ESP
+  table itself needs a power-safe way to rewrite the table sector, which
+  doesn't exist yet (one sector, no backup copy). If one is built, the
+  migration reaches a board in two updates, as the running firmware decides
+  what it accepts: first a firmware with the same layout that knows the
+  migration and accepts the specific next layout's record, then the
+  firmware with the new layout.
 - **Configuration store.** It owns `Writer<CurrentConfig>` and keeps the
   running slot's settings, secrets included, in 128 KiB, through its session
   as an `embedded-storage-async` NOR flash. It reads the alternate slot's
