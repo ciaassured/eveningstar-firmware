@@ -278,6 +278,19 @@ impl BootFields {
     }
 }
 
+/// Whether the running image awaits a confirmation, `boot` being its boot
+/// state: every image but one confirmed `Valid`
+/// ([`BootState::needs_confirmation`]). With no boot state, as when there is
+/// no otadata, it doesn't read or the running slot is unknown, the image
+/// awaits one.
+#[must_use]
+pub const fn awaits_confirmation(boot: Option<&BootState>) -> bool {
+    match boot {
+        Some(boot) => boot.needs_confirmation,
+        None => true,
+    }
+}
+
 /// The fields of the otadata that may leave the device: no byte, no label,
 /// no unknown state value, no epoch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
