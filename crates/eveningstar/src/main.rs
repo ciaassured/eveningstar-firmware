@@ -51,6 +51,17 @@ const PANIC_LOG_SPINS: u32 = 10_000_000;
 // For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
 esp_bootloader_esp_idf::esp_app_desc!();
 
+/// The partition layout the firmware is built for, as a layout record.
+/// esp-hal's linker script places the input sections `.flash.appdesc.*`
+/// right after the app descriptor's `.flash.appdesc`, at the start of the
+/// first segment, and the record's alignment of 1 leaves no gap after the
+/// descriptor's 256 bytes: the record lies where
+/// `image::app_layout` reads it.
+#[unsafe(link_section = ".flash.appdesc.layout")]
+#[used]
+static LAYOUT_RECORD: eveningstar_storage::CompiledLayoutRecord =
+    eveningstar_storage::LAYOUT_RECORD;
+
 mod wd {
     use crate::watchdog;
     use embassy_time::Duration;
