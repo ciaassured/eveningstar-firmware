@@ -144,28 +144,25 @@
 //!
 //! ```
 //! use eveningstar_storage::nor::Reader;
-//! use eveningstar_storage::roles::{AlternateApp, Bootloader, FoundApp};
+//! use eveningstar_storage::roles::{AlternateApp, Bootloader, FoundApp, Otadata};
 //! use eveningstar_storage::{Epoch, Span};
 //!
-//! fn export(app: &Reader<'_, AlternateApp>, boot: &Reader<'_, Bootloader>, found: &Reader<'_, FoundApp>, epoch: Epoch) {
+//! fn export(
+//!     app: &Reader<'_, AlternateApp>,
+//!     boot: &Reader<'_, Bootloader>,
+//!     found: &Reader<'_, FoundApp>,
+//!     otadata: &Reader<'_, Otadata>,
+//!     epoch: Epoch,
+//! ) {
 //!     let _ = app.publish(epoch, Span::new(0, 4), &[]);
 //!     let _ = boot.publish(epoch, Span::new(0, 4), &[]);
 //!     let _ = found.publish(epoch, Span::new(0, 4), &[]);
+//!     let _ = otadata.publish(epoch, Span::new(0, 32), &[]);
 //! }
 //! ```
 //!
-//! The otadata, the sensitive roles and the whole chip have no `publish`,
-//! whatever the tier:
-//!
-//! ```compile_fail,E0599
-//! use eveningstar_storage::nor::Reader;
-//! use eveningstar_storage::roles::Otadata;
-//! use eveningstar_storage::{Epoch, Span};
-//!
-//! fn export(otadata: &Reader<'_, Otadata>, epoch: Epoch) {
-//!     let _ = otadata.publish(epoch, Span::new(0, 4), &[]);
-//! }
-//! ```
+//! The located otadata, the sensitive roles and the whole chip have no
+//! `publish`, whatever the tier:
 //!
 //! ```compile_fail,E0599
 //! use eveningstar_storage::nor::Reader;
