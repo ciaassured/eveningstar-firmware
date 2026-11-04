@@ -10,8 +10,9 @@ use crate::pace::{Pace, Yield};
 
 use super::*;
 use crate::test_support::{
-    APP, BOOTLOADER, ESPFLASH_BOOTLOADER, ImageBuilder, Rng, app_descriptor_bytes, app_image,
-    block_on, bootloader_image, data, run, segment_at,
+    APP, BOOTLOADER, ESPFLASH_BOOTLOADER, FLASH_SIZE, ImageBuilder, LAYOUT_RECORD_AT, PARTITIONS,
+    Rng, TABLE, TABLE_OFFSET, app_descriptor_bytes, app_image, app_image_with_layout, block_on,
+    board_layout_record, bootloader_image, data, layout_record_bytes, run, segment_at, with_layout,
 };
 
 fn hex(bytes: &[u8]) -> String {
@@ -825,6 +826,231 @@ fn a_failing_read_is_reported() {
     assert_eq!(run(verify_app(&source)), Err(device));
 }
 
+// The layout record.
+
+/// The record of the board whose table is the fixture's.
+fn board_record() -> LayoutRecord<8> {
+    LayoutRecord::new(TABLE_OFFSET, FLASH_SIZE, &PARTITIONS).unwrap()
+}
+
+/// The bytes of `record` as it lies in memory, which is how the firmware's
+/// image holds it.
+fn record_bytes<const N: usize>(record: &LayoutRecord<N>) -> &[u8] {
+    // SAFETY: every field of the `repr(C)` record is a byte array, so it has
+    // no padding and every byte is initialized, and the slice borrows it.
+    unsafe {
+        core::slice::from_raw_parts(
+            core::ptr::from_ref(record).cast::<u8>(),
+            size_of::<LayoutRecord<N>>(),
+        )
+    }
+}
+
+/// The layout record `image` embeds, read and compared with the board's.
+fn layout_of(image: &[u8]) -> Option<(AppLayout, bool)> {
+    let layout = app_layout(image).unwrap()?;
+    Some((layout, layout.matches(image, &board_record()).unwrap()))
+}
+
+#[test]
+fn a_layout_record_is_its_format_s_bytes() {
+    let record = board_record();
+    assert_eq!(size_of::<LayoutRecord<8>>(), 32 + 8 * 32);
+    assert_eq!(align_of::<LayoutRecord<8>>(), 1);
+    assert_eq!(record_bytes(&record), &board_layout_record()[..]);
+    assert_eq!(&record_bytes(&record)[..16], b"EVENINGSTAR-LYT1");
+    assert_eq!(record.table_offset(), TABLE_OFFSET);
+    assert_eq!(record.flash_size(), FLASH_SIZE);
+    for (i, entry) in record.entries().iter().enumerate() {
+        assert_eq!(&entry[..], &TABLE[i * 32..i * 32 + 32]);
+    }
+    let empty = LayoutRecord::<0>::new(TABLE_OFFSET, FLASH_SIZE, &[]).unwrap();
+    assert_eq!(
+        record_bytes(&empty),
+        &layout_record_bytes(TABLE_OFFSET, FLASH_SIZE, &[])[..]
+    );
+}
+
+#[test]
+fn a_layout_record_needs_labels_that_fit_and_a_table_s_count() {
+    let mut entries = PARTITIONS;
+    entries[3].label = "seventeen-bytes-a";
+    assert_eq!(LayoutRecord::new(TABLE_OFFSET, FLASH_SIZE, &entries), None);
+    let many = [PARTITIONS[0]; table::MAX_ENTRIES + 1];
+    assert_eq!(LayoutRecord::new(TABLE_OFFSET, FLASH_SIZE, &many), None);
+    let most = [PARTITIONS[0]; table::MAX_ENTRIES];
+    assert!(LayoutRecord::new(TABLE_OFFSET, FLASH_SIZE, &most).is_some());
+}
+
+#[test]
+fn a_layout_record_round_trips_through_an_image() {
+    let record = board_record();
+    for image in [
+        app_image_with_layout().build(),
+        with_layout(APP, record_bytes(&record)),
+    ] {
+        assert!(app(&image).is_ok());
+        let (layout, matches) = layout_of(&image).unwrap();
+        assert!(matches);
+        assert_eq!(layout.table_offset(), TABLE_OFFSET);
+        assert_eq!(layout.flash_size(), FLASH_SIZE);
+        assert_eq!(layout.entry_count(), 8);
+        for (index, entry) in (0..).zip(record.entries()) {
+            assert_eq!(layout.entry(&image[..], index), Ok(Some(*entry)));
+        }
+        assert_eq!(layout.entry(&image[..], 8), Ok(None));
+        assert_eq!(layout.entry(&image[..], u32::MAX), Ok(None));
+    }
+}
+
+#[test]
+fn an_app_without_a_record_has_no_layout() {
+    // The fixture predates the record, and the builder's app has data there.
+    assert_eq!(app_layout(APP), Ok(None));
+    assert_eq!(app_layout(&app_image().build()[..]), Ok(None));
+    // A bootloader has no app descriptor.
+    assert_eq!(app_layout(BOOTLOADER), Err(ImageError::MissingDescriptor));
+}
+
+/// A change to a layout: to its entries, giving the table offset and flash
+/// size.
+type Change = fn(&mut Vec<Entry>) -> (u32, u32);
+
+#[test]
+fn a_record_of_another_layout_reads_but_doesnt_match() {
+    let changes: [Change; 6] = [
+        |entries| {
+            entries[3].size -= 0x1000;
+            (TABLE_OFFSET, FLASH_SIZE)
+        },
+        |entries| {
+            entries[0].label = "factorz";
+            (TABLE_OFFSET, FLASH_SIZE)
+        },
+        |entries| {
+            entries[6].flags = 1;
+            (TABLE_OFFSET, FLASH_SIZE)
+        },
+        |entries| {
+            entries.pop();
+            (TABLE_OFFSET, FLASH_SIZE)
+        },
+        |_| (0x9000, FLASH_SIZE),
+        |_| (TABLE_OFFSET, 2 * FLASH_SIZE),
+    ];
+    for (i, change) in changes.into_iter().enumerate() {
+        let mut entries = PARTITIONS.to_vec();
+        let (table_offset, flash_size) = change(&mut entries);
+        let record = layout_record_bytes(table_offset, flash_size, &entries);
+        let image = with_layout(APP, &record);
+        let (layout, matches) = layout_of(&image).unwrap();
+        assert!(!matches, "change {i}");
+        assert_eq!(layout.entry_count() as usize, entries.len(), "change {i}");
+    }
+}
+
+#[test]
+fn a_record_is_read_only_right_after_the_descriptor() {
+    let record = board_layout_record();
+    // Four bytes further on, the bytes after the descriptor aren't a record.
+    let mut shifted = vec![0; 4];
+    shifted.extend_from_slice(&record);
+    assert_eq!(layout_of(&with_layout(APP, &shifted)), None);
+    // A second record after the first changes nothing: the first is the
+    // image's, whatever follows it.
+    let mut other = PARTITIONS.to_vec();
+    other[2].offset += 0x1_0000;
+    let mut two = record.clone();
+    two.extend_from_slice(&layout_record_bytes(TABLE_OFFSET, FLASH_SIZE, &other));
+    assert!(layout_of(&with_layout(APP, &two)).unwrap().1);
+    let mut two = layout_record_bytes(TABLE_OFFSET, FLASH_SIZE, &other);
+    two.extend_from_slice(&record);
+    assert!(!layout_of(&with_layout(APP, &two)).unwrap().1);
+}
+
+#[test]
+fn a_malformed_record_is_no_record() {
+    let record = board_layout_record();
+    let edits: [(usize, u8); 5] = [(0, b'e'), (15, b'2'), (28, 1), (31, 0x80), (27, 1)];
+    for (at, value) in edits {
+        let mut bad = record.clone();
+        bad[at] = value;
+        assert_eq!(layout_of(&with_layout(APP, &bad)), None, "byte {at}");
+    }
+    // More entries than a table holds.
+    let mut bad = record.clone();
+    bad[24..28].copy_from_slice(&97_u32.to_le_bytes());
+    assert_eq!(layout_of(&with_layout(APP, &bad)), None);
+    let mut most = record.clone();
+    most[24..28].copy_from_slice(&96_u32.to_le_bytes());
+    assert!(!layout_of(&with_layout(APP, &most)).unwrap().1);
+}
+
+#[test]
+fn a_record_past_the_first_segment_is_no_record() {
+    let record = board_layout_record();
+    let len_of = |entries: usize| 256 + 32 + 32 * entries;
+    for first_len in [256, 256 + 28, 256 + 32, len_of(7), len_of(8) - 4, len_of(8)] {
+        let mut builder = app_image();
+        let first = &mut builder.segments[0].1;
+        first.truncate(256);
+        first.extend_from_slice(&record);
+        first.truncate(first_len);
+        let image = builder.build();
+        assert!(app(&image).is_ok(), "{first_len}");
+        let found = layout_of(&image);
+        assert_eq!(found.is_some(), first_len == len_of(8), "{first_len}");
+    }
+}
+
+#[test]
+fn the_layout_read_checks_only_the_start_of_the_image() {
+    let image = with_layout(APP, &board_layout_record());
+    let mut corrupt = image.clone();
+    let last = corrupt.len() - 1;
+    corrupt[last] ^= 1;
+    corrupt[1000] ^= 1;
+    assert!(app(&corrupt).is_err());
+    assert!(layout_of(&corrupt).unwrap().1);
+    let mut image_bytes = image.clone();
+    image_bytes[0] = 0;
+    assert_eq!(app_layout(&image_bytes[..]), Err(ImageError::Magic(0)));
+    assert_eq!(
+        app_layout(&image[..100]),
+        Err(ImageError::SegmentPastEnd { index: 0 })
+    );
+    let device = ImageError::Read(ReadError::Device);
+    let source = Failing {
+        bytes: &image,
+        from: LAYOUT_RECORD_AT as u32 + 8,
+    };
+    assert_eq!(app_layout(&source), Err(device));
+    let source = Failing {
+        bytes: &image,
+        from: LAYOUT_RECORD_AT as u32 + 40,
+    };
+    let layout = app_layout(&source).unwrap().unwrap();
+    assert_eq!(layout.matches(&source, &board_record()), Err(device));
+    assert_eq!(layout.entry(&source, 0), Err(device));
+}
+
+#[test]
+fn mutated_records_never_panic() {
+    let mut rng = Rng::new(0x1A7);
+    let image = with_layout(APP, &board_layout_record());
+    let mut mutated = image.clone();
+    for at in 0..LAYOUT_RECORD_AT + 32 * 9 {
+        for value in [0x00, 0xFF, image[at] ^ 0x80, rng.byte()] {
+            mutated[at] = value;
+            let _ = std::format!("{:?}", app_layout(&mutated[..]));
+            if let Ok(Some(layout)) = app_layout(&mutated[..]) {
+                let _ = layout.matches(&mutated[..], &board_record());
+            }
+        }
+        mutated[at] = image[at];
+    }
+}
+
 #[test]
 fn errors_convert_from_read_errors() {
     assert_eq!(
@@ -841,6 +1067,12 @@ fn exercise(source: &[u8]) {
     let _ = std::format!("{:?}", bootloader(source));
     let _ = std::format!("{:?}", inspect_app(source));
     let _ = std::format!("{:?}", app_descriptor(source));
+    if let Ok(Some(layout)) = app_layout(source) {
+        let _ = layout.matches(source, &board_record());
+        for index in 0..=layout.entry_count().min(100) {
+            let _ = layout.entry(source, index);
+        }
+    }
 }
 
 #[test]

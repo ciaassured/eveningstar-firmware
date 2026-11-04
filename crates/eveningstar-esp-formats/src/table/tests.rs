@@ -1162,3 +1162,22 @@ fn exercise(source: &[u8], offset: u32) {
     }
     let _ = find(source, 0x1_0000, CHIP);
 }
+
+#[test]
+fn an_entry_encodes_as_the_table_stores_it() {
+    for (i, entry) in PARTITIONS.iter().enumerate() {
+        let encoded = encode(entry).unwrap();
+        assert_eq!(encoded, entry_bytes(entry), "{}", entry.label);
+        assert_eq!(&encoded[..], &TABLE[i * 32..i * 32 + 32], "{}", entry.label);
+    }
+    let full = Entry {
+        label: "sixteen-bytes-ab",
+        ..PARTITIONS[0]
+    };
+    assert_eq!(encode(&full), Some(entry_bytes(&full)));
+    let long = Entry {
+        label: "seventeen-bytes-a",
+        ..PARTITIONS[0]
+    };
+    assert_eq!(encode(&long), None);
+}

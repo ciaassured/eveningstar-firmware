@@ -55,6 +55,37 @@ const ERASED: u8 = 0xFF;
 /// A partition's label: up to 16 bytes, NUL padded.
 pub type Label = Text<16>;
 
+/// The 32 bytes the table stores for `entry`: the magic `0x50AA`, the type,
+/// the subtype, the offset, the size, the label NUL padded to 16 bytes and
+/// the flags, little-endian. `None` for a label longer than 16 bytes.
+#[must_use]
+pub const fn encode(entry: &Entry) -> Option<[u8; ENTRY_LEN as usize]> {
+    let label = entry.label.as_bytes();
+    if label.len() > LABEL_LEN {
+        return None;
+    }
+    let mut bytes = [0; ENTRY_LEN as usize];
+    put(&mut bytes, 0, &MAGIC.to_le_bytes());
+    put(&mut bytes, 2, &[entry.kind, entry.subtype]);
+    put(&mut bytes, 4, &entry.offset.to_le_bytes());
+    put(&mut bytes, 8, &entry.size.to_le_bytes());
+    put(&mut bytes, 12, label);
+    put(&mut bytes, 12 + LABEL_LEN, &entry.flags.to_le_bytes());
+    Some(bytes)
+}
+
+/// Length of a label in bytes.
+const LABEL_LEN: usize = 16;
+
+/// Copies `from` into `bytes` at `at`, as far as `bytes` reaches.
+const fn put(bytes: &mut [u8; ENTRY_LEN as usize], at: usize, from: &[u8]) {
+    let mut i = 0;
+    while i < from.len() && at + i < bytes.len() {
+        bytes[at + i] = from[i];
+        i += 1;
+    }
+}
+
 /// One partition entry, as stored in the table. Types, subtypes and flags are
 /// kept as the raw numbers, whether or not ESP-IDF defines them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

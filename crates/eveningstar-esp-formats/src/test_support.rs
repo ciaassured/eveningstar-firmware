@@ -342,6 +342,73 @@ pub fn bootloader_image() -> ImageBuilder {
     ])
 }
 
+/// The flash size of the board whose table is [`TABLE`]: 8 MiB.
+pub const FLASH_SIZE: u32 = 0x80_0000;
+
+/// The bytes of a layout record of the table at `table_offset` on a flash of
+/// `flash_size` bytes holding `entries`, assembled byte by byte as the
+/// format describes it.
+pub fn layout_record_bytes(table_offset: u32, flash_size: u32, entries: &[Entry]) -> Vec<u8> {
+    let mut record = b"EVENINGSTAR-LYT1".to_vec();
+    record.extend_from_slice(&table_offset.to_le_bytes());
+    record.extend_from_slice(&flash_size.to_le_bytes());
+    record.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+    record.extend_from_slice(&[0; 4]);
+    for entry in entries {
+        record.extend_from_slice(&entry_bytes(entry));
+    }
+    record
+}
+
+/// The layout record of the board whose table is [`TABLE`].
+pub fn board_layout_record() -> Vec<u8> {
+    layout_record_bytes(TABLE_OFFSET, FLASH_SIZE, &PARTITIONS)
+}
+
+/// Offset of an app's layout record in its image: after the image header,
+/// the first segment's header and the 256-byte app descriptor.
+pub const LAYOUT_RECORD_AT: usize = 24 + 8 + 256;
+
+/// `image` with its checksum and digest made again to match its segments,
+/// after `edit` changed the bytes of its segments in place.
+pub fn restamp(image: &[u8], edit: impl FnOnce(&mut [u8])) -> Vec<u8> {
+    let mut stamped = image.to_vec();
+    edit(&mut stamped);
+    let end = stamped.len() - 32;
+    // The checksum is the XOR of the segment data, so it changes by the XOR
+    // of the bytes changed.
+    let change = image[..end]
+        .iter()
+        .zip(&stamped[..end])
+        .fold(0, |change, (old, new)| change ^ old ^ new);
+    stamped[end - 1] ^= change;
+    let digest = Sha256::digest(&stamped[..end]);
+    stamped[end..].copy_from_slice(&digest);
+    stamped
+}
+
+/// The app image `image`, whose first segment holds at least the descriptor
+/// and `record`, with `record` written right after its descriptor, over what
+/// the segment held there, and its checksum and digest made again.
+pub fn with_layout(image: &[u8], record: &[u8]) -> Vec<u8> {
+    let first_len = u32::from_le_bytes(image[28..32].try_into().unwrap()) as usize;
+    assert!(
+        first_len >= 256 + record.len(),
+        "the first segment is too short"
+    );
+    restamp(image, |image| {
+        image[LAYOUT_RECORD_AT..LAYOUT_RECORD_AT + record.len()].copy_from_slice(record);
+    })
+}
+
+/// [`app_image`] with the board's layout record after its descriptor.
+pub fn app_image_with_layout() -> ImageBuilder {
+    let mut builder = app_image();
+    let record = board_layout_record();
+    builder.segments[0].1[256..256 + record.len()].copy_from_slice(&record);
+    builder
+}
+
 /// Offset of segment `index`'s header in `image`.
 pub fn segment_at(image: &[u8], index: usize) -> usize {
     let mut at = 24;

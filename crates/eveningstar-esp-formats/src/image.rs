@@ -8,7 +8,8 @@
 //! SHA-256 of everything before it. The checksum is the XOR of every segment
 //! data byte, seeded with `0xEF`. The first segment's data starts with the
 //! image's descriptor: `esp_app_desc_t` in an app, `esp_bootloader_desc_t` in
-//! a bootloader.
+//! a bootloader. In an app, a [`LayoutRecord`] of the partition layout the
+//! app is built for may follow the descriptor ([`app_layout`]).
 //!
 //! The source is the partition: offsets are relative to its start, and the
 //! image has to lie inside it. The check of where mapped segments lie uses
@@ -31,7 +32,7 @@ use sha2::Sha256;
 use crate::hash::Sha256Hasher;
 use crate::pace::{Pace, Yield};
 use crate::source::{Source, read_array};
-use crate::{ReadError, Text};
+use crate::{Entry, ReadError, Text, table};
 
 /// The first byte of an image.
 pub const MAGIC: u8 = 0xE9;
@@ -388,6 +389,220 @@ impl fmt::Debug for BootloaderDescriptor {
             .field("date_time", &self.date_time())
             .finish()
     }
+}
+
+/// The magic that starts a layout record, which names its format: version 1.
+pub const LAYOUT_MAGIC: [u8; 16] = *b"EVENINGSTAR-LYT1";
+
+/// Offset of an app's layout record from the start of its first segment's
+/// data: right after the 256-byte app descriptor.
+pub const LAYOUT_AT: u32 = APP_DESC_LEN;
+
+/// Length of a layout record's header in bytes, the entries' offset in the
+/// record.
+pub const LAYOUT_HEADER_LEN: u32 = 32;
+
+/// The partition layout an app image is built for, as the image embeds it
+/// right after its app descriptor ([`LAYOUT_AT`]), with `N` entries.
+///
+/// A record is [`LAYOUT_HEADER_LEN`] bytes of header, then `N` entries of
+/// [`table::ENTRY_LEN`] bytes. The header is [`LAYOUT_MAGIC`], then the
+/// table's offset, the flash size and the number of entries (`u32`,
+/// little-endian), then four zero bytes. Each entry is a partition encoded as
+/// the partition table encodes it ([`table::encode`]), in table order. Every
+/// field is a byte array, so the record has no padding, an alignment of 1, and
+/// the same bytes on every target.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LayoutRecord<const N: usize> {
+    magic: [u8; 16],
+    table_offset: [u8; 4],
+    flash_size: [u8; 4],
+    count: [u8; 4],
+    reserved: [u8; 4],
+    entries: [[u8; table::ENTRY_LEN as usize]; N],
+}
+
+impl<const N: usize> LayoutRecord<N> {
+    /// The record of the table at `table_offset` on a flash of `flash_size`
+    /// bytes, holding `entries`. `None` for more than [`table::MAX_ENTRIES`]
+    /// entries or a label longer than 16 bytes.
+    #[must_use]
+    pub const fn new(table_offset: u32, flash_size: u32, entries: &[Entry; N]) -> Option<Self> {
+        if N > table::MAX_ENTRIES {
+            return None;
+        }
+        let mut encoded = [[0; table::ENTRY_LEN as usize]; N];
+        let mut i = 0;
+        while i < N {
+            match table::encode(&entries[i]) {
+                Some(bytes) => encoded[i] = bytes,
+                None => return None,
+            }
+            i += 1;
+        }
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "N is at most MAX_ENTRIES, checked above"
+        )]
+        let count = N as u32;
+        Some(Self {
+            magic: LAYOUT_MAGIC,
+            table_offset: table_offset.to_le_bytes(),
+            flash_size: flash_size.to_le_bytes(),
+            count: count.to_le_bytes(),
+            reserved: [0; 4],
+            entries: encoded,
+        })
+    }
+
+    /// The table's offset.
+    #[must_use]
+    pub const fn table_offset(&self) -> u32 {
+        u32::from_le_bytes(self.table_offset)
+    }
+
+    /// The flash size in bytes.
+    #[must_use]
+    pub const fn flash_size(&self) -> u32 {
+        u32::from_le_bytes(self.flash_size)
+    }
+
+    /// The entries, each as the table stores it.
+    #[must_use]
+    pub const fn entries(&self) -> &[[u8; table::ENTRY_LEN as usize]; N] {
+        &self.entries
+    }
+}
+
+/// The layout record an app image embeds, read from its header, from
+/// [`app_layout`]. Its entries are read from the image on request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AppLayout {
+    /// Offset of the first entry in the source.
+    entries: u32,
+    table_offset: u32,
+    flash_size: u32,
+    count: u32,
+}
+
+impl AppLayout {
+    /// The table's offset the record gives.
+    #[must_use]
+    pub const fn table_offset(&self) -> u32 {
+        self.table_offset
+    }
+
+    /// The flash size the record gives, in bytes.
+    #[must_use]
+    pub const fn flash_size(&self) -> u32 {
+        self.flash_size
+    }
+
+    /// The number of entries the record holds.
+    #[must_use]
+    pub const fn entry_count(&self) -> u32 {
+        self.count
+    }
+
+    /// The 32 bytes of entry `index` of the record, read from `source`, the
+    /// image the record was read from; `None` past the last entry.
+    ///
+    /// # Errors
+    ///
+    /// [`ImageError::Read`] when reading fails.
+    pub fn entry<S: Source + ?Sized>(
+        &self,
+        source: &S,
+        index: u32,
+    ) -> Result<Option<[u8; table::ENTRY_LEN as usize]>, ImageError> {
+        if index >= self.count {
+            return Ok(None);
+        }
+        // Inside the first segment, which `app_layout` checked holds every
+        // entry.
+        let at = index
+            .checked_mul(table::ENTRY_LEN)
+            .and_then(|offset| self.entries.checked_add(offset))
+            .ok_or(ImageError::PastEnd)?;
+        Ok(Some(read_array(source, at)?))
+    }
+
+    /// Whether the record equals `expected` in every byte: the table's
+    /// offset, the flash size, the number of entries and each entry, read
+    /// from `source`, the image the record was read from.
+    ///
+    /// # Errors
+    ///
+    /// [`ImageError::Read`] when reading fails.
+    pub fn matches<S: Source + ?Sized, const N: usize>(
+        &self,
+        source: &S,
+        expected: &LayoutRecord<N>,
+    ) -> Result<bool, ImageError> {
+        let same_count = usize::try_from(self.count).is_ok_and(|count| count == N);
+        if self.table_offset != expected.table_offset()
+            || self.flash_size != expected.flash_size()
+            || !same_count
+        {
+            return Ok(false);
+        }
+        for (index, expected) in (0..self.count).zip(expected.entries()) {
+            if self.entry(source, index)?.as_ref() != Some(expected) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+}
+
+/// Reads the header of the layout record the app image in `source` embeds
+/// right after its descriptor ([`LAYOUT_AT`]), checking the image's header
+/// and its first segment's header and descriptor magic, but nothing else of
+/// the image. `None` when no record lies there: the first segment ends
+/// before the record's header or entries do, or the header doesn't start
+/// with [`LAYOUT_MAGIC`], has non-zero reserved bytes, or counts more than
+/// [`table::MAX_ENTRIES`] entries. Nothing else in the image is looked at.
+///
+/// # Errors
+///
+/// [`ImageError::Read`] when reading fails, the errors of the header and the
+/// first segment's header, and [`ImageError::MissingDescriptor`].
+pub fn app_layout<S: Source + ?Sized>(source: &S) -> Result<Option<AppLayout>, ImageError> {
+    let segment = first_segment(source)?;
+    let page_size = app_page_size(source, &segment)?;
+    segment.check_mapping(0, page_size)?;
+    let header_end = LAYOUT_AT + LAYOUT_HEADER_LEN;
+    if segment.len < header_end {
+        return Ok(None);
+    }
+    // Inside the segment, which holds the descriptor and the header.
+    let at = segment
+        .data
+        .checked_add(LAYOUT_AT)
+        .ok_or(ImageError::PastEnd)?;
+    let header: [u8; LAYOUT_HEADER_LEN as usize] = read_array(source, at)?;
+    let magic: [u8; 16] = field(&header, 0);
+    let table_offset = u32::from_le_bytes(field(&header, 16));
+    let flash_size = u32::from_le_bytes(field(&header, 20));
+    let count = u32::from_le_bytes(field(&header, 24));
+    let reserved: [u8; 4] = field(&header, 28);
+    let fits = usize::try_from(count).is_ok_and(|count| count <= table::MAX_ENTRIES)
+        && count
+            .checked_mul(table::ENTRY_LEN)
+            .and_then(|len| len.checked_add(header_end))
+            .is_some_and(|end| end <= segment.len);
+    if magic != LAYOUT_MAGIC || reserved != [0; 4] || !fits {
+        return Ok(None);
+    }
+    Ok(Some(AppLayout {
+        entries: at
+            .checked_add(LAYOUT_HEADER_LEN)
+            .ok_or(ImageError::PastEnd)?,
+        table_offset,
+        flash_size,
+        count,
+    }))
 }
 
 /// The `N` bytes at `at` in `bytes`; zeros where `bytes` is too short, which
