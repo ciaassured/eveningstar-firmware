@@ -6,7 +6,9 @@
 use core::pin::pin;
 
 use eveningstar_esp_formats::pace::Yield;
-use eveningstar_esp_formats::test_support::{APP, Rng, app_image, data};
+use eveningstar_esp_formats::test_support::{
+    APP, PARTITIONS, Rng, app_image, app_image_with_layout, data, layout_record_bytes, with_layout,
+};
 use eveningstar_storage::chain::Handles;
 use eveningstar_storage::nor::Writer;
 use eveningstar_storage::test_support::{Call, RamNor, TestFlash, run};
@@ -175,6 +177,52 @@ fn a_slot_publishes_its_image_and_never_the_bytes_after_it() {
             assert!(address + read <= end, "{call:?}");
         }
     }
+}
+
+#[test]
+fn the_layout_record_is_compared_with_the_compiled_layout() {
+    let mut other = PARTITIONS.to_vec();
+    other[4].size *= 2;
+    let other_record = layout_record_bytes(layout::TABLE_OFFSET, layout::FLASH_SIZE, &other);
+    let cases = [
+        (app_image_with_layout().build(), Layout::Compiled),
+        (with_layout(&image(), &other_record), Layout::Other),
+        (image(), Layout::Missing),
+        (APP.to_vec(), Layout::Missing),
+    ];
+    for (bytes, expected) in cases {
+        let (slot, _writer, flash) = alternate_over(&bytes);
+        check(&slot);
+        let model = slot.model().unwrap();
+        assert!(model.image().is_ok());
+        assert_eq!(slot.layout(&model), Ok(Ok(expected)));
+        // No read reached a byte after the image.
+        let end = layout::OTA_1.offset + bytes.len() as u32;
+        for call in flash.device().calls() {
+            if let Call::Read(address, read) = call {
+                assert!(address + read <= end, "{call:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn the_layout_is_read_at_the_model_s_epoch() {
+    let (slot, mut writer, _flash) = alternate_over(&app_image_with_layout().build());
+    check(&slot);
+    let model = slot.model().unwrap();
+    assert_eq!(slot.layout(&model), Ok(Ok(Layout::Compiled)));
+    rewrite(&mut writer, &image());
+    assert_eq!(slot.layout(&model), Err(LoadError::Stale));
+    let session = writer.begin();
+    assert_eq!(slot.layout(&model), Err(LoadError::Busy));
+    drop(session);
+
+    // An image that doesn't verify has no layout to compare.
+    let (slot, _writer, _flash) = alternate_over(&[0xFF; 64]);
+    check(&slot);
+    let empty = slot.model().unwrap();
+    assert_eq!(slot.layout(&empty), Ok(Err(ImageFailure::Magic)));
 }
 
 #[test]

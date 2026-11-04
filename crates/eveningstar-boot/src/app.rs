@@ -18,6 +18,10 @@
 //! verified at; [`AppSlot::verdict`] gives the result at a given epoch once
 //! the check has kept it, so no image is hashed twice for one epoch.
 //!
+//! The image's descriptor ([`AppSlot::descriptor`]) and how its layout
+//! record compares with the compiled layout ([`AppSlot::layout`]) are read
+//! again on request, through a snapshot at the model's epoch.
+//!
 //! The view of a slot is the image, the digest included, once verified at
 //! the region's epoch now; the bytes after it are never published, and an
 //! image without an appended SHA-256 publishes nothing.
@@ -60,7 +64,7 @@ use eveningstar_esp_formats::image::{self, AppDescriptor, Header, ImageError};
 use eveningstar_esp_formats::pace::Pace;
 use eveningstar_storage::nor::{Published, Reader, Snapshot};
 use eveningstar_storage::roles::{AlternateApp, CurrentApp, FoundApp, Internal, Publishable};
-use eveningstar_storage::{Epoch, Span, WriteState};
+use eveningstar_storage::{Epoch, LAYOUT_RECORD, Source, Span, WriteState};
 
 use crate::error::{ImageFailure, LoadError, Unpublished, at, failure, publish, verdict, whole};
 use crate::pace::{Paced, Progress};
@@ -373,6 +377,24 @@ impl<'f, R: AppRole> AppSlot<'f, R> {
         verdict(image::app_descriptor(&snapshot))
     }
 
+    /// How the layout record of the image `model` describes compares with
+    /// the compiled layout ([`LAYOUT_RECORD`]), read again at the model's
+    /// epoch.
+    ///
+    /// # Errors
+    ///
+    /// [`LoadError::Stale`] once the region isn't stable at the model's
+    /// epoch, and [`LoadError::Busy`] while a session is open on it; the
+    /// image's failure when it doesn't verify.
+    #[inline(never)]
+    pub fn layout(&self, model: &AppModel<R>) -> Result<Result<Layout, ImageFailure>, LoadError> {
+        if let Err(failure) = model.image {
+            return Ok(Err(failure));
+        }
+        let snapshot = at(&self.reader, model.epoch)?;
+        verdict(compare_layout(&snapshot))
+    }
+
     /// The view of the image `model` describes, the digest included: the
     /// region's first [`VerifiedApp::size`] bytes.
     ///
@@ -396,6 +418,31 @@ impl<R: AppRole> fmt::Debug for AppSlot<'_, R> {
             .field("reader", &self.reader)
             .field("model", &self.kept.lock(|kept| kept.borrow().model))
             .finish()
+    }
+}
+
+/// How an app image's layout record compares with the compiled layout
+/// ([`LAYOUT_RECORD`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Layout {
+    /// The record equals the compiled layout in every byte.
+    Compiled,
+    /// The record describes another layout.
+    Other,
+    /// No record lies right after the image's descriptor.
+    Missing,
+}
+
+/// How the layout record of the image `source` reads compares with the
+/// compiled layout.
+fn compare_layout<S: Source + ?Sized>(source: &S) -> Result<Layout, ImageError> {
+    let Some(layout) = image::app_layout(source)? else {
+        return Ok(Layout::Missing);
+    };
+    if layout.matches(source, &LAYOUT_RECORD)? {
+        Ok(Layout::Compiled)
+    } else {
+        Ok(Layout::Other)
     }
 }
 
