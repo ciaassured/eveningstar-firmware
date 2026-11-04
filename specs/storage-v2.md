@@ -70,6 +70,10 @@ writes, and those carry over. Four things change:
   entry padding, are served as `0xFF` and reported as sanitized. Unused space
   elsewhere is cut, not exported. In the unverified tier a table with no MD5
   entry publishes no bytes, and entries after the MD5 entry are cut off.
+- A byte may also leave when the parser pins it down: proven by a check,
+  a function of proven values, constrained to a known set, or a constant
+  (sanitized otherwise). So the otadata's raw entries are published when
+  their CRC matches and their state is defined (decided 2026-11-04).
 - A bootloader image with a verifying SHA-256 is published whether or not it
   is a known one; being known only decides the tier.
 - The boot writers (alternate slot and otadata) are handed out only at the
@@ -299,7 +303,7 @@ The internal flash's roles:
 |-------------------|-----------------------------------------------|-------------|------------------------------------------------|----------------------------|
 | `Bootloader`      | 0x0 up to the located table, or up to the compiled table offset when none is located | publishable | reader, every tier | `boot::Bootloader` |
 | `PartitionTable`  | the compiled table's sector, 0x8000–0x9000    | publishable | reader, every tier                             | `boot::PartitionTable`     |
-| `Otadata`         | `otadata`                                     | sensitive   | reader in the layout and boot tiers; writer in the boot tier, in `BootWriters` | `boot::Otadata`; `ota` |
+| `Otadata`         | `otadata`                                     | publishable | reader in the layout and boot tiers; writer in the boot tier, in `BootWriters` | `boot::Otadata`; `ota` |
 | `CurrentApp`      | the slot that booted                          | publishable | reader in the layout and boot tiers            | `boot::App`                |
 | `AlternateApp`    | the other slot                                | publishable | reader in the layout and boot tiers; writer in the boot tier, in `BootWriters` | `boot::App`; `ota` |
 | `CurrentConfig`   | the current slot's configuration              | sensitive   | writer in the layout and boot tiers            | configuration store        |
@@ -308,8 +312,10 @@ The internal flash's roles:
 | `Factory`         | `factory`                                     | sensitive   | none until the factory module exists           | factory module (later)     |
 | `Chip`            | the whole flash                               | sensitive   | none until the export service exists          | export service (later)     |
 
-- `Otadata` is not `Publishable`: its content module publishes parsed fields
-  only (see "Publication"), so its snapshots have no `publish`.
+- `Otadata` is `Publishable` at its compiled offset: its content module
+  publishes the entries its parser pins down (see "Publication").
+  `FoundOtadata` isn't, as only its location is known, not that it is the
+  otadata.
 - `PartitionTable`, `Factory`, `Otadata` and `Diag` are `Placed`; the current
   and alternate roles are `LayoutSize` only; `Bootloader` starts at 0x0 but
   its length is set at runtime; `Chip` is neither, as the flash's size is
@@ -521,12 +527,19 @@ enforced by the storage crate, the third by the content module.
        reported, as they say where regions lie, not what they hold;
      - when the search finds several tables, none is the located table: their
        offsets are reported, and neither their entries nor their bytes.
-   - **The otadata**: parsed fields only, in every tier. For each entry: its
-     validity (blank, valid, corrupt, invalid, aborted); and, only when its
-     CRC matches, its sequence number, the slot it selects, and its state
-     when the state is a value ESP-IDF defines. A blank entry is reported as
-     blank, a corrupt one by its validity alone. The 20-byte label and an
-     unknown state value are never published, nor any raw byte.
+   - **The otadata**, at its compiled offset: the 32-byte entry of each
+     sector, when the parser pins down every byte of it. The CRC proves the
+     sequence number (and covers nothing else), the CRC is a function of it,
+     the state must be one of the values ESP-IDF defines, and the label,
+     which the bootloader ignores and the firmware writes erased, is served
+     as `0xFF` and listed as sanitized when it isn't erased. So a published
+     entry reveals nothing beyond the parsed fields. A blank entry (all
+     `0xFF`) is published as such. An entry whose CRC doesn't match, whose
+     state isn't a defined value, or whose sequence number is blank while
+     its other bytes aren't, has no view; the rest of each 4 KiB sector is
+     never published. The parsed fields (`OtadataFields`) remain: validity,
+     and, only when the CRC matches, the sequence number, the slot it
+     selects, and a defined state. A located otadata publishes fields only.
    - **Configuration, diag and factory data** are never published raw. Their
      formats (not built yet) give every record a strong integrity check, so
      the parser can tell a record of its own from leftover data. A store may
@@ -555,7 +568,7 @@ views. A model's constructor is its parser.
 |------------------|-------------------------------------------|--------------------------------------------------------------------------------------------------|--------------------------------------------------------|
 | `Bootloader`     | `Reader<Bootloader>`                      | header (with its flash size field), descriptor, length, stored digest, file SHA-256, known entry | the image, when its SHA-256 verifies, known or not     |
 | `PartitionTable` | `Reader<PartitionTable>`, `Option<Reader<FoundTable>>` | entries, the partitions as the bootloader loads them, MD5 stored and computed, end, how it was located, other candidates' offsets | the located table's verified bytes |
-| `Otadata`        | `Reader<Otadata>` or `Reader<FoundOtadata>` | both entries, validity, the active entry, boot state                                           | none; parsed fields only                               |
+| `Otadata`        | `Reader<Otadata>` or `Reader<FoundOtadata>` | both entries, validity, the active entry, boot state                                           | each entry the parser pins down (compiled only)        |
 | `AppSlot`        | `Reader<CurrentApp>`, `Reader<AlternateApp>`, or `Reader<FoundApp>` | header, length, stored digest, file SHA-256, verification result, per epoch; the descriptor on request | the image, once verified                               |
 
 - The app checks run in `App::run`, over the tier's `AppSlot`s, in the
@@ -750,7 +763,8 @@ crates land. In outline:
 - `/storage/internal/table` gives the expected and found partitions, the table
   source and the other candidates' offsets; the positional `layout` field per
   region goes.
-- The otadata is served as parsed fields, not bytes.
+- The otadata is served as parsed fields, and each entry the parser pins down
+  as its 32 raw bytes.
 
 ## Order of work
 
@@ -799,7 +813,7 @@ table's MD5), without their API and firmware parts.
   cancelling its future, leaves a new epoch; a session whose calls the guard
   refused leaves the old epoch; `publish` refuses an epoch that moved; the
   second check refuses each sensitive span.
-- `compile_fail` doctests: a sensitive or otadata handle has no `publish`;
+- `compile_fail` doctests: a sensitive or located-otadata handle has no `publish`;
   `Writer` has no `program` outside a session; a `Writer<AlternateApp>` isn't
   a `Writer<CurrentApp>`; no handle is `Clone`.
 - Publication: an app slot publishes its image and not the bytes after it; an
@@ -807,8 +821,9 @@ table's MD5), without their API and firmware parts.
   over leftover data whose SHA-256 doesn't verify publishes nothing; a
   table's ignored bytes that aren't `0xFF` are served as `0xFF` and listed as
   sanitized, and ones that are `0xFF` aren't listed; several candidate tables
-  publish nothing; the otadata publishes no label, no unknown state value, and
-  no sequence number of a corrupt entry.
+  publish nothing; an otadata entry publishes its 32 bytes when blank or
+  pinned down, with a non-erased label sanitized, and nothing when its CRC
+  or state doesn't verify; no read reaches past an entry into its sector.
 - The chain: today's fixtures and board captures, plus a table without an MD5
   entry, a table with a bad MD5, entries between the MD5 entry and the end
   entry (the MD5 entry read as a partition, the last entry left out), an end

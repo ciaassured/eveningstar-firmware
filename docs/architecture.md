@@ -517,7 +517,7 @@ reported beside them.
 |-------------------|--------------------------------------------------------------------------------------------------------------------------|-------------|--------------------------------------------------------------|
 | `Bootloader`      | 0x0 up to the located table, or up to the compiled table offset when none is located                                     | publishable | reader, every tier                                           |
 | `PartitionTable`  | the compiled table's sector, 0x8000 to 0x9000                                                                            | publishable | reader, every tier                                           |
-| `Otadata`         | `otadata`                                                                                                                | sensitive   | reader in the layout and boot tiers; writer in the boot tier |
+| `Otadata`         | `otadata`                                                                                                                | publishable | reader in the layout and boot tiers; writer in the boot tier |
 | `CurrentApp`      | the slot that booted                                                                                                     | publishable | reader in the layout and boot tiers                          |
 | `AlternateApp`    | the other slot                                                                                                           | publishable | reader in the layout and boot tiers; writer in the boot tier |
 | `CurrentConfig`   | the current slot's configuration                                                                                         | sensitive   | writer in the layout and boot tiers                          |
@@ -624,9 +624,9 @@ epoch, its sanitized spans and its reads). A byte is published only when three
 rules hold. The storage crate enforces the first two, the content module the
 third.
 
-1. **Type.** Only readers of `Publishable` roles have `publish`. An otadata,
-   configuration, diag, factory or whole-chip handle has no such method,
-   whatever the tier.
+1. **Type.** Only readers of `Publishable` roles have `publish`. A located
+   otadata, configuration, diag, factory or whole-chip handle has no such
+   method, whatever the tier.
 2. **Location.** Every publishable role is located from a known point: the
    bootloader at 0x0, where the ROM loads it; the table at the compiled offset,
    which a known bootloader reads, or the table the search finds; a partition
@@ -653,11 +653,18 @@ third.
      and no labels; its partitions' types, subtypes, offsets, sizes and flags
      are still reported, as they say where regions lie, not what they hold.
      When the search finds several tables, only their offsets are reported.
-   - The otadata: parsed fields only, in every tier. For each entry its
-     validity and, only when its CRC matches, its sequence number, the slot it
-     selects, and its state when that is a value ESP-IDF defines. The 20-byte
-     label, an unknown state value and the region's epoch never leave the
-     device.
+   - The otadata, at its compiled offset: the 32-byte entry of each sector,
+     when its parser pins down every byte of it. ESP-IDF's CRC covers the
+     sequence number alone; the CRC is a function of it; the state has to be
+     one of the values ESP-IDF defines; and the label, which the bootloader
+     ignores and the firmware writes erased, is served as `0xFF` and listed as
+     sanitized when it isn't erased. A published entry therefore reveals
+     nothing beyond its parsed fields. A blank entry is published as such. An
+     entry whose CRC doesn't match or whose state isn't a defined value has no
+     view, and the rest of each 4 KiB sector is never published. The parsed
+     fields, `OtadataFields`, give validity and, for a matching CRC, the
+     sequence number, the slot it selects and a defined state; a located
+     otadata gives those fields only.
    - Configuration, diag and factory data are never published raw. Their
      formats will give each record a strong integrity check, so a store can
      tell a record of its own from leftover data, and a store may publish
@@ -718,7 +725,7 @@ and which carry the epoch they were parsed at, and published views.
 |------------------|-------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------|----------------------------------------------------|
 | `Bootloader`     | the bootloader's region                                     | header (read whether or not the image verifies), length, stored digest, file SHA-256, known entry; the descriptor on request      | the image, once its SHA-256 verifies, known or not |
 | `PartitionTable` | the compiled table's sector, and the table the search found | the table as the bootloader judges it, the partitions it loads, the MD5 entry, the comparison with the layout, how it was located | the covered bytes, the ignored ones sanitized      |
-| `Otadata`        | the otadata, the compiled layout's or the located table's   | both entries, the active one, the boot state                                                                                      | none; `OtadataFields` only                         |
+| `Otadata`        | the otadata, the compiled layout's or the located table's   | both entries, the active one, the boot state                                                                                      | each entry its parser pins down (compiled only)    |
 | `AppSlot`        | one app region: current, alternate or found                 | header, length, stored digest, file SHA-256, per epoch; the descriptor on request                                                 | the image, once verified at the region's epoch now |
 
 - Every module is `Sync` and takes `&self`, so it lives in a `static` and is
