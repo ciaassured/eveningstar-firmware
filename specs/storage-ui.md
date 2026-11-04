@@ -532,7 +532,10 @@ Storage                                                        [Refresh]
   `cargo run`, whose bootloader and table aren't the board's). A slot whose
   image is `invalid` is `serious`. A `needs_confirmation` boot adds a
   `caution` banner: the running firmware rolls back at the next reboot
-  unless confirmed, which this firmware can't do yet.
+  unless confirmed, which this firmware can't do yet. The firmware requests
+  that reboot itself 10 minutes after boot while the image awaits a
+  confirmation (reason `cannot_confirm`), and a bootloader with rollback then
+  starts the previous image.
 - **Flash map.** One bar for the whole flash, segments proportional to size
   with a minimum width so a 4 KiB partition stays visible, labelled in a
   legend when too narrow. Unallocated space is hatched. The current slot

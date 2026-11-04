@@ -436,10 +436,12 @@ Each crate uses only the crates above it.
   and return an error rather than panic on any input. The otadata planners
   compute the erases and programs ESP-IDF's rules call for, and the caller
   carries them out. `ReadError::Stale` tells a read of a region written under
-  it from a failed device read.
+  it from a failed device read. It also defines the layout record an app image
+  embeds (`LayoutRecord`) and reads one from an image (`app_layout`).
 - `eveningstar-storage` owns the flash devices and splits them into region
   handles. It enforces bounds, protected spans, capabilities and write state,
-  and reads no format beyond what the verification chain needs. Its
+  and reads no format beyond what the verification chain needs. It gives the
+  compiled layout as a layout record (`LAYOUT_RECORD`). Its
   `test-support` feature gives the crates above it a NOR flash in RAM that
   takes power cuts and runs a hook on any call, and a simulated ESP-IDF
   bootloader run on it.
@@ -477,6 +479,47 @@ overlapping partitions, partitions outside the flash and slot pairs of unequal
 size. The `lint` group fails when `layout.rs` is stale, and the `build` group
 checks that the table ESP-IDF builds resolves to the same partitions, which
 checks the numeric type, subtype and flag values against `gen_esp32part`.
+
+Every app image embeds the layout it is built for, so that the firmware can
+tell an image built for another layout from one built for this one. The layout
+record sits right after the app descriptor, at offset 0x100 of the first
+segment's data:
+
+| Offset | Length         | Content                                                              |
+|--------|----------------|----------------------------------------------------------------------|
+| 0x00   | 16             | the magic `EVENINGSTAR-LYT1`, which names version 1 of the format    |
+| 0x10   | 4              | the partition table's offset, little-endian                          |
+| 0x14   | 4              | the flash size in bytes, little-endian                               |
+| 0x18   | 4              | the number of entries, little-endian                                 |
+| 0x1C   | 4              | zero                                                                 |
+| 0x20   | 32 per entry   | the partitions in table order, each in the ESP-IDF table's encoding  |
+
+- The record is `eveningstar_storage::LAYOUT_RECORD`, built at compile time
+  from `layout.rs`. `main.rs` links it into the section
+  `.flash.appdesc.layout`. esp-hal 1.2.2's `rodata.x` collects `.flash.appdesc`
+  and then `.flash.appdesc.*` into one output section at the start of the
+  image, and the record's alignment of 1 leaves no gap after the descriptor's
+  256 bytes. Because the record sits at a fixed offset, `app_layout` finds it
+  from the image's header, the first segment's header and the descriptor's
+  page size alone, with no symbol table, and reads only the record's header,
+  as the entries are read on demand.
+- `app_layout` gives no record when the first segment ends before the header
+  or the entries do, the magic differs, the reserved bytes aren't zero, or the
+  count exceeds the table's capacity (96 entries). An image compares equal
+  to the compiled layout only when the table offset, the flash size, the entry
+  count and every entry are equal byte for byte.
+- `AppSlot::layout` (the `App` module) compares the record of a verified image
+  with the compiled one, reading it again at the model's epoch like the
+  descriptor, and says whether it is the compiled layout, another layout or
+  missing.
+- `Update::finish` and `Ota::verify_other` refuse an image whose record is
+  missing or differs (`OtaError::Layout`). `roll_back` verifies the alternate
+  slot with `verify_other`, so it refuses too. The layout can't change over
+  OTA, and an image built for another layout would boot into the unverified
+  tier, where the firmware runs on its default configuration without saving
+  it, and could leave a remote board on that configuration. After an update
+  from firmware that has no record, a `roll_back` to it is refused; the
+  bootloader's own rollback doesn't read the record and isn't affected.
 
 ### Devices
 
@@ -726,7 +769,7 @@ and which carry the epoch they were parsed at, and published views.
 | `Bootloader`     | the bootloader's region                                     | header (read whether or not the image verifies), length, stored digest, file SHA-256, known entry; the descriptor on request      | the image, once its SHA-256 verifies, known or not |
 | `PartitionTable` | the compiled table's sector, and the table the search found | the table as the bootloader judges it, the partitions it loads, the MD5 entry, the comparison with the layout, how it was located | the covered bytes, the ignored ones sanitized      |
 | `Otadata`        | the otadata, the compiled layout's or the located table's   | both entries, the active one, the boot state                                                                                      | each entry its parser pins down (compiled only)    |
-| `AppSlot`        | one app region: current, alternate or found                 | header, length, stored digest, file SHA-256, per epoch; the descriptor on request                                                 | the image, once verified at the region's epoch now |
+| `AppSlot`        | one app region: current, alternate or found                 | header, length, stored digest, file SHA-256, per epoch; the descriptor and the layout record's comparison on request               | the image, once verified at the region's epoch now |
 
 - Every module is `Sync` and takes `&self`, so it lives in a `static` and is
   shared between tasks. Results that cost a hash are kept behind a
@@ -869,8 +912,10 @@ image with no rollback.
 - `Update::finish` programs the last word, ends the session at a new epoch of
   the slot, and waits for the slot's check to verify the slot at that epoch:
   chip, segments, checksum and the appended SHA-256. It then requires the image
-  to be exactly the bytes written and its project name to be the running
-  app's, and returns a `VerifiedImage` of that epoch.
+  to be exactly the bytes written, its project name to be the running app's
+  and its layout record to be the compiled layout's (`OtaError::Layout`), and
+  returns a `VerifiedImage` of that epoch. `verify_other` makes the same
+  checks of the image already in the alternate slot, apart from the length.
 - `activate` takes only a `VerifiedImage` from the latest update, or from
   `verify_other` since; it borrows the flash, so it can't outlive its `split`.
   It refuses one whose slot's epoch has moved, and doesn't hash the slot again:
@@ -886,25 +931,40 @@ image with no rollback.
   fallback. `begin_update` and `activate` refuse (`Unconfirmed`) until the
   running image is `Valid`, and nothing writes `Valid` for an image that wasn't.
   `roll_back` marks the running image `Invalid`, once the alternate slot is a
-  rollback target holding an image that verifies.
+  rollback target holding an image that `verify_other` accepts.
 - A power cut at any point leaves a selection that boots the running image, or
   an activated image that verified, started once with its rollback armed.
 
-Nothing reboots below the boot tier. An image the bootloader started as
-`PendingVerify` can be confirmed only in the boot tier. In the layout tier the
-firmware logs it: that tier's bootloader isn't known to roll back, and one that
-doesn't would start the same image after every reboot, so a reboot there could
-repeat for good on a board with no reset button. A bootloader that rolls back
-does so at the next boot, whatever causes it. Nothing is logged or requested
-in the unverified tier, where the otadata read may come from a leftover table.
+The confirmation window (`storage/confirmation.rs`) is the firmware's, not
+`Ota`'s, and runs in every tier. When the running image awaits a confirmation
+(`eveningstar_boot::otadata::awaits_confirmation`), `storage::start` spawns a
+task that requests a graceful reboot 10 minutes after boot (`Reason::Unconfirmed`,
+which the API reports as `cannot_confirm`).
+
+- An image awaits a confirmation when it has no boot state, or its boot state
+  `needs_confirmation`: any state but `Valid`, a fallback, no otadata or one
+  that doesn't read, the unverified tier without a located otadata (or with
+  one but no known running slot), and a board started by `cargo run`.
+- The task reads the boot state again when the window ends and reboots only
+  if the image still awaits a confirmation, so a confirmation by any path
+  cancels the reboot. A confirmed image at boot opens no window.
+- A bootloader with app rollback turns a `PendingVerify` image into `Aborted`
+  at the next boot and starts the previous image. With no rollback target, the
+  same image starts again, and the board reboots every 10 minutes until the
+  image is confirmed. That is accepted over a lockout.
+- The task has its own watchdog handle, which sleeps through the window and
+  bounds the read and the request after it; the handle retires when the task
+  ends, and at boot when no window opens.
+- `EVENINGSTAR_CONFIRM_WINDOW_S`, read when the firmware is built, shortens
+  the window as a test aid; a value that isn't a decimal number above 0 fails
+  the build.
 
 The firmware builds `Ota` in a `static` last at boot, as it waits for the
-running slot's check. Nothing takes it yet, and the configuration and diag
-writers are dropped at boot, as no store owns them yet. The OTA service, not
-built yet, will decide how updates arrive and are authenticated, and give a
-user 10 minutes after a boot whose image needs confirming to confirm it; on
-timeout it requests a graceful reboot in every case, including when no rollback
-target exists, so that a user can confirm whichever image comes up.
+running slot's check. Nothing takes it yet, so nothing calls `Ota::confirm`:
+the API has no endpoint for it, and an activated update rolls back after 10
+minutes until one exists. The configuration and diag writers are dropped at
+boot, as no store owns them yet. The OTA service, not built yet, will decide
+how updates arrive and are authenticated.
 
 ### The app check task
 
@@ -925,11 +985,14 @@ the results kept since the last wait are logged before each.
   on files: the table judged as the bootloader judges it, with an MD5 entry and
   no entry after it, and compared with the layout by label; the bootloader
   verified and looked up in `known.rs`, with its entry's table offset and
-  rollback; the app verified as an ESP32-C6 image of the `eveningstar` project;
-  and the three, as `flash-all` writes them, taken through `split` to the boot
-  tier. The `build` group runs it on the Nix bootloader and table and on the
-  release app, and fails on a bootloader missing from `known.rs` (printing its
-  entry), a table that isn't the layout, or an app over 75% of its slot.
+  rollback; the app verified as an ESP32-C6 image of the `eveningstar` project,
+  with the layout record right after its descriptor equal to the generated
+  layout's in every byte; and the three, as `flash-all` writes them, taken
+  through `split` to the boot tier. The `build` group runs it on the Nix
+  bootloader and table and on the release app, and fails on a bootloader
+  missing from `known.rs` (printing its entry), a table that isn't the layout,
+  an app without the layout record or with one that isn't the generated
+  layout's (printing which entries differ), or an app over 75% of its slot.
 - The tests of the four storage crates read fixtures built by Nix and real
   captures in `crates/eveningstar-esp-formats/testdata/` (see its README). The
   `build` group fails when the Nix-built ones are stale.
@@ -939,7 +1002,10 @@ the results kept since the last wait are logged before each.
   type rules have `compile_fail` doctests.
 - The OTA tests cut the power after any erase or program, in each way a NOR
   program can be cut, and boot a simulated bootloader afterwards, from a first
-  boot, a rollback target, a pending activation and a fallback.
+  boot, a rollback target, a pending activation and a fallback. They also
+  refuse images with no layout record, with one four bytes after the
+  descriptor, with a first segment that ends inside it and with one of another
+  layout, and take only the record right after the descriptor.
 
 ### On the board
 
@@ -963,6 +1029,11 @@ one byte flipped, selected as `New`, is refused by the bootloader, which starts
 `ota_0`; the firmware logs that the bootloader fell back and that the boot
 state needs confirming, and the alternate slot's check fails on the checksum.
 
+The confirmation window was run with `EVENINGSTAR_CONFIRM_WINDOW_S=60`. On an
+image confirmed `Valid`, the window's watchdog handle retires at boot. A `New` entry booted as `PendingVerify` and rebooted after the
+60 s; the bootloader marked the entry `Aborted`. With no rollback target, the
+same image rebooted once per window.
+
 The bootloader's check of the image it starts, which activation and the
 fallback above rely on, holds only without a debugger attached. The ESP-IDF
 bootloader skips an image's checksum and SHA-256 while a debugger is attached (`esp_cpu_dbgr_is_attached()` in
@@ -981,7 +1052,8 @@ own.
   trusted. Faults are a panic, a supervised task missing its watchdog
   deadline, or a hung executor.
 - **Everything else requests a reboot** through the reboot service, with a
-  reason, such as the Ethernet link staying down. A graceful reboot waits for
+  reason, such as the Ethernet link staying down or the running image staying
+  unconfirmed. A graceful reboot waits for
   holds to be released, up to a deadline. An immediate one doesn't wait.
 
 Only three places may reset the chip: the reboot service, the watchdog
