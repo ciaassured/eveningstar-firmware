@@ -229,8 +229,9 @@ impl<'f> Ota<'f> {
     ///
     /// [`OtaError::Unavailable`] until OTA is ready, [`OtaError::Image`] when
     /// the image doesn't verify, [`OtaError::Project`] when its project name
-    /// isn't the running app's, and [`OtaError::Changed`] when the slot's
-    /// write state records no epoch.
+    /// isn't the running app's, [`OtaError::Layout`] when it embeds no layout
+    /// record or one of another layout, and [`OtaError::Changed`] when the
+    /// slot's write state records no epoch.
     pub async fn verify_other(&mut self) -> Result<VerifiedImage<'f>, OtaError> {
         let project = self.ready()?;
         self.verify(project).await
@@ -294,9 +295,9 @@ impl<'f> Ota<'f> {
     ///
     /// [`OtaError::Unavailable`] until OTA is ready; [`OtaError::Plan`] when
     /// the alternate slot isn't a rollback target or the active entry doesn't
-    /// select the running slot, checked before the image; [`OtaError::Image`]
-    /// and [`OtaError::Project`] when the alternate slot's image doesn't
-    /// verify; [`OtaError::Access`] when the write fails.
+    /// select the running slot, checked before the image; [`OtaError::Image`],
+    /// [`OtaError::Project`] and [`OtaError::Layout`] when the alternate
+    /// slot's image doesn't verify; [`OtaError::Access`] when the write fails.
     pub async fn roll_back(&mut self) -> Result<(), OtaError> {
         let project = self.ready()?;
         let write = otadata::read(&self.otadata).plan_roll_back(self.running)?;

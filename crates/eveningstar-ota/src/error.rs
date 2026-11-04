@@ -36,6 +36,9 @@ pub enum OtaError {
     Changed,
     /// The image's project name isn't the running app's.
     Project,
+    /// The image embeds no layout record right after its descriptor, or one
+    /// of a layout other than the compiled one.
+    Layout,
     /// The bytes written aren't exactly the image: fewer or more of them.
     Length {
         /// The bytes written.
