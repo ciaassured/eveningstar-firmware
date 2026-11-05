@@ -348,8 +348,9 @@ Each role below gives its span, its class, its handles and their owner.
 - `CurrentConfig`: the current slot's configuration. Sensitive.
   - Handle: writer in the layout and boot tiers. Owner: configuration store.
 - `AlternateConfig`: the alternate slot's configuration. Sensitive.
-  - Handle: erase-only writer in the layout and boot tiers. Owner:
-    configuration store.
+  - Handle: writer that only wipes the whole region, in the layout and boot
+    tiers. Owner: configuration store, which migrates from it at boot; in the
+    boot tier `Ota` owns it, and wipes it when an update begins.
 - `Diag`: `diag`. Sensitive.
   - Handle: writer in the layout and boot tiers. Owner: diag store.
 - `Factory`: `factory`. Sensitive.
@@ -428,9 +429,9 @@ pub enum WriteState {
   new value after, and a reader checks the value before and after reading and
   discards what it read if the value changed.
 - **Writes happen only inside a session.** `Writer::begin(&mut self)` returns
-  a `nor::Session<'_, R>`, which carries `erase` and `program` (and `erase`
-  only, for `AlternateConfig`). `Writer` itself only reads. `begin` stores
-  `Writing(e)`. Before each device call the session marks itself written;
+  a `nor::Session<'_, R>`, which carries `wipe`, `erase` and `program` (and
+  `wipe` only, for `AlternateConfig`). `Writer` itself only reads. `begin`
+  stores `Writing(e)`. Before each device call the session marks itself written;
   a range the guard refuses never reaches the device and marks nothing.
   Dropping the session, on any path (an error, a cancelled future, an
   abandoned update), stores `Stable(e')` with `e' != e` if a device call was
@@ -762,9 +763,18 @@ first step that failed. It holds nothing about OTA readiness, which
 
 ## OTA (`eveningstar-ota`)
 
-`Ota` takes `BootWriters`, the current and alternate `AppSlot`s and the
-`Otadata` module. Its behaviour is the first design's; what changes is where
-the checks live.
+`Ota` takes `BootWriters`, the alternate configuration's writer, the current
+and alternate `AppSlot`s and the `Otadata` module. Its behaviour is the first
+design's; what changes is where the checks live.
+
+- **The alternate configuration** (decided with the user, 2026-11-05).
+  `begin_update` erases the slot's first sector, then wipes the alternate
+  configuration whole, as it belongs to the image the update replaces. The
+  erase comes first so that a cut between the two never leaves a rollback
+  target without its configuration; a cut wipe leaves a slot that doesn't
+  verify, and the next update wipes again. Nothing else touches it: switching
+  to the image already in the alternate slot (`verify_other`, `activate`,
+  `roll_back`) keeps its configuration.
 
 - The descriptor check and the project name, in the first design
   `Limit::AppDescriptor` and the full tier, are `Ota`'s own readiness: it
@@ -942,8 +952,16 @@ table's MD5), without their API and firmware parts.
   running slot's settings, secrets included, in 128 KiB, through its session
   as an `embedded-storage-async` NOR flash. It reads the alternate slot's
   configuration through `Writer<AlternateConfig>`, which reads at any time and
-  whose sessions erase only, to migrate after an update, and erases it once it
-  has migrated. Whether the store
+  whose sessions only wipe the whole region, to migrate at the first boot of
+  an update, during its trial as `PendingVerify`, and never erases it: the
+  alternate configuration is the rollback target's. In the boot tier the
+  writer then goes to `Ota`, which wipes it when the next update begins (see
+  "OTA"). Migrating writes the current configuration during the trial; user
+  writes wait until the image is `Valid` (decided with the user, 2026-11-05).
+  Flashing over USB (`flash-all`, `cargo run`) writes a slot without the wipe,
+  so a new image can find a configuration another image wrote in its own
+  slot's region; how the store tells, for example by stamping each record
+  with the SHA-256 of the image that wrote it, is open. Whether the store
   accepts records zeroed in place (NOR programs only clear bits) is open. Its
   format gives every record a strong integrity check (see "Publication").
 - **Diag store.** It owns `Writer<Diag>`. Crash records are backtraces, not

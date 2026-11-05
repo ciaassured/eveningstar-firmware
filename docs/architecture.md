@@ -497,7 +497,9 @@ WiFi and TLS are in, as slots can't grow later.
 - Configuration is per slot, so after a rollback the old firmware finds its
   configuration as it left it, whatever the newer firmware wrote. The new
   firmware migrates from the alternate slot's partition after an update. A
-  shared partition would undo that.
+  shared partition would undo that. An update wipes the configuration of the
+  slot it rewrites, which belongs to the image it replaces, and nothing else
+  erases or writes the alternate slot's configuration.
 - `factory` and `reserved` are space that later firmware can claim only because
   the table already has it. `factory` has a role, so its span is known and
   protected, but no handle until a module owns it; `reserved` has no role and
@@ -602,7 +604,7 @@ Each role below gives its span, its class and its handles.
 - `CurrentConfig`: the current slot's configuration. Sensitive. Writer in the
   layout and boot tiers.
 - `AlternateConfig`: the alternate slot's configuration. Sensitive.
-  Erase-only writer in the layout and boot tiers.
+  Writer that only wipes the whole region, in the layout and boot tiers.
 - `Diag`: `diag`. Sensitive. Writer in the layout and boot tiers.
 - `Factory`: `factory`. Sensitive. No handle.
 - `Chip`: the whole flash. Sensitive. No handle.
@@ -629,9 +631,10 @@ Each role below gives its span, its class and its handles.
 
 A writer erases and programs only inside a write session: `Writer::begin`
 borrows the writer mutably and returns a `nor::Session`, so a region has one
-session at a time. A session erases, and also programs for every role but
-`AlternateConfig`, whose erase is the secure wipe, as NOR flash keeps no old
-copies elsewhere. A session of a role that programs is an
+session at a time. A session wipes its whole region, and for every role but
+`AlternateConfig` also erases any sectors of it and programs. The wipe is the
+alternate configuration's only write, and is its secure erase, as NOR flash
+keeps no old copies elsewhere. A session of a role that programs is an
 `embedded-storage-async` `NorFlash` and `MultiwriteNorFlash` over its region,
 for a store's own format. It erases one sector per device call and programs at
 most 4 KiB per call, yielding after each.
@@ -969,8 +972,16 @@ image with no rollback.
   rewritten. It then opens a session on the alternate slot, which the `Update`
   holds for its whole life, so no snapshot of the slot can be taken while an
   image is written; dropping the `Update` abandons it and ends the session.
-  `Update::write` takes the image in parts of any size and erases each sector
-  just before its first bytes are programmed.
+  It erases the slot's first sector, so the slot holds no image that verifies,
+  and then wipes the alternate slot's configuration (`Writer<AlternateConfig>`,
+  which `Ota::new` takes): it belongs to the image being replaced. Nothing
+  verifies in the slot before `Update::finish`, so an image that verifies
+  there after an update had its configuration wiped during that update. A
+  wipe cut short leaves a slot that doesn't verify, and the next update wipes
+  again. Wiped first instead, a cut between the two erases would leave a
+  rollback target without its configuration. `Update::write` takes the image
+  in parts of any size and erases each sector just before its first bytes are
+  programmed.
 - `Update::finish` programs the last word, ends the session at a new epoch of
   the slot, and waits for the slot's check to verify the slot at that epoch:
   chip, segments, checksum and the appended SHA-256. It then requires the image
@@ -1041,9 +1052,10 @@ once the alternate slot's check has kept a result, whatever the result, as a
 blank slot is a board's state after `flash-all`, and fails when the slot is
 written while it waits. The checks are logged once decided. Nothing takes `Ota`
 yet, so nothing calls `Ota::confirm`: the API has no endpoint for it, and an
-activated update rolls back after 10 minutes until one exists. The configuration
-and diag writers are dropped at boot, as no store owns them yet. The OTA
-service, not built yet, will decide how updates arrive and are authenticated.
+activated update rolls back after 10 minutes until one exists. `Ota` gets the
+alternate configuration's writer; the current configuration's and diag's are
+dropped at boot, as no store owns them yet. The OTA service, not built yet, will
+decide how updates arrive and are authenticated.
 
 ### The app check task
 
