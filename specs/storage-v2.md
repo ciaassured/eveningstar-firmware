@@ -1,12 +1,10 @@
 # Storage, second design: regions, snapshots and content modules
 
-Status: implemented, apart from `eveningstar-system`, which is built on its
-own (#74) and isn't part of this stack. How it is built and why is in
-`docs/architecture.md` ("Storage"), and the rules for working on it are in
-`CLAUDE.md` ("Storage"). This file keeps the design's reasons, the decisions
-made while it was built ("Decided during implementation", which take
-precedence over the text below where they differ), what is left to build, and
-what isn't verified yet.
+Status: implemented. How it is built and why is in `docs/architecture.md`
+("Storage"), and the rules for working on it are in `CLAUDE.md` ("Storage").
+This file keeps the design's reasons, the decisions made while it was built
+("Decided during implementation", which take precedence over the text below
+where they differ), what is left to build, and what isn't verified yet.
 
 > **Publication is an allow list.** A raw region read is never exported.
 > Bytes leave the device only through a published view, and a view exists
@@ -211,7 +209,7 @@ eveningstar-ota           updates, activation, confirmation, rollback; requests 
         ↑
 eveningstar               the firmware: the device implementations, the services, the API
 
-eveningstar-system        reboot service, reboot holds, watchdog supervisor (built apart, #74)
+eveningstar-system        reboot service, reboot holds, watchdog supervisor
 ```
 
 - **`eveningstar-esp-formats`** reads the ESP formats from any `Source` and
@@ -232,8 +230,8 @@ eveningstar-system        reboot service, reboot holds, watchdog supervisor (bui
   `eveningstar-system`.
 - **`eveningstar-system`** takes the reboot service and its holds
   (`services/reboot.rs`) and the watchdog supervisor (`watchdog.rs`) out of
-  the firmware. Today their reasons, holders and supervised tasks are closed
-  enums naming firmware parts (`Reason::LinkDown`, `Reason::Api`,
+  the firmware. Before, their reasons, holders and supervised tasks were
+  closed enums naming firmware parts (`Reason::LinkDown`, `Reason::Api`,
   `Holder::…`, the `wd::` markers). In the crate the reasons are a type
   parameter the firmware declares, converting with `From` from each system
   crate's own reasons (`eveningstar_ota::RebootReason`); holders and
@@ -243,8 +241,7 @@ eveningstar-system        reboot service, reboot holds, watchdog supervisor (bui
   watchdogs) stay in the firmware or the BSP behind a trait the crate takes at
   start-up, and its logging goes through an optional `defmt` feature, as the
   other host crates keep `defmt` out. Its host tests need a time driver for
-  `embassy-time` (its `mock-driver` or `std` feature), to be confirmed when
-  the crate is made.
+  `embassy-time`: they run on its mock driver.
 - The configuration store, diag store and factory data module own their
   regions later. Each may be its own crate or a firmware module.
 - Crate names keep the `eveningstar-` prefix for now; system crates never
@@ -867,16 +864,17 @@ table's MD5), without their API and firmware parts.
 4. **`eveningstar-boot`:** the four content modules, sanitized views and the
    transport digest.
 5. **`eveningstar-system`:** the reboot service, its holds and the watchdog
-   supervisor moved out of the firmware. Built apart from this stack (#74);
-   the firmware here still has `services/reboot.rs` and `watchdog.rs`.
+   supervisor moved out of the firmware. The firmware keeps its reasons and
+   holders in `services/reboot.rs`, its supervised tasks in `wd` in
+   `main.rs`, and the chip's reset and watchdogs in `reset.rs` and
+   `watchdog.rs`.
 6. **`eveningstar-ota`:** `Ota` on `BootWriters`, with the OTA and otadata
    power-cut tests moved over. No reboot in the crate: the confirmation window
    is the firmware's (see "Decided during implementation").
 7. **Firmware:** the storage glue without write counting, `App`'s check task.
-   The system crate is wired in when it lands.
 8. **Docs:** `docs/architecture.md` ("Storage") rewritten, `CLAUDE.md`
    ("Storage") updated, and the first design's `specs/storage.md` folded into
-   this file and removed. The reboot and watchdog sections change with the
+   this file and removed. The reboot and watchdog sections describe the
    system crate. The check labels of the first design are gone from the code.
 
 ## Tests
