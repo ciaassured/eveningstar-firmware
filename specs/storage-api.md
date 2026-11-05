@@ -103,14 +103,16 @@ Every endpoint has the `read` scope.
   - `bootloader.status` is `known` (verifies and listed in `known.rs`),
     `unlisted` (verifies, not listed) or `invalid`. `name` and `rollback` are
     the known entry's, `null` otherwise. `fits` says whether the image ends at
-    or before the located (or compiled) table offset, `null` when it doesn't
-    verify. The chain verifies the image over the whole flash, but its
-    region ends at the table offset, so an image that runs past it isn't
-    published: its `image` view is `unverified` and `fits` says why. This is
-    the case of a project whose larger bootloader moved its table to a higher
-    offset, on a board where no table is located and the compiled offset
-    bounds the region. The bootloader's own identity (version, descriptor,
-    digests) belongs to `/firmware`.
+    or before the end of the bootloader's region, `null` when it doesn't
+    verify. On a working board the bootloader always ends before its own
+    table, so the region, which ends at the located table, holds it. When no
+    table is located, the region ends at the compiled offset (0x8000), which
+    is an assumption about the board: a board flashed by a project with a
+    larger bootloader and its table at a higher offset has a bootloader
+    longer than that region. The chain verifies the image over the whole
+    flash, but its view is bounded by the region, so `fits` is `false` and
+    the `image` view `unverified`. The bootloader's own identity (version,
+    descriptor, digests) belongs to `/firmware`.
   - `booted_offset` is the offset of the app the bootloader started, from
     MMU entry 0, `null` when entry 0 isn't valid (`Report.booted` is
     `u32::MAX`). `booted_label` is the label of the located table's partition
@@ -134,8 +136,7 @@ The table the chain located, the compiled layout, and their comparison.
     "candidates": [],
     "failure": null,
     "coverage": "layout",
-    "md5_read_as_partition": false,
-    "partitions": 8
+    "md5_read_as_partition": false
   },
   "expected": [
     {
@@ -149,12 +150,11 @@ The table the chain located, the compiled layout, and their comparison.
   ],
   "found": [
     {
-      "index": 2, "kind": "partition",
+      "kind": "partition",
       "label": "ota_0", "type": 0, "subtype": 16, "offset": 65536, "size": 3145728, "flags": 0,
       "extra": false
     }
-  ],
-  "found_truncated": false
+  ]
 }
 ```
 
@@ -175,15 +175,17 @@ The table the chain located, the compiled layout, and their comparison.
   inside the flash. `candidates` gives the first two offsets the search found
   when it found several (`Found::Several`), and is otherwise empty.
 - `coverage` is `layout`, `md5` or `uncovered` (`table::Coverage`),
-  `md5_read_as_partition` whether the bootloader loads the MD5 entry as a
-  partition, and `partitions` how many partitions it loads (so a truncated
-  `found` still gives the total). All three are `null` and `found` is empty
-  unless `status` is `valid`.
+  and `md5_read_as_partition` whether the bootloader loads the MD5 entry as a
+  partition. Both are `null` and `found` is empty unless `status` is
+  `valid`.
 - `expected` is the compiled layout (`EXPECTED`), each partition with its
   comparison by label: `matches`, `differs` with the fields, or `missing`
   (`fields` empty for the last).
-- `found` is the located table's rows as the bootloader loads them, at most
-  `FOUND_MAX` (the layout's partition count plus 8), with `found_truncated`.
+- `found` is every row the bootloader loads from the located table, in
+  table order, so a row's position in the array is its entry's index in the
+  table (`Rows` yields every entry from 0, the MD5 entry included when it is
+  read as a partition). A table sector holds at most 95 entries before its
+  end entry, so `found` isn't capped.
   - `kind` is `partition`, or `md5` for the MD5 entry read as a partition
     (`PartitionRow::Md5`), whose other fields are `null`.
   - `label` is `null` when nothing covers it (`Valid::label_covered`): every
@@ -427,12 +429,21 @@ eveningstar-0kd7-9c6-otadata-entry_0-1b9c4f20.bin
 - Handlers in `http/storage.rs` map the storage and boot crates' types to the
   API's. The body reads through the content modules' views only, so no raw
   reader or snapshot reaches a response.
-- The documents are bounded by constants (regions, `FOUND_MAX`,
-  `MAX_SANITIZED`). `/storage/regions` and `/storage/layout` serialize one
-  element at a time (`Serialize` over an iterator inside `serialize_seq`),
-  building each region document or row as it is written, so only one is on
-  the stack. Their size is measured against the 1024-byte stack-frame lint
+- The documents are bounded: the region names, the table sector's 95
+  entries, `MAX_SANITIZED`. `/storage/regions` and `/storage/layout`
+  serialize one element at a time (`Serialize` over an iterator inside
+  `serialize_seq`), building each region document or row as it is written,
+  so only one is on the stack; `found` reads each row from the flash as it
+  is written. Their size is measured against the 1024-byte stack-frame lint
   during implementation; the fallback is #69's static, `Shared<T>`.
+- A streamed document is sent after its `200` and headers, so a flash read
+  that fails partway through `found` (a device error; the table has no
+  writer, so it can't go stale) can't change the status. The device then
+  closes the connection before the JSON ends, and the client sees a body
+  that doesn't parse and retries the request. A region document doesn't
+  fail this way: a region written while it is built reports `writing` or
+  `checking`. The web UI's client retries a
+  document request whose body doesn't parse.
 
 ## Delivery
 
