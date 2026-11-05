@@ -1036,14 +1036,14 @@ task that requests a graceful reboot 10 minutes after boot
 
 The firmware builds `Ota` in a `static` last at boot, as it waits for the
 running slot's check. Its self-checks are `storage::CHECKS`; the one check so
-far, `Slots`, passes once the alternate slot's check has kept a result, whatever
-the result, as a blank slot is a board's state after `flash-all`, and fails
-when the slot is written while it waits. The checks are logged once decided.
-Nothing takes `Ota` yet, so nothing calls `Ota::confirm`:
-the API has no endpoint for it, and an activated update rolls back after 10
-minutes until one exists. The configuration and diag writers are dropped at
-boot, as no store owns them yet. The OTA service, not built yet, will decide
-how updates arrive and are authenticated.
+far, `Slots`, a placeholder that judges nothing about the running image, passes
+once the alternate slot's check has kept a result, whatever the result, as a
+blank slot is a board's state after `flash-all`, and fails when the slot is
+written while it waits. The checks are logged once decided. Nothing takes `Ota`
+yet, so nothing calls `Ota::confirm`: the API has no endpoint for it, and an
+activated update rolls back after 10 minutes until one exists. The configuration
+and diag writers are dropped at boot, as no store owns them yet. The OTA
+service, not built yet, will decide how updates arrive and are authenticated.
 
 ### The app check task
 

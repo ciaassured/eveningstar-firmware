@@ -956,6 +956,11 @@ table's MD5), without their API and firmware parts.
   `static`, and taken by nothing yet) and decides how updates arrive and are
   authenticated: `VerifiedImage` means intact and meant for this board, not
   authentic.
+- **Self-checks.** `Check::Slots` (`crates/eveningstar/src/storage.rs`) is a
+  placeholder that only waits for the slots' checks. Real checks replace it as
+  their owners exist: the configuration store's migration, the network coming
+  up, and others the firmware gains. Whether a corrupt (not blank) alternate
+  image should fail a check is open.
 - **The confirm endpoint.** Nothing calls `Ota::confirm` yet, as the API has
   no endpoint for it. `confirm` refuses until every self-check has passed
   (`OtaError::ChecksPending`, `OtaError::ChecksFailed`), with no latched
