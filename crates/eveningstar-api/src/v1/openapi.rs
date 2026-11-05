@@ -6,6 +6,7 @@
 )]
 
 use alloc::borrow::ToOwned;
+use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::fmt::Write;
@@ -16,7 +17,7 @@ use serde_json::{Map, Value, json};
 
 use super::endpoint::param_name;
 use super::{
-    Bytes, Empty, Endpoint, Error, ErrorCode, Errors, Json, Operation, PATH, PathParam,
+    Bytes, Empty, Endpoint, Error, ErrorCode, Errors, Json, Method, Operation, PATH, PathParam,
     RequestBody, ResponseBody, RouteError, Scope,
 };
 
@@ -158,6 +159,33 @@ impl Document {
                 json!({ "$ref": format_args!("#/components/responses/{}", name(code)) });
         }
 
+        let head = E::Response::head(E::STATUS).filter(|_| E::METHOD == Method::Get);
+        let head = head.map(|responses| {
+            let mut head = operation.clone();
+            head["operationId"] = format!("{id}Head").into();
+            head["summary"] = format!("{} (headers only)", E::SUMMARY).into();
+            head["responses"] = responses;
+            let path_parameters = operation["parameters"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|parameter| parameter["in"] == "path")
+                .cloned();
+            let parameters: Vec<Value> = path_parameters
+                .chain(E::Response::head_parameters())
+                .collect();
+            head["parameters"] = parameters.into();
+            let errors = <E::Response as ResponseBody>::Error::CODES
+                .iter()
+                .filter(|code| !E::Response::HEAD_SKIPS.contains(code))
+                .chain(E::Error::CODES);
+            for &code in errors {
+                head["responses"][status(code).to_string()] =
+                    json!({ "$ref": format_args!("#/components/responses/{}", name(code)) });
+            }
+            head
+        });
+
         let method = E::METHOD.as_str().to_ascii_lowercase();
         let item = self.paths.entry(E::PATH).or_insert_with(|| json!({}));
         assert!(
@@ -166,6 +194,9 @@ impl Document {
             E::PATH
         );
         item[method] = operation;
+        if let Some(head) = head {
+            item["head"] = head;
+        }
     }
 
     fn finish(mut self) -> Value {
@@ -207,6 +238,18 @@ impl Document {
                 if name == unsatisfiable {
                     response["headers"] = json!({
                         "Content-Range": content_range("`bytes */<length>`: the body's length."),
+                    });
+                }
+                let retry_after = serde_json::from_value::<ErrorCode>(json!(name))
+                    .ok()
+                    .and_then(ErrorCode::retry_after_s);
+                if let Some(seconds) = retry_after {
+                    response["headers"] = json!({
+                        "Retry-After": {
+                            "description": "The seconds to wait before asking again.",
+                            "required": true,
+                            "schema": { "const": seconds.to_string() },
+                        },
                     });
                 }
                 (name, response)
@@ -295,6 +338,22 @@ pub(super) trait DocumentResponse {
     fn parameters() -> Vec<Value> {
         Vec::new()
     }
+
+    /// The error codes of the body that a `HEAD` request is never answered
+    /// with.
+    const HEAD_SKIPS: &[ErrorCode] = &[];
+
+    /// The successful responses to a `HEAD` request of a `GET` operation
+    /// whose status code is `status`, or `None` if the body has no `HEAD`.
+    fn head(_status: u16) -> Option<Value> {
+        None
+    }
+
+    /// The request headers the responses to a `HEAD` request depend on, as
+    /// parameters.
+    fn head_parameters() -> Vec<Value> {
+        Vec::new()
+    }
 }
 
 impl DocumentResponse for Empty {
@@ -316,22 +375,12 @@ impl DocumentResponse for Bytes {
         let content = json!({
             "application/octet-stream": { "schema": { "type": "string", "format": "binary" } },
         });
-        let headers = json!({
-            "Accept-Ranges": {
-                "description": "`bytes`: the body can be asked for in part.",
-                "required": true,
-                "schema": { "const": "bytes" },
-            },
-            "ETag": {
-                "description": "The body's strong entity tag, if it has one. It \
-                    differs whenever the body may differ.",
-                "schema": { "type": "string" },
-            },
-            "Content-Disposition": {
-                "description": "`attachment`, with the name to save the body under.",
-                "required": true,
-                "schema": { "type": "string" },
-            },
+        let mut headers = bytes_headers();
+        headers["Content-Digest"] = json!({
+            "description": "`sha-256=:<base64>:`: the SHA-256 of the bytes this \
+                response carries (RFC 9530), when the request's \
+                `Want-Content-Digest` asks for it.",
+            "schema": { "type": "string" },
         });
         let mut partial_headers = headers.clone();
         partial_headers["Content-Range"] = content_range(
@@ -373,8 +422,80 @@ impl DocumentResponse for Bytes {
                     strong entity tag, the answer is the whole body.",
                 "schema": { "type": "string" },
             }),
+            if_match_parameter(),
+            json!({
+                "name": "Want-Content-Digest",
+                "in": "header",
+                "description": "`sha-256=<weight>`, a weight from 1 to 10, to \
+                    have the response carry a `Content-Digest` (RFC 9530). Any \
+                    other algorithm, a weight of 0, and a value that isn't a \
+                    valid dictionary are ignored.",
+                "schema": { "type": "string" },
+            }),
         ]
     }
+
+    const HEAD_SKIPS: &[ErrorCode] = &[ErrorCode::RangeNotSatisfiable];
+
+    fn head(status: u16) -> Option<Value> {
+        Some(json!({
+            status.to_string(): {
+                "description": "The headers of the whole body, without the \
+                    body. `Range` and `If-Range` are ignored.",
+                "headers": bytes_headers(),
+            },
+        }))
+    }
+
+    fn head_parameters() -> Vec<Value> {
+        alloc::vec![if_match_parameter()]
+    }
+}
+
+/// The headers of every response with a binary body or a part of it, and of
+/// the response to a `HEAD` request for one.
+fn bytes_headers() -> Value {
+    json!({
+        "Content-Length": {
+            "description": "The length of the bytes sent, or for a `HEAD` \
+                request, of the whole body.",
+            "required": true,
+            "schema": { "type": "string" },
+        },
+        "Accept-Ranges": {
+            "description": "`bytes`: the body can be asked for in part.",
+            "required": true,
+            "schema": { "const": "bytes" },
+        },
+        "ETag": {
+            "description": "The body's strong entity tag. It differs whenever \
+                the body may differ.",
+            "required": true,
+            "schema": { "type": "string" },
+        },
+        "Repr-Digest": {
+            "description": "`sha-256=:<base64>:`: the SHA-256 of the whole \
+                body (RFC 9530), also when a part of it is sent.",
+            "required": true,
+            "schema": { "type": "string" },
+        },
+        "Content-Disposition": {
+            "description": "`attachment`, with the name to save the body under.",
+            "required": true,
+            "schema": { "type": "string" },
+        },
+    })
+}
+
+/// The `If-Match` request header, as a parameter.
+fn if_match_parameter() -> Value {
+    json!({
+        "name": "If-Match",
+        "in": "header",
+        "description": "`*`, or a list of entity tags. If none of them is \
+            the body's `ETag`, compared strongly, the answer is `412`.",
+        "schema": { "type": "string" },
+    })
 }
 
 /// A required `Content-Range` response header, described by `description`.
@@ -517,7 +638,7 @@ mod tests {
         let operation = &document["paths"]["/test/{item}/content"]["get"];
         let responses = operation["responses"].as_object().unwrap();
         let statuses: Vec<_> = responses.keys().cloned().collect();
-        assert_eq!(statuses, ["200", "206", "416"]);
+        assert_eq!(statuses, ["200", "206", "412", "416"]);
 
         let binary = json!({ "type": "string", "format": "binary" });
         for status in ["200", "206"] {
@@ -527,9 +648,16 @@ mod tests {
                 binary
             );
             let headers = response["headers"].as_object().unwrap();
-            for header in ["Accept-Ranges", "ETag", "Content-Disposition"] {
-                assert!(headers.contains_key(header), "{status} {header}");
+            for header in [
+                "Content-Length",
+                "Accept-Ranges",
+                "ETag",
+                "Repr-Digest",
+                "Content-Disposition",
+            ] {
+                assert_eq!(headers[header]["required"], true, "{status} {header}");
             }
+            assert!(headers["Content-Digest"].get("required").is_none());
             assert_eq!(headers.contains_key("Content-Range"), status == "206");
         }
         assert_eq!(
@@ -548,7 +676,45 @@ mod tests {
             .filter(|parameter| parameter["in"] == "header")
             .map(|parameter| parameter["name"].as_str().unwrap())
             .collect();
-        assert_eq!(headers, ["Range", "If-Range"]);
+        assert_eq!(
+            headers,
+            ["Range", "If-Range", "If-Match", "Want-Content-Digest"]
+        );
+    }
+
+    #[test]
+    fn binary_bodies_answer_head_with_their_headers_alone() {
+        let document = openapi();
+        let item = &document["paths"]["/test/{item}/content"];
+        let head = &item["head"];
+        assert_eq!(head["operationId"], "GetTestContentHead");
+        assert_eq!(head["security"], item["get"]["security"]);
+        let responses = head["responses"].as_object().unwrap();
+        let statuses: Vec<_> = responses.keys().cloned().collect();
+        assert_eq!(statuses, ["200", "412"]);
+        assert!(responses["200"].get("content").is_none());
+        let headers = responses["200"]["headers"].as_object().unwrap();
+        assert!(headers.contains_key("Repr-Digest"));
+        assert!(!headers.contains_key("Content-Digest"));
+        let parameters: Vec<_> = head["parameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|parameter| parameter["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(parameters, ["item", "If-Match"]);
+        // JSON bodies have no `HEAD`.
+        assert!(document["paths"]["/system"].get("head").is_none());
+    }
+
+    #[test]
+    fn busy_responses_say_when_to_ask_again() {
+        let document = openapi();
+        let responses = &document["components"]["responses"];
+        let retry_after = &responses["busy"]["headers"]["Retry-After"];
+        assert_eq!(retry_after["required"], true);
+        assert_eq!(retry_after["schema"]["const"], "5");
+        assert!(responses["unpublished"].get("headers").is_none());
     }
 
     #[test]
@@ -628,7 +794,7 @@ mod tests {
     fn error_responses_name_their_codes() {
         let document = openapi();
         let responses = document["components"]["responses"].as_object().unwrap();
-        assert_eq!(responses.len(), 6);
+        assert_eq!(responses.len(), 10);
         for (name, response) in responses {
             let code: ErrorCode = serde_json::from_value(json!(name)).unwrap();
             let status = status(code);

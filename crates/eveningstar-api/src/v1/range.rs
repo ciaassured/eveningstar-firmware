@@ -1,5 +1,6 @@
-//! Ranges of [`Bytes`] bodies: the part of a body a request's `Range` and
-//! `If-Range` headers ask for, as RFC 9110 defines them.
+//! Ranges and conditions of [`Bytes`] bodies: the part of a body a request's
+//! `Range` and `If-Range` headers ask for, and whether its `If-Match` header
+//! lets it be answered, as RFC 9110 defines them.
 //!
 //! [`Bytes`]: super::Bytes
 
@@ -34,6 +35,59 @@ impl<'a> EntityTag<'a> {
 impl fmt::Display for EntityTag<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.0)
+    }
+}
+
+/// Whether a request with the `If-Match` header `value` may be answered from
+/// a body whose strong entity tag is `tag` (RFC 9110, section 13.1.1).
+///
+/// - With no header, it may.
+/// - With `*`, it may, as the body exists.
+/// - With a list of entity tags, it may when one of them is strong and equal
+///   to `tag`. The header compares tags strongly, so a weak tag never
+///   matches, and a body without a tag matches none.
+/// - With a value that isn't valid, or a list of no tags, it may not.
+///
+/// A request that may not is answered with
+/// [`BytesError::PreconditionFailed`].
+///
+/// [`BytesError::PreconditionFailed`]: super::BytesError::PreconditionFailed
+#[must_use]
+pub fn if_match(tag: Option<EntityTag<'_>>, value: Option<&str>) -> bool {
+    let Some(value) = value else {
+        return true;
+    };
+    let value = value.trim_matches(OWS);
+    if value == "*" {
+        return true;
+    }
+    // The whole list is read, so a value that isn't valid fails even after
+    // a tag that matches.
+    let mut matched = false;
+    let mut rest = value;
+    loop {
+        // A list may have empty elements, which don't count.
+        rest = rest.trim_start_matches(|c| c == ',' || OWS.contains(&c));
+        if rest.is_empty() {
+            return matched;
+        }
+        let (weak, after) = match rest.strip_prefix("W/") {
+            Some(after) => (true, after),
+            None => (false, rest),
+        };
+        let Some(len) = after.strip_prefix('"').and_then(|opaque| opaque.find('"')) else {
+            return false;
+        };
+        // The quotes and the opaque tag between them.
+        let (candidate, next) = after.split_at(len + 2);
+        if EntityTag::new(candidate).is_none() {
+            return false;
+        }
+        matched |= !weak && tag.is_some_and(|tag| tag.as_str() == candidate);
+        rest = next.trim_start_matches(OWS);
+        if !rest.is_empty() && !rest.starts_with(',') {
+            return false;
+        }
     }
 }
 
@@ -226,6 +280,49 @@ fn number(digits: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn if_match_without_a_header_or_with_a_star_passes() {
+        assert!(if_match(tag(), None));
+        assert!(if_match(tag(), Some("*")));
+        assert!(if_match(tag(), Some(" * ")));
+        assert!(if_match(None, Some("*")));
+    }
+
+    #[test]
+    fn if_match_passes_when_one_strong_tag_of_the_list_is_the_body_s() {
+        assert!(if_match(tag(), Some(TAG)));
+        assert!(if_match(tag(), Some(r#""other", "7f3a-2""#)));
+        assert!(if_match(tag(), Some(r#",, "other" ,"7f3a-2" ,"#)));
+        // `,` is a valid character of an opaque tag.
+        let comma = EntityTag::new(r#""a,b""#);
+        assert!(if_match(comma, Some(r#""a,b""#)));
+        assert!(!if_match(comma, Some(r#""a""#)));
+    }
+
+    #[test]
+    fn if_match_fails_for_other_weak_or_no_tags() {
+        assert!(!if_match(tag(), Some(r#""7f3a-3""#)));
+        assert!(!if_match(tag(), Some(r#"W/"7f3a-2""#)));
+        assert!(!if_match(None, Some(TAG)));
+        assert!(!if_match(tag(), Some("")));
+        assert!(!if_match(tag(), Some(" , ")));
+    }
+
+    #[test]
+    fn if_match_fails_for_values_that_are_not_valid() {
+        for value in [
+            "7f3a-2",
+            r#""7f3a-2"#,
+            r#""7f3a-2" "other""#,
+            r#""7f3a-2"x"#,
+            "**",
+            r#"*, "7f3a-2""#,
+            "\"7f3a 2\"",
+        ] {
+            assert!(!if_match(tag(), Some(value)), "{value}");
+        }
+    }
 
     const TAG: &str = r#""7f3a-2""#;
 

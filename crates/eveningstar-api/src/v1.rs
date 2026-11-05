@@ -14,18 +14,20 @@ use serde::{Deserialize, Serialize};
 
 use crate::DeviceId;
 
+mod digest;
 mod endpoint;
 #[cfg(feature = "schema")]
 mod openapi;
 mod range;
 
+pub use digest::{Sha256Field, wants_sha256};
 pub use endpoint::{
-    BodyError, Bytes, Empty, Endpoint, Errors, Json, Method, PathParam, PathParams, RangeError,
+    BodyError, Bytes, BytesError, Empty, Endpoint, Errors, Json, Method, PathParam, PathParams,
     RequestBody, ResponseBody, RouteError, is_json_content_type,
 };
 #[cfg(feature = "schema")]
 pub use openapi::openapi;
-pub use range::{ContentRange, EntityTag, Selection};
+pub use range::{ContentRange, EntityTag, Selection, if_match};
 
 /// Path prefix of every version 1 endpoint.
 pub const PATH: &str = "/api/v1";
@@ -60,7 +62,9 @@ macro_rules! operations {
             pub const ALL: &[Self] = &[$($(#[$attr])* Self::$endpoint($endpoint)),*];
 
             /// The operation a request with `method` and `path`, relative to
-            /// [`PATH`], is for, with the parameters `path` holds.
+            /// [`PATH`], is for, with the parameters `path` holds. A `HEAD`
+            /// request is for the `GET` operation of its path when that
+            /// operation [answers `HEAD`](Self::answers_head).
             ///
             /// # Errors
             ///
@@ -75,7 +79,12 @@ macro_rules! operations {
                     if let Some(params) =
                         endpoint::path_params(<$endpoint as Endpoint>::PATH, path)
                     {
-                        if <$endpoint as Endpoint>::METHOD.as_str() == method {
+                        let get = <$endpoint as Endpoint>::METHOD == Method::Get;
+                        let head = get
+                            && <<$endpoint as Endpoint>::Response as ResponseBody>::HEAD;
+                        if <$endpoint as Endpoint>::METHOD.as_str() == method
+                            || (head && method == "HEAD")
+                        {
                             return Ok(Call::$endpoint($endpoint, params));
                         }
                         error = RouteError::MethodNotAllowed;
@@ -97,6 +106,22 @@ macro_rules! operations {
             pub const fn method(self) -> Method {
                 match self {
                     $($(#[$attr])* Self::$endpoint(_) => <$endpoint as Endpoint>::METHOD,)*
+                }
+            }
+
+            /// Whether the operation also answers `HEAD` requests, with the
+            /// headers of a `GET` and no body: a `GET` operation whose
+            /// response body [allows it](ResponseBody::HEAD).
+            #[must_use]
+            pub const fn answers_head(self) -> bool {
+                match self {
+                    $(
+                        $(#[$attr])*
+                        Self::$endpoint(_) => matches!(
+                            <$endpoint as Endpoint>::METHOD,
+                            Method::Get
+                        ) && <<$endpoint as Endpoint>::Response as ResponseBody>::HEAD,
+                    )*
                 }
             }
 
@@ -397,6 +422,17 @@ pub enum ErrorCode {
     /// The request's `Range` header asks for several ranges, or for none
     /// that is part of the body.
     RangeNotSatisfiable,
+    /// The resource holds data that never leaves the device, whatever the
+    /// session's scopes.
+    Sensitive,
+    /// The resource has nothing to answer with now. The resource's
+    /// description says why, and this can change.
+    Unpublished,
+    /// The request's `If-Match` header names no tag the body has.
+    PreconditionFailed,
+    /// The device is serving another request of this kind. The response's
+    /// `Retry-After` header gives the seconds to wait before asking again.
+    Busy,
     /// A code this version of the crate does not know.
     #[serde(other)]
     #[cfg_attr(feature = "schema", schemars(skip))]
@@ -414,8 +450,27 @@ impl ErrorCode {
             Self::MethodNotAllowed => Some(405),
             Self::PayloadTooLarge => Some(413),
             Self::UnsupportedMediaType => Some(415),
+            Self::Sensitive => Some(403),
+            Self::Unpublished => Some(409),
+            Self::PreconditionFailed => Some(412),
             Self::RangeNotSatisfiable => Some(416),
+            Self::Busy => Some(503),
             Self::Unknown => None,
+        }
+    }
+
+    /// The seconds a response with this code tells the client to wait, in a
+    /// `Retry-After` header, before asking again: for [`Busy`](Self::Busy)
+    /// alone.
+    ///
+    /// Five seconds: the device serves one long request of a kind at a time,
+    /// such as a download, and the longest takes several seconds on a local
+    /// network, so asking sooner mostly finds it still busy.
+    #[must_use]
+    pub const fn retry_after_s(self) -> Option<u32> {
+        match self {
+            Self::Busy => Some(5),
+            _ => None,
         }
     }
 }
@@ -479,6 +534,25 @@ mod tests {
         );
         assert_eq!(
             Operation::find("POST", "/test/first/content"),
+            Err(RouteError::MethodNotAllowed)
+        );
+    }
+
+    #[test]
+    fn head_finds_get_operations_with_binary_bodies_alone() {
+        assert_eq!(
+            Operation::find("HEAD", "/test/first/content"),
+            Ok(Call::GetTestContent(GetTestContent, TestItem::First))
+        );
+        assert!(Operation::GetTestContent(GetTestContent).answers_head());
+        // A JSON body has no `HEAD`.
+        assert_eq!(
+            Operation::find("HEAD", "/system"),
+            Err(RouteError::MethodNotAllowed)
+        );
+        assert!(!Operation::GetSystem(GetSystem).answers_head());
+        assert_eq!(
+            Operation::find("head", "/test/first/content"),
             Err(RouteError::MethodNotAllowed)
         );
     }
@@ -575,12 +649,13 @@ mod tests {
     fn error_codes_of_error_sets_have_statuses() {
         let codes = BodyError::CODES
             .iter()
-            .chain(RangeError::CODES)
+            .chain(BytesError::CODES)
             .chain(RouteError::CODES);
         for &code in codes {
             assert!(code.status().is_some(), "{code:?}");
         }
-        assert_eq!(RangeError::RangeNotSatisfiable.code().status(), Some(416));
+        assert_eq!(BytesError::RangeNotSatisfiable.code().status(), Some(416));
+        assert_eq!(BytesError::PreconditionFailed.code().status(), Some(412));
         assert_eq!(
             BodyError::PayloadTooLarge.code(),
             ErrorCode::PayloadTooLarge
