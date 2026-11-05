@@ -462,13 +462,23 @@ fn a_program_runs_at_most_4_kib_per_call_and_ands_the_bytes_in() {
 }
 
 #[test]
-fn the_alternate_configuration_is_erased() {
+fn the_alternate_configuration_is_wiped_whole() {
     let flash = flash();
-    flash.device().poke(layout::CONFIG_1.offset, &[0; 8]);
-    let mut config: Writer<'_, AlternateConfig> =
-        flash.writer(Span::from(layout::CONFIG_1), Slot::Ota0);
-    run(config.begin().erase(0, SECTOR)).unwrap();
-    assert_eq!(flash.device().at(layout::CONFIG_1.offset, 8), [0xFF; 8]);
+    let config = layout::CONFIG_1;
+    flash.device().poke(config.offset, &[0; 8]);
+    flash
+        .device()
+        .poke(config.offset + config.size - 8, &[0; 8]);
+    let mut writer: Writer<'_, AlternateConfig> = flash.writer(Span::from(config), Slot::Ota0);
+    run(writer.begin().wipe()).unwrap();
+    assert_eq!(
+        flash.device().at(config.offset, config.size as usize),
+        vec![0xFF; config.size as usize]
+    );
+    let sectors: Vec<_> = (0..config.size / SECTOR)
+        .map(|n| Call::Erase(config.offset + n * SECTOR))
+        .collect();
+    assert_eq!(flash.device().writes(), sectors);
 }
 
 #[test]
