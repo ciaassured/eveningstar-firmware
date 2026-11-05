@@ -127,6 +127,9 @@ pub trait RequestBody {
 
 /// The body of a response: [`Empty`], [`Json`] or [`Bytes`].
 pub trait ResponseBody {
+    /// Whether a `GET` endpoint with this body also answers `HEAD`, with the
+    /// headers of a `GET` and no body.
+    const HEAD: bool = false;
     /// The value the body holds.
     type Value: ?Sized;
     /// The errors of answering with the body.
@@ -177,14 +180,29 @@ impl<T> ResponseBody for Json<T> {
     type Error = Infallible;
 }
 
-/// A binary body, with the `Content-Type` `application/octet-stream`.
+/// A binary body, with the `Content-Type` `application/octet-stream`, a
+/// strong entity tag and a SHA-256 digest of the whole body.
 ///
-/// A `GET` request can ask for part of the body with a `Range` header, and make
-/// that conditional with an `If-Range` header (see [`Selection`]). The answer
-/// is the whole body with the endpoint's status code, the part with
-/// [`PARTIAL_STATUS`](Self::PARTIAL_STATUS), or [`RangeError`].
+/// - A `GET` request can ask for part of the body with a `Range` header, and
+///   make that conditional with an `If-Range` header (see [`Selection`]). The
+///   answer is the whole body with the endpoint's status code, the part with
+///   [`PARTIAL_STATUS`](Self::PARTIAL_STATUS), or [`BytesError`].
+/// - A request with an `If-Match` header that names no tag of the body is
+///   answered with [`BytesError::PreconditionFailed`] (see [`if_match`]),
+///   before its `Range` is looked at.
+/// - Every answer with the body or a part of it has a `Repr-Digest` header,
+///   the digest of the whole body, and one with a part has a
+///   `Content-Digest` header, the digest of the part, when the request asks
+///   for it with `Want-Content-Digest` (see [`wants_sha256`] and
+///   [`Sha256Field`]).
+/// - A `HEAD` request is answered with the headers of a `GET` of the whole
+///   body, without the body: it ignores `Range` and `If-Range`, and has no
+///   `Content-Digest`.
 ///
 /// [`Selection`]: super::Selection
+/// [`if_match`]: super::if_match
+/// [`wants_sha256`]: super::wants_sha256
+/// [`Sha256Field`]: super::Sha256Field
 #[derive(Debug)]
 pub enum Bytes {}
 
@@ -194,8 +212,9 @@ impl Bytes {
 }
 
 impl ResponseBody for Bytes {
+    const HEAD: bool = true;
     type Value = [u8];
-    type Error = RangeError;
+    type Error = BytesError;
 }
 
 /// A set of [`ErrorCode`]s, as a type whose values are the codes.
@@ -246,7 +265,7 @@ errors! {
 
 errors! {
     /// The errors of answering with a [`Bytes`] response body.
-    RangeError { RangeNotSatisfiable }
+    BytesError { PreconditionFailed, RangeNotSatisfiable }
 }
 
 errors! {

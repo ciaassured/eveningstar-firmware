@@ -382,7 +382,7 @@ async fn write_unsatisfiable<R: Read, W: ResponseWriter<Error = R::Error>>(
     connection: Connection<'_, R>,
     writer: W,
 ) -> Result<ResponseSent, W::Error> {
-    let response = error_response(v1::RangeError::RangeNotSatisfiable.code())
+    let response = error_response(v1::BytesError::RangeNotSatisfiable.code())
         .with_header("Accept-Ranges", "bytes")
         .with_headers(tag.map(|tag| ("ETag", tag)))
         .with_headers(content_range.map(|range| ("Content-Range", range)));
