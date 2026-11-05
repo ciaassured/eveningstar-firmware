@@ -52,12 +52,14 @@ rules.
 
 Every endpoint is a `GET` with the `read` scope.
 
-| Path                                             | Answers with                                                        |
-|--------------------------------------------------|---------------------------------------------------------------------|
-| `/storage`                                       | The board's storage devices and whether this firmware supports each |
-| `/storage/internal`                              | The internal flash: tier, bootloader, boot state, both app slots     |
-| `/storage/internal/regions`                      | Every region: layout, what the board holds, contents, roles, digests |
-| `/storage/internal/regions/{region}/content`     | The region's bytes, or a range of them                              |
+- `/storage`: the board's storage devices and whether this firmware supports
+  each.
+- `/storage/internal`: the internal flash: tier, bootloader, boot state, both
+  app slots.
+- `/storage/internal/regions`: every region: layout, what the board holds,
+  contents, roles, digests.
+- `/storage/internal/regions/{region}/content`: the region's bytes, or a range
+  of them.
 
 A NAND holding bulk logs shares nothing with a NOR flash holding a partition
 table but the word "storage", so the external NAND will get its own paths and
@@ -67,19 +69,20 @@ types under `/storage/external`.
 
 `{region}` is a closed enum, one name per thing a handle can cover:
 
-| Region             | Covers                                              | Contents  |
-|--------------------|-----------------------------------------------------|-----------|
-| `bootloader`       | 0x0 up to the partition table                       | public    |
-| `partition_table`  | The table the bootloader read                       | public    |
-| `otadata`          | `otadata`                                           | public    |
-| `app_current`      | The running app: its slot, or its image when the app didn't boot from a slot | public |
-| `app_alternate`    | The slot that isn't running                         | public    |
-| `config_current`   | The running slot's `config_*`                       | sensitive |
-| `config_alternate` | The other slot's `config_*`                         | sensitive |
-| `diag`             | `diag`                                              | sensitive |
-| `factory`          | `factory`                                           | sensitive |
-| `reserved`         | `reserved`                                          | reserved  |
+| Region             | Covers                        | Contents  |
+| ------------------ | ----------------------------- | --------- |
+| `bootloader`       | 0x0 up to the partition table | public    |
+| `partition_table`  | The table the bootloader read | public    |
+| `otadata`          | `otadata`                     | public    |
+| `app_current`      | The running app's slot        | public    |
+| `app_alternate`    | The slot that isn't running   | public    |
+| `config_current`   | The running slot's `config_*` | sensitive |
+| `config_alternate` | The other slot's `config_*`   | sensitive |
+| `diag`             | `diag`                        | sensitive |
+| `factory`          | `factory`                     | sensitive |
+| `reserved`         | `reserved`                    | reserved  |
 
+When the app didn't boot from a slot, `app_current` covers its image instead.
 The current and alternate names swap meaning when the device boots the other
 slot. A download resumed across a reboot is caught by its `If-Range` (below).
 
@@ -689,11 +692,22 @@ Wiping is wanted, but each wipe belongs to the service that owns the region,
 none of which exists yet, and a wipe can't be undone, so it waits for
 enforced authentication and needs the `configure` scope:
 
-| Region             | What a wipe means                                     | Owner          | Conditions and effects                                                                                                                                                  |
-|--------------------|-------------------------------------------------------|----------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `config_alternate` | A secure wipe of the previous firmware's settings     | Config store   | Only after the store has migrated from it. The handle already allows erasing and not programming (`OtherConfig`). A rollback then boots on defaults.                      |
-| `app_alternate`    | Removing the rollback target, e.g. a vulnerable image | OTA service    | Through `Ota`, the only writer of the other slot: first both otadata entries select the running slot, so no pending activation points at an erased slot. Full tier, running image `Valid`. No rollback until the next update. |
-| `config_current`   | A factory reset of the settings                       | Config service | Erase and reboot, as erasing under a running store leaves its state wrong. The same action as the board's button. Loses the Wi-Fi credentials, so the device may leave the network. |
+- `config_alternate`: a secure wipe of the previous firmware's settings.
+  - Owner: config store.
+  - Conditions and effects: only after the store has migrated from it. The
+    handle already allows erasing and not programming (`OtherConfig`). A
+    rollback then boots on defaults.
+- `app_alternate`: removing the rollback target, e.g. a vulnerable image.
+  - Owner: OTA service.
+  - Conditions and effects: through `Ota`, the only writer of the other slot:
+    first both otadata entries select the running slot, so no pending
+    activation points at an erased slot. Full tier, running image `Valid`. No
+    rollback until the next update.
+- `config_current`: a factory reset of the settings.
+  - Owner: config service.
+  - Conditions and effects: erase and reboot, as erasing under a running store
+    leaves its state wrong. The same action as the board's button. Loses the
+    Wi-Fi credentials, so the device may leave the network.
 
 Erasing a 3 MiB slot is 768 sector erases, about 35 s with interrupts off for
 tens of milliseconds (up to about 400 ms) at a time. Each wipe is a long job

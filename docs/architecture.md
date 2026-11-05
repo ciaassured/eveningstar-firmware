@@ -8,15 +8,18 @@ documentation (`//!` comments), which this document links to by name.
 
 The workspace's crates live flat under `crates/`.
 
-| Crate                     | Holds                                                                 | Builds for        |
-|---------------------------|-----------------------------------------------------------------------|-------------------|
-| `eveningstar-board`       | Board support: the chip's pins and flash, named by role               | ESP32-C6          |
-| `eveningstar-api`         | The API contract: endpoints, request and response types               | ESP32-C6 and host |
-| `eveningstar-esp-formats` | The ESP-IDF formats: images, the partition table, the otadata         | ESP32-C6 and host |
-| `eveningstar-storage`     | The flash devices, their regions and handles, the verification chain  | ESP32-C6 and host |
-| `eveningstar-boot`        | The content modules of the boot regions: parsed models and views      | ESP32-C6 and host |
-| `eveningstar-ota`         | The OTA mechanism: updates, activation, confirmation and rollback     | ESP32-C6 and host |
-| `eveningstar`             | The firmware: services, transports, drivers and watchdogs             | ESP32-C6          |
+| Crate                     | Holds                                                                |
+| ------------------------- | -------------------------------------------------------------------- |
+| `eveningstar-board`       | Board support: the chip's pins and flash, named by role              |
+| `eveningstar-api`         | The API contract: endpoints, request and response types              |
+| `eveningstar-esp-formats` | The ESP-IDF formats: images, the partition table, the otadata        |
+| `eveningstar-storage`     | The flash devices, their regions and handles, the verification chain |
+| `eveningstar-boot`        | The content modules of the boot regions: parsed models and views     |
+| `eveningstar-ota`         | The OTA mechanism: updates, activation, confirmation and rollback    |
+| `eveningstar`             | The firmware: services, transports, drivers and watchdogs            |
+
+`eveningstar-board` and `eveningstar` build for the ESP32-C6 only; the others
+build for the ESP32-C6 and the host.
 
 ### `eveningstar-board`
 
@@ -485,14 +488,14 @@ tell an image built for another layout from one built for this one. The layout
 record sits right after the app descriptor, at offset 0x100 of the first
 segment's data:
 
-| Offset | Length         | Content                                                              |
-|--------|----------------|----------------------------------------------------------------------|
-| 0x00   | 16             | the magic `EVENINGSTAR-LYT1`, which names version 1 of the format    |
-| 0x10   | 4              | the partition table's offset, little-endian                          |
-| 0x14   | 4              | the flash size in bytes, little-endian                               |
-| 0x18   | 4              | the number of entries, little-endian                                 |
-| 0x1C   | 4              | zero                                                                 |
-| 0x20   | 32 per entry   | the partitions in table order, each in the ESP-IDF table's encoding  |
+| Offset | Length       | Content                                                             |
+| ------ | ------------ | ------------------------------------------------------------------- |
+| 0x00   | 16           | the magic `EVENINGSTAR-LYT1`, which names version 1 of the format   |
+| 0x10   | 4            | the partition table's offset, little-endian                         |
+| 0x14   | 4            | the flash size in bytes, little-endian                              |
+| 0x18   | 4            | the number of entries, little-endian                                |
+| 0x1C   | 4            | zero                                                                |
+| 0x20   | 32 per entry | the partitions in table order, each in the ESP-IDF table's encoding |
 
 - The record is `eveningstar_storage::LAYOUT_RECORD`, built at compile time
   from `layout.rs`. `main.rs` links it into the section
@@ -556,21 +559,32 @@ that booted (`Placed`). App slots and configurations are named by role,
 current (the slot that booted) and alternate, with the slot (`ota_0`, `ota_1`)
 reported beside them.
 
-| Role              | Span                                                                                                                     | Class       | Handles                                                      |
-|-------------------|--------------------------------------------------------------------------------------------------------------------------|-------------|--------------------------------------------------------------|
-| `Bootloader`      | 0x0 up to the located table, or up to the compiled table offset when none is located                                     | publishable | reader, every tier                                           |
-| `PartitionTable`  | the compiled table's sector, 0x8000 to 0x9000                                                                            | publishable | reader, every tier                                           |
-| `Otadata`         | `otadata`                                                                                                                | publishable | reader in the layout and boot tiers; writer in the boot tier |
-| `CurrentApp`      | the slot that booted                                                                                                     | publishable | reader in the layout and boot tiers                          |
-| `AlternateApp`    | the other slot                                                                                                           | publishable | reader in the layout and boot tiers; writer in the boot tier |
-| `CurrentConfig`   | the current slot's configuration                                                                                         | sensitive   | writer in the layout and boot tiers                          |
-| `AlternateConfig` | the alternate slot's configuration                                                                                       | sensitive   | erase-only writer in the layout and boot tiers               |
-| `Diag`            | `diag`                                                                                                                   | sensitive   | writer in the layout and boot tiers                          |
-| `Factory`         | `factory`                                                                                                                | sensitive   | none                                                         |
-| `Chip`            | the whole flash                                                                                                          | sensitive   | none                                                         |
-| `FoundTable`      | the sector of the one table the search finds                                                                             | publishable | reader in the unverified tier                                |
-| `FoundApp`        | the located table's app partition at the booted offset, or the image at the booted offset when no valid table is located | publishable | reader in the unverified tier                                |
-| `FoundOtadata`    | the located table's last `data`/`ota` partition                                                                          | sensitive   | reader in the unverified tier                                |
+Each role below gives its span, its class and its handles.
+
+- `Bootloader`: 0x0 up to the located table, or up to the compiled table
+  offset when none is located. Publishable. Reader, every tier.
+- `PartitionTable`: the compiled table's sector, 0x8000 to 0x9000.
+  Publishable. Reader, every tier.
+- `Otadata`: `otadata`. Publishable. Reader in the layout and boot tiers;
+  writer in the boot tier.
+- `CurrentApp`: the slot that booted. Publishable. Reader in the layout and
+  boot tiers.
+- `AlternateApp`: the other slot. Publishable. Reader in the layout and boot
+  tiers; writer in the boot tier.
+- `CurrentConfig`: the current slot's configuration. Sensitive. Writer in the
+  layout and boot tiers.
+- `AlternateConfig`: the alternate slot's configuration. Sensitive.
+  Erase-only writer in the layout and boot tiers.
+- `Diag`: `diag`. Sensitive. Writer in the layout and boot tiers.
+- `Factory`: `factory`. Sensitive. No handle.
+- `Chip`: the whole flash. Sensitive. No handle.
+- `FoundTable`: the sector of the one table the search finds. Publishable.
+  Reader in the unverified tier.
+- `FoundApp`: the located table's app partition at the booted offset, or the
+  image at the booted offset when no valid table is located. Publishable.
+  Reader in the unverified tier.
+- `FoundOtadata`: the located table's last `data`/`ota` partition. Sensitive.
+  Reader in the unverified tier.
 
 - Each role has at most one reader and one writer per boot. Neither is `Clone`
   or `Copy`, only the crate makes them, and `split` takes the device and its
@@ -764,12 +778,22 @@ hands out its reader or a snapshot; it hands out views and parsed models.
 readers of its regions and offers parsed models, which only its parser makes
 and which carry the epoch they were parsed at, and published views.
 
-| Module           | Owns                                                        | Model                                                                                                                             | Published view                                     |
-|------------------|-------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------|----------------------------------------------------|
-| `Bootloader`     | the bootloader's region                                     | header (read whether or not the image verifies), length, stored digest, file SHA-256, known entry; the descriptor on request      | the image, once its SHA-256 verifies, known or not |
-| `PartitionTable` | the compiled table's sector, and the table the search found | the table as the bootloader judges it, the partitions it loads, the MD5 entry, the comparison with the layout, how it was located | the covered bytes, the ignored ones sanitized      |
-| `Otadata`        | the otadata, the compiled layout's or the located table's   | both entries, the active one, the boot state                                                                                      | each entry its parser pins down (compiled only)    |
-| `AppSlot`        | one app region: current, alternate or found                 | header, length, stored digest, file SHA-256, per epoch; the descriptor and the layout record's comparison on request               | the image, once verified at the region's epoch now |
+- `Bootloader` owns the bootloader's region.
+  - Model: header (read whether or not the image verifies), length, stored
+    digest, file SHA-256, known entry; the descriptor on request.
+  - Published view: the image, once its SHA-256 verifies, known or not.
+- `PartitionTable` owns the compiled table's sector, and the table the search
+  found.
+  - Model: the table as the bootloader judges it, the partitions it loads, the
+    MD5 entry, the comparison with the layout, how it was located.
+  - Published view: the covered bytes, the ignored ones sanitized.
+- `Otadata` owns the otadata, the compiled layout's or the located table's.
+  - Model: both entries, the active one, the boot state.
+  - Published view: each entry its parser pins down (compiled only).
+- `AppSlot` owns one app region: current, alternate or found.
+  - Model: header, length, stored digest, file SHA-256, per epoch; the
+    descriptor and the layout record's comparison on request.
+  - Published view: the image, once verified at the region's epoch now.
 
 - Every module is `Sync` and takes `&self`, so it lives in a `static` and is
   shared between tasks. Results that cost a hash are kept behind a
@@ -831,11 +855,21 @@ below the boot tier.
    says which page the CPU runs, not from the otadata, which says only what was
    selected.
 
-| Tier         | Reached when                                                                                 | Handles                                                                                            |
-|--------------|----------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------|
-| `Unverified` | step 2 locates no single table, or any of steps 3 to 6 fails                                 | readers of the bootloader, the compiled table's sector, and the `Found*` roles of what was located |
-| `Layout`     | steps 2 to 6 pass, with the table found by the search or a known bootloader without rollback | + readers of the slots and the otadata; writers of the configurations and `diag`                   |
-| `Boot`       | steps 2 to 6 pass, with the table located by a known bootloader that supports rollback       | + the boot writers: the alternate slot's and the otadata's                                         |
+- `Unverified`
+  - Reached when: step 2 locates no single table, or any of steps 3 to 6
+    fails.
+  - Handles: readers of the bootloader, the compiled table's sector, and the
+    `Found*` roles of what was located.
+- `Layout`
+  - Reached when: steps 2 to 6 pass, with the table found by the search or a
+    known bootloader without rollback.
+  - Handles: the unverified tier's, and readers of the slots and the otadata;
+    writers of the configurations and `diag`.
+- `Boot`
+  - Reached when: steps 2 to 6 pass, with the table located by a known
+    bootloader that supports rollback.
+  - Handles: the layout tier's, and the boot writers: the alternate slot's and
+    the otadata's.
 
 - Matching the bootloader's judgement adds no failure from bit rot: a flipped
   bit the bootloader would reject stops the board before the firmware runs, and

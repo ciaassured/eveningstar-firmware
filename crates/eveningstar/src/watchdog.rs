@@ -6,7 +6,7 @@
 //! There are three layers, each a backstop for the one above it:
 //!
 //! | Layer            | Catches                              | Action                   |
-//! |------------------|--------------------------------------|--------------------------|
+//! | ---------------- | ------------------------------------ | ------------------------ |
 //! | [`Supervisor`]   | a task that stops feeding its handle | log, then software reset |
 //! | MWDT0 (`TIMG0`)  | the supervisor or executor hanging   | digital core reset       |
 //! | RWDT (LP domain) | the MWDT path failing (e.g. clocks)  | full system reset        |

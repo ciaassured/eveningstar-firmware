@@ -25,11 +25,22 @@
 //! 6. **Flash and booted slot.** The flash holds at least
 //!    [`layout::FLASH_SIZE`] bytes, and the booted offset is a slot's.
 //!
-//! | Tier | Reached when | Handles |
-//! |---|---|---|
-//! | [`Tier::Unverified`] | step 2 locates no single table, or any of steps 3 to 6 fails | [`Storage::bootloader`], [`Storage::partition_table`], and [`Located`]: readers of what the chain located |
-//! | [`Tier::Layout`] | steps 2 to 6 pass, the table found by the search or a known bootloader without rollback | [`Storage::bootloader`], [`Storage::partition_table`], [`LayoutHandles`]: readers of the slots and the otadata, writers of the configurations and `diag` |
-//! | [`Tier::Boot`] | steps 2 to 6 pass, the table located by a known bootloader that supports rollback | the layout tier's, and [`BootWriters`]: writers of the alternate slot and the otadata |
+//! - [`Tier::Unverified`]
+//!   - Reached when: step 2 locates no single table, or any of steps 3 to 6
+//!     fails.
+//!   - Handles: [`Storage::bootloader`], [`Storage::partition_table`], and
+//!     [`Located`]: readers of what the chain located.
+//! - [`Tier::Layout`]
+//!   - Reached when: steps 2 to 6 pass, the table found by the search or a
+//!     known bootloader without rollback.
+//!   - Handles: [`Storage::bootloader`], [`Storage::partition_table`],
+//!     [`LayoutHandles`]: readers of the slots and the otadata, writers of the
+//!     configurations and `diag`.
+//! - [`Tier::Boot`]
+//!   - Reached when: steps 2 to 6 pass, the table located by a known
+//!     bootloader that supports rollback.
+//!   - Handles: the layout tier's, and [`BootWriters`]: writers of the
+//!     alternate slot and the otadata.
 //!
 //! No reader of a role located at runtime ([`Located`]) is made over a span
 //! that shares a byte with `factory`, a configuration or `diag` of the
