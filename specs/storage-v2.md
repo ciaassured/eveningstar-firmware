@@ -333,18 +333,34 @@ pub trait Publishable: Role {}
 
 The internal flash's roles:
 
-| Role              | Span                                          | Class       | Handle                                         | Owner                      |
-|-------------------|-----------------------------------------------|-------------|------------------------------------------------|----------------------------|
-| `Bootloader`      | 0x0 up to the located table, or up to the compiled table offset when none is located | publishable | reader, every tier | `boot::Bootloader` |
-| `PartitionTable`  | the compiled table's sector, 0x8000–0x9000    | publishable | reader, every tier                             | `boot::PartitionTable`     |
-| `Otadata`         | `otadata`                                     | publishable | reader in the layout and boot tiers; writer in the boot tier, in `BootWriters` | `boot::Otadata`; `ota` |
-| `CurrentApp`      | the slot that booted                          | publishable | reader in the layout and boot tiers            | `boot::App`                |
-| `AlternateApp`    | the other slot                                | publishable | reader in the layout and boot tiers; writer in the boot tier, in `BootWriters` | `boot::App`; `ota` |
-| `CurrentConfig`   | the current slot's configuration              | sensitive   | writer in the layout and boot tiers            | configuration store        |
-| `AlternateConfig` | the alternate slot's configuration            | sensitive   | erase-only writer in the layout and boot tiers | configuration store        |
-| `Diag`            | `diag`                                        | sensitive   | writer in the layout and boot tiers            | diag store                 |
-| `Factory`         | `factory`                                     | sensitive   | none until the factory module exists           | factory module (later)     |
-| `Chip`            | the whole flash                               | sensitive   | none until the export service exists          | export service (later)     |
+Each role below gives its span, its class, its handles and their owner.
+
+- `Bootloader`: 0x0 up to the located table, or up to the compiled table
+  offset when none is located. Publishable.
+  - Handle: reader, every tier. Owner: `boot::Bootloader`.
+- `PartitionTable`: the compiled table's sector, 0x8000–0x9000. Publishable.
+  - Handle: reader, every tier. Owner: `boot::PartitionTable`.
+- `Otadata`: `otadata`. Publishable.
+  - Handle: reader in the layout and boot tiers; writer in the boot tier, in
+    `BootWriters`. Owner: `boot::Otadata`; `ota`.
+- `CurrentApp`: the slot that booted. Publishable.
+  - Handle: reader in the layout and boot tiers. Owner: `boot::App`.
+- `AlternateApp`: the other slot. Publishable.
+  - Handle: reader in the layout and boot tiers; writer in the boot tier, in
+    `BootWriters`. Owner: `boot::App`; `ota`.
+- `CurrentConfig`: the current slot's configuration. Sensitive.
+  - Handle: writer in the layout and boot tiers. Owner: configuration store.
+- `AlternateConfig`: the alternate slot's configuration. Sensitive.
+  - Handle: erase-only writer in the layout and boot tiers. Owner:
+    configuration store.
+- `Diag`: `diag`. Sensitive.
+  - Handle: writer in the layout and boot tiers. Owner: diag store.
+- `Factory`: `factory`. Sensitive.
+  - Handle: none until the factory module exists. Owner: factory module
+    (later).
+- `Chip`: the whole flash. Sensitive.
+  - Handle: none until the export service exists. Owner: export service
+    (later).
 
 - `Otadata` is `Publishable` at its compiled offset: its content module
   publishes the entries its parser pins down (see "Publication").
@@ -361,11 +377,14 @@ The internal flash's roles:
 The unverified tier's roles have spans set at runtime, each located from a
 known point:
 
-| Role           | Located by                                                                                    | Class       |
-|----------------|-----------------------------------------------------------------------------------------------|-------------|
-| `FoundTable`   | the search, when it finds exactly one table: the sector of that table                         | publishable |
-| `FoundApp`     | the app partition the bootloader keeps at the booted offset of the located table; or, when no valid table is located, the image at MMU entry 0 (the booted offset), spanning the image its header describes, cut to the flash's capacity | publishable |
-| `FoundOtadata` | the located table's `data`/`ota` partition, as the bootloader loads them (the last such entry) | sensitive   |
+- `FoundTable` (publishable), located by the search, when it finds exactly one
+  table: the sector of that table.
+- `FoundApp` (publishable), located by the app partition the bootloader keeps
+  at the booted offset of the located table; or, when no valid table is
+  located, the image at MMU entry 0 (the booted offset), spanning the image
+  its header describes, cut to the flash's capacity.
+- `FoundOtadata` (sensitive), located by the located table's `data`/`ota`
+  partition, as the bootloader loads them (the last such entry).
 
 - No `Found*` reader is made over a span that overlaps one of the compiled
   layout's sensitive spans (`factory`, both configurations, `diag`); such an
@@ -598,12 +617,23 @@ parsed models.
 Each module owns one or more readers and offers parsed models and published
 views. A model's constructor is its parser.
 
-| Module           | Owns                                      | Parsed model                                                                                     | Published view                                         |
-|------------------|-------------------------------------------|--------------------------------------------------------------------------------------------------|--------------------------------------------------------|
-| `Bootloader`     | `Reader<Bootloader>`                      | header (with its flash size field), descriptor, length, stored digest, file SHA-256, known entry | the image, when its SHA-256 verifies, known or not     |
-| `PartitionTable` | `Reader<PartitionTable>`, `Option<Reader<FoundTable>>` | entries, the partitions as the bootloader loads them, MD5 stored and computed, end, how it was located, other candidates' offsets | the located table's verified bytes |
-| `Otadata`        | `Reader<Otadata>` or `Reader<FoundOtadata>` | both entries, validity, the active entry, boot state                                           | each entry the parser pins down (compiled only)        |
-| `AppSlot`        | `Reader<CurrentApp>`, `Reader<AlternateApp>`, or `Reader<FoundApp>` | header, length, stored digest, file SHA-256, verification result, per epoch; the descriptor on request | the image, once verified                               |
+- `Bootloader` owns `Reader<Bootloader>`.
+  - Parsed model: header (with its flash size field), descriptor, length,
+    stored digest, file SHA-256, known entry.
+  - Published view: the image, when its SHA-256 verifies, known or not.
+- `PartitionTable` owns `Reader<PartitionTable>`,
+  `Option<Reader<FoundTable>>`.
+  - Parsed model: entries, the partitions as the bootloader loads them, MD5
+    stored and computed, end, how it was located, other candidates' offsets.
+  - Published view: the located table's verified bytes.
+- `Otadata` owns `Reader<Otadata>` or `Reader<FoundOtadata>`.
+  - Parsed model: both entries, validity, the active entry, boot state.
+  - Published view: each entry the parser pins down (compiled only).
+- `AppSlot` owns `Reader<CurrentApp>`, `Reader<AlternateApp>`, or
+  `Reader<FoundApp>`.
+  - Parsed model: header, length, stored digest, file SHA-256, verification
+    result, per epoch; the descriptor on request.
+  - Published view: the image, once verified.
 
 - The app checks run in `App::run`, over the tier's `AppSlot`s, in the
   firmware's check task: background, paced, with their own watchdog handle
@@ -677,11 +707,20 @@ without saving it.
 6. **Flash and booted slot.** The flash is at least the layout's size, and
    the booted offset (MMU entry 0, read by the firmware) is a slot's offset.
 
-| Tier         | Reached when                                                                                    | Hands out                                                                                   |
-|--------------|-------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------|
-| `Unverified` | step 2 locates no single table, or any of steps 3–6 fails                                        | readers: `Bootloader`, `PartitionTable`, and the `Found*` roles of what was located           |
-| `Layout`     | steps 2–6 pass, with the table found by search or a known bootloader without rollback            | + readers of the slots and the otadata; writers for the configurations and diag             |
-| `Boot`       | steps 2–6 pass with `TableSource::KnownBootloader`, and the known entry supports rollback        | + `BootWriters { alternate_app: Writer<AlternateApp>, otadata: Writer<Otadata> }`            |
+- `Unverified`
+  - Reached when: step 2 locates no single table, or any of steps 3–6 fails.
+  - Hands out: readers of `Bootloader`, `PartitionTable`, and the `Found*` roles
+    of what was located.
+- `Layout`
+  - Reached when: steps 2–6 pass, with the table found by search or a known
+    bootloader without rollback.
+  - Hands out: the unverified tier's, and readers of the slots and the
+    otadata; writers for the configurations and diag.
+- `Boot`
+  - Reached when: steps 2–6 pass with `TableSource::KnownBootloader`, and the
+    known entry supports rollback.
+  - Hands out: the layout tier's, and
+    `BootWriters { alternate_app: Writer<AlternateApp>, otadata: Writer<Otadata> }`.
 
 A bootloader that doesn't verify in step 1 is unknown, so step 2 searches.
 

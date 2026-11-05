@@ -5,21 +5,31 @@
 //! also has its size at compile time ([`LayoutSize`]), and its offset when
 //! that doesn't depend on the slot that booted ([`Placed`]).
 //!
-//! | Role | Span | Class | [`LayoutSize`] | [`Placed`] | Writer |
-//! |---|---|---|---|---|---|
-//! | [`Bootloader`] | 0x0 up to the located table, or up to the compiled table offset | publishable | | | |
-//! | [`PartitionTable`] | the compiled table's sector | publishable | yes | yes | |
-//! | [`Otadata`] | `otadata` | publishable | yes | yes | erases and programs |
-//! | [`CurrentApp`] | the slot that booted | publishable | yes | | |
-//! | [`AlternateApp`] | the other slot | publishable | yes | | erases and programs |
-//! | [`CurrentConfig`] | the current slot's configuration | sensitive | yes | | erases and programs |
-//! | [`AlternateConfig`] | the alternate slot's configuration | sensitive | yes | | erases only |
-//! | [`Diag`] | `diag` | sensitive | yes | yes | erases and programs |
-//! | [`Factory`] | `factory` | sensitive | yes | yes | |
-//! | [`Chip`] | the whole flash | sensitive | | | |
-//! | [`FoundTable`] | the sector of the one table a search finds | publishable | | | |
-//! | [`FoundApp`] | the located table's app partition at the booted offset, or the image there when no valid table is located | publishable | | | |
-//! | [`FoundOtadata`] | the located table's last `data`/`ota` partition | sensitive | | | |
+//! Each role below gives its span, then its class, whether it is
+//! [`LayoutSize`] and [`Placed`], and what its writer does, if it has one.
+//!
+//! - [`Bootloader`]: 0x0 up to the located table, or up to the compiled table
+//!   offset. Publishable.
+//! - [`PartitionTable`]: the compiled table's sector. Publishable;
+//!   [`LayoutSize`], [`Placed`].
+//! - [`Otadata`]: `otadata`. Publishable; [`LayoutSize`], [`Placed`]; the
+//!   writer erases and programs.
+//! - [`CurrentApp`]: the slot that booted. Publishable; [`LayoutSize`].
+//! - [`AlternateApp`]: the other slot. Publishable; [`LayoutSize`]; the writer
+//!   erases and programs.
+//! - [`CurrentConfig`]: the current slot's configuration. Sensitive;
+//!   [`LayoutSize`]; the writer erases and programs.
+//! - [`AlternateConfig`]: the alternate slot's configuration. Sensitive;
+//!   [`LayoutSize`]; the writer erases only.
+//! - [`Diag`]: `diag`. Sensitive; [`LayoutSize`], [`Placed`]; the writer
+//!   erases and programs.
+//! - [`Factory`]: `factory`. Sensitive; [`LayoutSize`], [`Placed`].
+//! - [`Chip`]: the whole flash. Sensitive.
+//! - [`FoundTable`]: the sector of the one table a search finds. Publishable.
+//! - [`FoundApp`]: the located table's app partition at the booted offset, or
+//!   the image there when no valid table is located. Publishable.
+//! - [`FoundOtadata`]: the located table's last `data`/`ota` partition.
+//!   Sensitive.
 //!
 //! Only [`Publishable`] roles have their contents published. The otadata is
 //! publishable at its compiled offset, where the layout places it; the

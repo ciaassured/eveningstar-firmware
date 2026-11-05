@@ -10,12 +10,25 @@
 //! for each call from a model, so a view never serves bytes of an epoch other
 //! than the one its model was parsed at.
 //!
-//! | Module | Owns | Model | Published |
-//! |---|---|---|---|
-//! | [`Bootloader`] | the bootloader's region | header, length, stored digest, file SHA-256, known entry; the descriptor on request | the image, once its SHA-256 verifies, known or not |
-//! | [`PartitionTable`] | the compiled table's sector, the table the search found | the table as the bootloader judges it, its partitions, MD5 entry and comparison with the layout, how it was located | the entries, the MD5 entry and the end entry a check covers, with the bytes the bootloader ignores sanitized |
-//! | [`Otadata`] | the otadata | both entries, the active one, the boot state | each entry of the compiled otadata the parser pins down, blank or with a matching CRC and a defined state, its label sanitized; the fields of [`otadata::OtadataFields`] |
-//! | [`AppSlot`] | one app region | header, length, stored digest, file SHA-256, per epoch; the descriptor on request | the image, once verified at the region's epoch now |
+//! - [`Bootloader`] owns the bootloader's region.
+//!   - Model: header, length, stored digest, file SHA-256, known entry; the
+//!     descriptor on request.
+//!   - Published: the image, once its SHA-256 verifies, known or not.
+//! - [`PartitionTable`] owns the compiled table's sector, the table the search
+//!   found.
+//!   - Model: the table as the bootloader judges it, its partitions, MD5 entry
+//!     and comparison with the layout, how it was located.
+//!   - Published: the entries, the MD5 entry and the end entry a check covers,
+//!     with the bytes the bootloader ignores sanitized.
+//! - [`Otadata`] owns the otadata.
+//!   - Model: both entries, the active one, the boot state.
+//!   - Published: each entry of the compiled otadata the parser pins down,
+//!     blank or with a matching CRC and a defined state, its label sanitized;
+//!     the fields of [`otadata::OtadataFields`].
+//! - [`AppSlot`] owns one app region.
+//!   - Model: header, length, stored digest, file SHA-256, per epoch; the
+//!     descriptor on request.
+//!   - Published: the image, once verified at the region's epoch now.
 //!
 //! [`App`] refers to the slots of a tier and runs their checks in the
 //! background; [`AppSlot::verdict`] waits for a slot's result at an epoch.

@@ -5,14 +5,23 @@ Real binaries the tests read with `include_bytes!`, through
 `eveningstar-boot` and `eveningstar-ota`, which take it through the
 `test-support` feature.
 
-| File | Bytes | What it is |
-|---|---|---|
-| `partition-table.bin` | 3072 | The partition table Nix builds from `nix/board.nix` (`nix build .#partition-table`), as `flash-boot` writes it at 0x8000. |
-| `bootloader.bin` | 22672 | The ESP-IDF bootloader Nix builds (`nix build .#bootloader`), as `flash-boot` writes it at 0x0. |
-| `espflash-bootloader.bin` | 32768 | Bytes 0x0..0x8000 of what espflash 4.6.0 writes for an ESP32-C6 with 8 MB of flash: its bundled bootloader (ESP-IDF v6.1-beta1), then erased bytes. |
-| `espflash-partition-table.bin` | 3072 | Bytes 0x8000..0x8C00 of the same image: espflash's default table (`nvs`, `phy_init`, a `factory` app at 0x10000). |
-| `app.bin` | 217856 | An app image of the `eveningstar` firmware, as espflash 4.6.0 makes it from the release ELF. |
-| `otadata-first-boot.bin` | 8192 | The otadata partition (0xA000..0xC000) read from a dev board after the Nix bootloader's first boot on blank otadata: entry 0 is sequence 1, `ESP_OTA_IMG_VALID`, and the rest is erased. |
+- `partition-table.bin` (3072 bytes): the partition table Nix builds from
+  `nix/board.nix` (`nix build .#partition-table`), as `flash-boot` writes it
+  at 0x8000.
+- `bootloader.bin` (22672 bytes): the ESP-IDF bootloader Nix builds
+  (`nix build .#bootloader`), as `flash-boot` writes it at 0x0.
+- `espflash-bootloader.bin` (32768 bytes): bytes 0x0..0x8000 of what espflash
+  4.6.0 writes for an ESP32-C6 with 8 MB of flash: its bundled bootloader
+  (ESP-IDF v6.1-beta1), then erased bytes.
+- `espflash-partition-table.bin` (3072 bytes): bytes 0x8000..0x8C00 of the
+  same image: espflash's default table (`nvs`, `phy_init`, a `factory` app at
+  0x10000).
+- `app.bin` (217856 bytes): an app image of the `eveningstar` firmware, as
+  espflash 4.6.0 makes it from the release ELF.
+- `otadata-first-boot.bin` (8192 bytes): the otadata partition
+  (0xA000..0xC000) read from a dev board after the Nix bootloader's first boot
+  on blank otadata: entry 0 is sequence 1, `ESP_OTA_IMG_VALID`, and the rest
+  is erased.
 
 ## Tracking the Nix build
 
