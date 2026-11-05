@@ -390,7 +390,8 @@ fn verified<'f>(
 ///         let current = AppSlot::new(handles.current_app);
 ///         let alternate = AppSlot::new(handles.alternate_app);
 ///         let otadata = Otadata::compiled(handles.otadata);
-///         let mut ota = Ota::new(writers, &current, &alternate, &otadata, &CHECKS).await;
+///         let config = handles.alternate_config;
+///         let mut ota = Ota::new(writers, config, &current, &alternate, &otadata, &CHECKS).await;
 ///         let image = ota.verify_other().await?;
 ///         ota.activate(image).await?;
 ///     }
@@ -419,14 +420,18 @@ fn verified<'f>(
 ///     let current = AppSlot::new(handles.current_app);
 ///     let alternate = AppSlot::new(handles.alternate_app);
 ///     let otadata = Otadata::compiled(handles.otadata);
-///     let image = Ota::new(writers, &current, &alternate, &otadata, &CHECKS).await.verify_other().await?;
+///     let config = handles.alternate_config;
+///     let mut ota = Ota::new(writers, config, &current, &alternate, &otadata, &CHECKS).await;
+///     let image = ota.verify_other().await?;
 ///     let Handles::Boot(handles, writers) = split(flash, state, booted).await.handles else {
 ///         return Ok(());
 ///     };
 ///     let current = AppSlot::new(handles.current_app);
 ///     let alternate = AppSlot::new(handles.alternate_app);
 ///     let otadata = Otadata::compiled(handles.otadata);
-///     Ota::new(writers, &current, &alternate, &otadata, &CHECKS).await.activate(image).await
+///     let config = handles.alternate_config;
+///     let mut ota = Ota::new(writers, config, &current, &alternate, &otadata, &CHECKS).await;
+///     ota.activate(image).await
 /// }
 /// ```
 ///
