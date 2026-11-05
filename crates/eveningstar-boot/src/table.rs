@@ -706,11 +706,13 @@ impl TableView<'_> {
     }
 
     /// Fills `buf` with the view's bytes at `offset`, the sanitized ones as
-    /// `0xFF` ([`PublicRead::read`](eveningstar_storage::PublicRead::read)).
+    /// `0xFF` ([`PublicRead::read`]).
     ///
     /// # Errors
     ///
-    /// As [`PublicRead::read`](eveningstar_storage::PublicRead::read).
+    /// As [`PublicRead::read`].
+    ///
+    /// [`PublicRead::read`]: eveningstar_storage::PublicRead::read
     pub async fn read(&self, offset: u32, buf: &mut [u8]) -> Result<(), ViewError> {
         match self {
             Self::Compiled(view) => view.read(offset, buf).await,

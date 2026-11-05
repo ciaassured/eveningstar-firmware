@@ -1,5 +1,7 @@
-//! Ranges of [`Bytes`](super::Bytes) bodies: the part of a body a request's
-//! `Range` and `If-Range` headers ask for, as RFC 9110 defines them.
+//! Ranges of [`Bytes`] bodies: the part of a body a request's `Range` and
+//! `If-Range` headers ask for, as RFC 9110 defines them.
+//!
+//! [`Bytes`]: super::Bytes
 
 use core::fmt;
 
@@ -48,8 +50,9 @@ pub enum Selection {
         /// The offset of the last byte.
         last: u64,
     },
-    /// No part the body has: answered with
-    /// [`ErrorCode::RangeNotSatisfiable`](super::ErrorCode::RangeNotSatisfiable).
+    /// No part the body has: answered with [`ErrorCode::RangeNotSatisfiable`].
+    ///
+    /// [`ErrorCode::RangeNotSatisfiable`]: super::ErrorCode::RangeNotSatisfiable
     Unsatisfiable,
 }
 

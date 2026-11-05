@@ -16,14 +16,16 @@ use crate::error::OtaError;
 /// Length of a word, the unit of programming, in bytes.
 const WORD: usize = WORD_SIZE as usize;
 
-/// An update being written to the alternate slot, from
-/// [`Ota::begin_update`](crate::Ota::begin_update).
+/// An update being written to the alternate slot, from [`Ota::begin_update`].
 ///
-/// It holds the slot's write session, so no snapshot of the slot can be
-/// taken while it lives, and it borrows the [`Ota`](crate::Ota), so nothing
-/// else changes the slot or the boot selection meanwhile. Dropping it
-/// abandons the update and ends the session: the slot stays partly written,
-/// and no valid otadata entry selects it.
+/// It holds the slot's write session, so no snapshot of the slot can be taken
+/// while it lives, and it borrows the [`Ota`], so nothing else changes the slot
+/// or the boot selection meanwhile. Dropping it abandons the update and ends
+/// the session: the slot stays partly written, and no valid otadata entry
+/// selects it.
+///
+/// [`Ota::begin_update`]: crate::Ota::begin_update
+/// [`Ota`]: crate::Ota
 pub struct Update<'o, 'f> {
     session: Session<'o, AlternateApp>,
     /// The slot's module, whose check verifies what was written.
@@ -361,16 +363,14 @@ fn verified<'f>(
 }
 
 /// An image in the alternate slot that verified, from [`Update::finish`] or
-/// [`Ota::verify_other`](crate::Ota::verify_other): an ESP32-C6 app of the
-/// running app's project, built for the compiled partition layout, intact,
-/// at the slot's epoch when the slot's check verified it. It says nothing of
-/// who made it.
+/// [`Ota::verify_other`]: an ESP32-C6 app of the running app's project, built
+/// for the compiled partition layout, intact, at the slot's epoch when the
+/// slot's check verified it. It says nothing of who made it.
 ///
-/// [`Ota::activate`](crate::Ota::activate) takes it, and only while no update
-/// has begun since it was made and the slot is still at that epoch. It
-/// borrows the flash as the handles do, so it can't outlive them into a
-/// later [`split`](eveningstar_storage::chain::split). Switching back to the
-/// image in the alternate slot, while the slots' checks run:
+/// [`Ota::activate`] takes it, and only while no update has begun since it was
+/// made and the slot is still at that epoch. It borrows the flash as the
+/// handles do, so it can't outlive them into a later [`split`]. Switching back
+/// to the image in the alternate slot, while the slots' checks run:
 ///
 /// ```
 /// use eveningstar_boot::{AppSlot, Otadata};
@@ -378,7 +378,11 @@ fn verified<'f>(
 /// use eveningstar_storage::chain::{Handles, split};
 /// use eveningstar_storage::nor::{NorDevice, State};
 ///
-/// async fn switch_back(flash: &mut dyn NorDevice, state: &mut State, booted: u32) -> Result<(), OtaError> {
+/// async fn switch_back(
+///     flash: &mut dyn NorDevice,
+///     state: &mut State,
+///     booted: u32,
+/// ) -> Result<(), OtaError> {
 ///     let storage = split(flash, state, booted).await;
 ///     if let Handles::Boot(handles, writers) = storage.handles {
 ///         let current = AppSlot::new(handles.current_app);
@@ -400,7 +404,11 @@ fn verified<'f>(
 /// use eveningstar_storage::chain::{Handles, split};
 /// use eveningstar_storage::nor::{NorDevice, State};
 ///
-/// async fn switch_back(flash: &mut dyn NorDevice, state: &mut State, booted: u32) -> Result<(), OtaError> {
+/// async fn switch_back(
+///     flash: &mut dyn NorDevice,
+///     state: &mut State,
+///     booted: u32,
+/// ) -> Result<(), OtaError> {
 ///     let Handles::Boot(handles, writers) = split(flash, state, booted).await.handles else {
 ///         return Ok(());
 ///     };
@@ -417,6 +425,10 @@ fn verified<'f>(
 ///     Ota::new(writers, &current, &alternate, &otadata).await.activate(image).await
 /// }
 /// ```
+///
+/// [`Ota::verify_other`]: crate::Ota::verify_other
+/// [`Ota::activate`]: crate::Ota::activate
+/// [`split`]: eveningstar_storage::chain::split
 #[derive(Debug, PartialEq, Eq)]
 #[must_use]
 pub struct VerifiedImage<'f> {

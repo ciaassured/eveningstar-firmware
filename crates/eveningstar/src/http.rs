@@ -1,10 +1,12 @@
 //! HTTP server: a fixed pool of workers, each serving one TCP connection at a
 //! time.
 //!
-//! Handlers only translate between HTTP and the [services](crate::services).
-//! [`api`] serves each API request with its operation's handler, and each
-//! other submodule holds the handlers of one group of related operations.
-//! [`ui`] serves the web UI at `/`.
+//! Handlers only translate between HTTP and the [services]. [`api`] serves each
+//! API request with its operation's handler, and each other submodule holds the
+//! handlers of one group of related operations. [`ui`] serves the web UI at
+//! `/`.
+//!
+//! [services]: crate::services
 
 mod api;
 mod system;

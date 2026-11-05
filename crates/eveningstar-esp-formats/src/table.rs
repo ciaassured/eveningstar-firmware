@@ -368,10 +368,10 @@ fn read_entry<S: Source + ?Sized>(
     read_array(source, at).map_err(read_error)
 }
 
-/// Judges the table at `offset` in `source` as the ESP-IDF 5.5 bootloader
-/// does (`esp_partition_table_verify`), for a flash whose chip size is
-/// `chip_size` bytes, the size the bootloader takes from its header's flash
-/// size code ([`image::flash_size`](crate::image::flash_size)).
+/// Judges the table at `offset` in `source` as the ESP-IDF 5.5 bootloader does
+/// (`esp_partition_table_verify`), for a flash whose chip size is `chip_size`
+/// bytes, the size the bootloader takes from its header's flash size code
+/// ([`image::flash_size`]).
 ///
 /// The entries are read one at a time, from the first, until the end entry:
 ///
@@ -395,6 +395,8 @@ fn read_entry<S: Source + ?Sized>(
 /// [`Md5`](TableError::Md5), [`Empty`](TableError::Empty),
 /// [`Magic`](TableError::Magic), [`Unterminated`](TableError::Unterminated),
 /// or [`Read`](TableError::Read) when reading an entry fails.
+///
+/// [`image::flash_size`]: crate::image::flash_size
 pub fn verify<S: Source + ?Sized>(
     source: &S,
     offset: u32,

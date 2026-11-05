@@ -4,7 +4,9 @@ use eveningstar_boot::ImageFailure;
 use eveningstar_esp_formats::otadata::PlanError;
 use eveningstar_storage::AccessError;
 
-/// Why [`Ota`](crate::Ota) refuses every write.
+/// Why [`Ota`] refuses every write.
+///
+/// [`Ota`]: crate::Ota
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unavailable {
     /// The running app's image doesn't verify, or its descriptor doesn't
@@ -28,8 +30,10 @@ pub enum OtaError {
     Image(ImageFailure),
     /// An erase or program was refused or failed.
     Access(AccessError),
-    /// The [`VerifiedImage`](crate::VerifiedImage) was made before the latest
-    /// [`Ota::begin_update`](crate::Ota::begin_update).
+    /// The [`VerifiedImage`] was made before the latest [`Ota::begin_update`].
+    ///
+    /// [`VerifiedImage`]: crate::VerifiedImage
+    /// [`Ota::begin_update`]: crate::Ota::begin_update
     Stale,
     /// The alternate slot was written since it verified: its epoch moved, or
     /// its write state can't record an epoch.

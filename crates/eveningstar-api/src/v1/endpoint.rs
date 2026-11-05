@@ -33,9 +33,11 @@ impl Method {
 pub trait Endpoint {
     /// The method of the operation's requests.
     const METHOD: Method;
-    /// The operation's path, relative to [`PATH`](super::PATH). A segment
-    /// written `{name}` is a path parameter: it matches any one segment that
+    /// The operation's path, relative to [`PATH`]. A segment written `{name}`
+    /// is a path parameter: it matches any one segment that
     /// [`Params`](Self::Params) parses.
+    ///
+    /// [`PATH`]: super::PATH
     const PATH: &'static str;
     /// The status code of a successful response.
     const STATUS: u16;
@@ -178,10 +180,11 @@ impl<T> ResponseBody for Json<T> {
 /// A binary body, with the `Content-Type` `application/octet-stream`.
 ///
 /// A `GET` request can ask for part of the body with a `Range` header, and make
-/// that conditional with an `If-Range` header (see
-/// [`Selection`](super::Selection)). The answer is the whole body with the
-/// endpoint's status code, the part with
+/// that conditional with an `If-Range` header (see [`Selection`]). The answer
+/// is the whole body with the endpoint's status code, the part with
 /// [`PARTIAL_STATUS`](Self::PARTIAL_STATUS), or [`RangeError`].
+///
+/// [`Selection`]: super::Selection
 #[derive(Debug)]
 pub enum Bytes {}
 

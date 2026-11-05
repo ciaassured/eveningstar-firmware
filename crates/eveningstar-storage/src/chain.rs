@@ -99,7 +99,10 @@
 //! use eveningstar_storage::roles::{AlternateApp, Otadata};
 //! use eveningstar_storage::Slot;
 //!
-//! fn forge<'f>(alternate_app: Writer<'f, AlternateApp>, otadata: Writer<'f, Otadata>) -> BootWriters<'f> {
+//! fn forge<'f>(
+//!     alternate_app: Writer<'f, AlternateApp>,
+//!     otadata: Writer<'f, Otadata>,
+//! ) -> BootWriters<'f> {
 //!     BootWriters { alternate_app, otadata, slot: Slot::Ota0 }
 //! }
 //! ```
