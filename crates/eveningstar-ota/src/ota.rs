@@ -24,21 +24,19 @@ const SETTLE_WRITES: u32 = 2;
 /// whose check verifies what the slot holds, and the otadata's, which gives
 /// the boot state.
 ///
-/// An update is [`begin_update`](Self::begin_update), then
-/// [`Update::write`] for each part of the image and [`Update::finish`],
-/// which returns a [`VerifiedImage`] once the slot's check has verified what
-/// was written. [`activate`](Self::activate) selects it, and the bootloader
-/// starts it at the next boot as
-/// [`State::PendingVerify`](otadata::State::PendingVerify). Unless
-/// [`confirm`](Self::confirm) confirms it, the boot after that returns to the
-/// running slot; [`roll_back`](Self::roll_back) returns to it on purpose.
-/// Nothing here reboots: activating and rolling back take effect at the next
-/// boot.
+/// An update is [`begin_update`](Self::begin_update), then [`Update::write`]
+/// for each part of the image and [`Update::finish`], which returns a
+/// [`VerifiedImage`] once the slot's check has verified what was written.
+/// [`activate`](Self::activate) selects it, and the bootloader starts it at the
+/// next boot as [`State::PendingVerify`]. Unless [`confirm`](Self::confirm)
+/// confirms it, the boot after that returns to the running slot;
+/// [`roll_back`](Self::roll_back) returns to it on purpose. Nothing here
+/// reboots: activating and rolling back take effect at the next boot.
 ///
-/// The slots' checks run elsewhere ([`App::run`](eveningstar_boot::App::run)):
-/// [`new`](Self::new), [`Update::finish`], [`verify_other`](Self::verify_other)
-/// and [`roll_back`](Self::roll_back) complete once a check has kept its
-/// result for the slot's epoch.
+/// The slots' checks run elsewhere ([`App::run`]): [`new`](Self::new),
+/// [`Update::finish`], [`verify_other`](Self::verify_other) and
+/// [`roll_back`](Self::roll_back) complete once a check has kept its result for
+/// the slot's epoch.
 ///
 /// Every write is refused until OTA is ready ([`readiness`](Self::readiness)).
 /// An update begins, and an image is activated, only from a running image
@@ -53,6 +51,9 @@ const SETTLE_WRITES: u32 = 2;
 /// of an update until its activation, and the activation's entry becomes
 /// valid only once whole, with state `New`, as its sequence number is
 /// programmed last.
+///
+/// [`State::PendingVerify`]: otadata::State::PendingVerify
+/// [`App::run`]: eveningstar_boot::App::run
 pub struct Ota<'f> {
     alternate: Writer<'f, AlternateApp>,
     otadata: Writer<'f, roles::Otadata>,
@@ -138,21 +139,23 @@ impl<'f> Ota<'f> {
     /// Starts an update of the alternate slot.
     ///
     /// First the boot selection is settled on the running slot, as
-    /// [`plan_begin_update`](otadata::Otadata::plan_begin_update) plans it:
-    /// an activation not booted yet is cancelled, and an entry naming the
-    /// alternate slot is replaced, so the bootloader never selects the slot
-    /// while it is rewritten, whatever is cut short. Then a write session
-    /// opens on the slot, which the [`Update`] holds, and the slot's first
-    /// sector is erased. Every [`VerifiedImage`] made before goes stale,
-    /// whether or not this succeeds once OTA is ready.
+    /// [`plan_begin_update`] plans it: an activation not booted yet is
+    /// cancelled, and an entry naming the alternate slot is replaced, so the
+    /// bootloader never selects the slot while it is rewritten, whatever is cut
+    /// short. Then a write session opens on the slot, which the [`Update`]
+    /// holds, and the slot's first sector is erased. Every [`VerifiedImage`]
+    /// made before goes stale, whether or not this succeeds once OTA is ready.
     ///
     /// # Errors
     ///
     /// [`OtaError::Unavailable`] until OTA is ready; [`OtaError::Plan`] with
-    /// [`PlanError::Unconfirmed`](otadata::PlanError::Unconfirmed) until the
-    /// running image is confirmed `Valid`, or with another error of the
-    /// planner; [`OtaError::Unsettled`] when two writes don't settle the
-    /// selection; [`OtaError::Access`] when an erase or program fails.
+    /// [`PlanError::Unconfirmed`] until the running image is confirmed `Valid`,
+    /// or with another error of the planner; [`OtaError::Unsettled`] when two
+    /// writes don't settle the selection; [`OtaError::Access`] when an erase or
+    /// program fails.
+    ///
+    /// [`plan_begin_update`]: otadata::Otadata::plan_begin_update
+    /// [`PlanError::Unconfirmed`]: otadata::PlanError::Unconfirmed
     pub async fn begin_update(&mut self) -> Result<Update<'_, 'f>, OtaError> {
         let project = self.ready()?;
         // Wraps only after more updates than the slot's first sector
@@ -258,10 +261,9 @@ impl<'f> Ota<'f> {
     }
 
     /// Confirms the running image: makes it `Valid` and the one the active
-    /// entry selects, whatever state it booted in, as
-    /// [`plan_confirm`](otadata::Otadata::plan_confirm) plans it. Booted
-    /// `PendingVerify` or with another state, its entry is rewritten in
-    /// place, which cancels its rollback; booted as a fallback from the
+    /// entry selects, whatever state it booted in, as [`plan_confirm`] plans
+    /// it. Booted `PendingVerify` or with another state, its entry is rewritten
+    /// in place, which cancels its rollback; booted as a fallback from the
     /// alternate slot, or with no valid entry, a `Valid` entry for it is
     /// written to the sector that isn't active. Nothing is written when it is
     /// confirmed already, during an activation not booted yet included.
@@ -275,6 +277,8 @@ impl<'f> Ota<'f> {
     /// [`OtaError::Unavailable`] until OTA is ready; [`OtaError::Plan`] when
     /// a sector the write leaves alone can't be read or the sequence numbers
     /// are exhausted, and [`OtaError::Access`] when the write fails.
+    ///
+    /// [`plan_confirm`]: otadata::Otadata::plan_confirm
     pub async fn confirm(&mut self) -> Result<(), OtaError> {
         self.ready()?;
         if let Some(write) = otadata::read(&self.otadata).plan_confirm(self.running)? {

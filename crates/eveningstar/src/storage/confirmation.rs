@@ -1,16 +1,15 @@
 //! The confirmation window: the time from boot the running image has to be
 //! confirmed `Valid` before the board reboots.
 //!
-//! At boot, [`start`] reads the running image's boot state from the
-//! otadata's module: the compiled layout's in the layout and boot tiers, the
-//! located table's in the unverified tier. An image confirmed `Valid` opens
-//! no window. Any other awaits a confirmation ([`awaits_confirmation`]), and
-//! so does one with no boot state: no otadata, one that doesn't read, or an
-//! unknown running slot, as in the unverified tier. For those, [`start`]
-//! warns and spawns [`task`], which waits until [`WINDOW`] after boot, reads
-//! the boot state again and requests a graceful reboot
-//! ([`Reason::Unconfirmed`]) unless the image is `Valid` by then, as
-//! [`Ota::confirm`](eveningstar_ota::Ota::confirm) makes it.
+//! At boot, [`start`] reads the running image's boot state from the otadata's
+//! module: the compiled layout's in the layout and boot tiers, the located
+//! table's in the unverified tier. An image confirmed `Valid` opens no window.
+//! Any other awaits a confirmation ([`awaits_confirmation`]), and so does one
+//! with no boot state: no otadata, one that doesn't read, or an unknown running
+//! slot, as in the unverified tier. For those, [`start`] warns and spawns
+//! [`task`], which waits until [`WINDOW`] after boot, reads the boot state
+//! again and requests a graceful reboot ([`Reason::Unconfirmed`]) unless the
+//! image is `Valid` by then, as [`Ota::confirm`] makes it.
 //!
 //! A rollback bootloader turns a `PendingVerify` image `Aborted` at the
 //! reboot and starts the previous image. Any other image that awaits a
@@ -20,6 +19,8 @@
 //! The task's watchdog handle sleeps through the window, and its timeout
 //! bounds the read and the request after it. The handle retires once the
 //! task is done, and at boot when no window opens.
+//!
+//! [`Ota::confirm`]: eveningstar_ota::Ota::confirm
 
 use defmt::{Debug2Format, Format, Formatter, info, warn};
 use embassy_executor::Spawner;

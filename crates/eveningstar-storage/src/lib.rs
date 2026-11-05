@@ -2,18 +2,17 @@
 //! chain that decides how far the board is trusted, and the handles of its
 //! regions.
 //!
-//! [`split`](chain::split) runs the verification chain once per boot through
-//! a [`NorDevice`](nor::NorDevice) and hands out the handles of the trust
-//! tier it reaches ([`chain::Storage`]); the [`chain`] module documents the
-//! steps and the tiers. A handle is a reader or a writer of a region with a
-//! role ([`roles`]), over a state table that gives each region a
-//! [`WriteState`] ([`nor`]). Readers read through snapshots, which fail once
-//! their region is written, and readers of publishable roles publish views
-//! ([`PublicRead`]), the only bytes meant to leave the device. Writers write
-//! only inside a session, whose erases and programs pass the guard of the
-//! protected spans. The boot tier alone hands out the writers of the boot
-//! selection, the alternate slot's and the otadata's
-//! ([`chain::BootWriters`]). Nothing in the crate reboots.
+//! [`split`] runs the verification chain once per boot through a [`NorDevice`]
+//! and hands out the handles of the trust tier it reaches ([`chain::Storage`]);
+//! the [`chain`] module documents the steps and the tiers. A handle is a reader
+//! or a writer of a region with a role ([`roles`]), over a state table that
+//! gives each region a [`WriteState`] ([`nor`]). Readers read through
+//! snapshots, which fail once their region is written, and readers of
+//! publishable roles publish views ([`PublicRead`]), the only bytes meant to
+//! leave the device. Writers write only inside a session, whose erases and
+//! programs pass the guard of the protected spans. The boot tier alone hands
+//! out the writers of the boot selection, the alternate slot's and the
+//! otadata's ([`chain::BootWriters`]). Nothing in the crate reboots.
 //!
 //! The formats on the flash (the partition table, ESP images and the otadata)
 //! are read by `eveningstar-esp-formats`, whose [`image`], [`otadata`] and
@@ -23,6 +22,9 @@
 //! and also builds on the host. The `test-support` feature adds the
 //! `test_support` module: a NOR flash in RAM that takes power cuts, the
 //! simulated ESP-IDF bootloader run on it, and handles over it.
+//!
+//! [`split`]: chain::split
+//! [`NorDevice`]: nor::NorDevice
 
 #![cfg_attr(not(test), no_std)]
 

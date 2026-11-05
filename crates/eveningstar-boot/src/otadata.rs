@@ -78,7 +78,12 @@
 //! use eveningstar_boot::otadata::EntryFields;
 //! use eveningstar_esp_formats::otadata::Validity;
 //!
-//! const FORGED: EntryFields = EntryFields { validity: Validity::Blank, seq: None, slot: None, state: None };
+//! const FORGED: EntryFields = EntryFields {
+//!     validity: Validity::Blank,
+//!     seq: None,
+//!     slot: None,
+//!     state: None,
+//! };
 //! ```
 
 use eveningstar_esp_formats::otadata::{

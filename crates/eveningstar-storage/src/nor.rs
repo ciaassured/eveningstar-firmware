@@ -2,10 +2,10 @@
 //! of the internal flash's regions.
 //!
 //! A region's handles are a [`Reader<'f, R>`] and a [`Writer<'f, R>`], where
-//! `R` is its [role](crate::roles). Each holds the device, the
-//! [`State`] table and the region's span; neither is `Clone` nor `Copy`, and
-//! only the crate makes them. A writer reads at any time and writes only
-//! through a [`Session`], which marks the region written to while it lives.
+//! `R` is its [role]. Each holds the device, the [`State`] table and the
+//! region's span; neither is `Clone` nor `Copy`, and only the crate makes them.
+//! A writer reads at any time and writes only through a [`Session`], which
+//! marks the region written to while it lives.
 //!
 //! A writer erases and programs only inside a session:
 //!
@@ -97,7 +97,10 @@
 //! use eveningstar_storage::nor::{Reader, Writer};
 //! use eveningstar_storage::roles::{AlternateApp, Diag};
 //!
-//! fn keep<'f>(app: Reader<'f, AlternateApp>, diag: Writer<'f, Diag>) -> (Reader<'f, AlternateApp>, Writer<'f, Diag>) {
+//! fn keep<'f>(
+//!     app: Reader<'f, AlternateApp>,
+//!     diag: Writer<'f, Diag>,
+//! ) -> (Reader<'f, AlternateApp>, Writer<'f, Diag>) {
 //!     (app, diag)
 //! }
 //! ```
@@ -139,8 +142,8 @@
 //! ```
 //!
 //! A reader reads through snapshots, which fail once the region is written
-//! ([`Snapshot`]). Only a reader of a [`Publishable`](crate::roles::Publishable)
-//! role publishes views ([`Published`]), whose bytes may leave the device:
+//! ([`Snapshot`]). Only a reader of a [`Publishable`] role publishes views
+//! ([`Published`]), whose bytes may leave the device:
 //!
 //! ```
 //! use eveningstar_storage::nor::Reader;
@@ -242,6 +245,9 @@
 //!     drop((first, second));
 //! }
 //! ```
+//!
+//! [role]: crate::roles
+//! [`Publishable`]: crate::roles::Publishable
 
 mod handle;
 mod published;

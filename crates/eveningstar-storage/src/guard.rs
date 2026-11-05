@@ -20,8 +20,9 @@ pub enum AccessError {
     /// before it starts.
     OutOfRange,
     /// An erase that doesn't start and end on sector boundaries, or a program
-    /// whose offset or length isn't a multiple of
-    /// [`WORD_SIZE`](crate::WORD_SIZE).
+    /// whose offset or length isn't a multiple of [`WORD_SIZE`].
+    ///
+    /// [`WORD_SIZE`]: crate::WORD_SIZE
     NotAligned,
     /// The range touches a protected span: the bootloader, the table's
     /// sector, `factory`, `reserved` or the slot that booted. Nothing was

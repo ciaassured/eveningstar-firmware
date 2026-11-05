@@ -12,8 +12,8 @@ use crate::{ReadError, SnapshotError, Source};
 
 /// Fills `buf` with the bytes at `offset` in `extent`'s span, in one device
 /// call, when the region covering `extent`'s physical spans is
-/// `Stable(epoch)` both before and after it. On any error `buf` is zeroed, so no bytes of a failed read are
-/// kept.
+/// `Stable(epoch)` both before and after it. On any error `buf` is zeroed, so
+/// no bytes of a failed read are kept.
 ///
 /// Both loads of the state are `SeqCst`, and the device call between them is
 /// a compiler and hardware barrier on the one core that reaches the flash,

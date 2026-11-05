@@ -137,9 +137,11 @@ impl RamNor {
         copy
     }
 
-    /// The flash as a device [`split`](crate::split) can take mutably, while
-    /// the caller keeps reading, hooking and cutting it. The adapter is
-    /// leaked, so it lives as long as the flash.
+    /// The flash as a device [`split`] can take mutably, while the caller keeps
+    /// reading, hooking and cutting it. The adapter is leaked, so it lives as
+    /// long as the flash.
+    ///
+    /// [`split`]: crate::split
     pub fn lend(&self) -> &mut dyn NorDevice {
         Box::leak(Box::new(Lent(self)))
     }
@@ -414,15 +416,16 @@ impl NorDevice for Lent<'_> {
     }
 }
 
-/// One boot of `device`, a flash holding the compiled layout, by the
-/// simulated ESP-IDF bootloader
-/// ([`boot`](eveningstar_esp_formats::test_support::boot)), which loads a
-/// slot when [`idf_loads`](eveningstar_esp_formats::test_support::idf_loads)
-/// says so and writes the otadata back, without logging, as the bootloader
-/// does. Returns the slot started, `None` when none loads.
+/// One boot of `device`, a flash holding the compiled layout, by the simulated
+/// ESP-IDF bootloader ([`boot`]), which loads a slot when [`idf_loads`] says so
+/// and writes the otadata back, without logging, as the bootloader does.
+/// Returns the slot started, `None` when none loads.
 ///
 /// Each slot is judged on its bytes up to a sector past the last of its
 /// sectors that holds bytes written, as it reads erased beyond.
+///
+/// [`boot`]: eveningstar_esp_formats::test_support::boot
+/// [`idf_loads`]: eveningstar_esp_formats::test_support::idf_loads
 pub fn boot_device(device: &RamNor) -> Option<Slot> {
     let loadable = Slot::ALL.map(|slot| {
         let span = Span::of(&slot.partition());
