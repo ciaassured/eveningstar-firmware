@@ -957,7 +957,11 @@ table's MD5), without their API and firmware parts.
   authenticated: `VerifiedImage` means intact and meant for this board, not
   authentic.
 - **The confirm endpoint.** Nothing calls `Ota::confirm` yet, as the API has
-  no endpoint for it. The confirmation window ("OTA") reboots a board 10
+  no endpoint for it. `confirm` refuses until every self-check has passed
+  (`OtaError::ChecksPending`, `OtaError::ChecksFailed`), with no latched
+  request: the endpoint answers 409 with the checks while one is pending or
+  failed, and the web UI disables its button ("Waiting for system checks")
+  until `GET` shows them passed (decided with the user, 2026-11-05). The confirmation window ("OTA") reboots a board 10
   minutes after a boot whose image awaits a confirmation, so until an
   endpoint exists, an activated update rolls back after 10 minutes.
 - **The API's view and the web UI** (see "What the API gets"): the regions,
