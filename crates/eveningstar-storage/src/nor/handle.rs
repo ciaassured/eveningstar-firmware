@@ -415,19 +415,24 @@ impl<'w, R: Writable<Device = Internal>> Session<'w, R> {
             .map_err(|_| AccessError::Device)
     }
 
-    /// Erases the sectors from `from` up to `to`, offsets in the region on
-    /// sector boundaries, setting their bytes to `0xFF`. Erases one sector
-    /// per device call and yields after each.
+    /// Erases the whole region, setting every byte to `0xFF`, one sector per
+    /// device call with a yield after each. A wipe cut short leaves the
+    /// sectors before the cut erased; another wipe erases them all again.
     ///
     /// # Errors
     ///
-    /// [`AccessError::OutOfRange`] when `from` is past `to` or `to` past the
-    /// end of the region, [`AccessError::NotAligned`] when either isn't on a
-    /// sector boundary of the device, [`AccessError::Protected`] when the
-    /// range touches a protected span, all before anything is erased, and
+    /// [`AccessError::NotAligned`] when the region isn't on sector boundaries
+    /// of the device and [`AccessError::Protected`] when it touches a
+    /// protected span, both before anything is erased, and
     /// [`AccessError::Device`] when the flash fails an erase, after the
     /// sectors before it were erased.
-    pub async fn erase(&mut self, from: u32, to: u32) -> Result<(), AccessError> {
+    pub async fn wipe(&mut self) -> Result<(), AccessError> {
+        self.erase_range(0, self.extent.span.len).await
+    }
+
+    /// Erases the sectors from `from` up to `to`, offsets in the region; see
+    /// [`erase`](Session::erase) for the errors.
+    async fn erase_range(&mut self, from: u32, to: u32) -> Result<(), AccessError> {
         let (start, end) = self.range(from, to).ok_or(AccessError::OutOfRange)?;
         if !start.is_multiple_of(SECTOR_SIZE) || !end.is_multiple_of(SECTOR_SIZE) {
             return Err(AccessError::NotAligned);
@@ -490,6 +495,22 @@ impl<'w, R: Writable<Device = Internal>> Session<'w, R> {
 }
 
 impl<R: Programmable<Device = Internal>> Session<'_, R> {
+    /// Erases the sectors from `from` up to `to`, offsets in the region on
+    /// sector boundaries, setting their bytes to `0xFF`. Erases one sector
+    /// per device call and yields after each.
+    ///
+    /// # Errors
+    ///
+    /// [`AccessError::OutOfRange`] when `from` is past `to` or `to` past the
+    /// end of the region, [`AccessError::NotAligned`] when either isn't on a
+    /// sector boundary of the device, [`AccessError::Protected`] when the
+    /// range touches a protected span, all before anything is erased, and
+    /// [`AccessError::Device`] when the flash fails an erase, after the
+    /// sectors before it were erased.
+    pub async fn erase(&mut self, from: u32, to: u32) -> Result<(), AccessError> {
+        self.erase_range(from, to).await
+    }
+
     /// Programs `bytes` at `offset` in the region, both the offset and the
     /// length multiples of [`WORD_SIZE`]: each byte becomes the AND of what
     /// it held and what is programmed. Programs at most 4 KiB per device call

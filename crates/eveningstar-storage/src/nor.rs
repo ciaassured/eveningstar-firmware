@@ -18,7 +18,7 @@
 //!     let _ = session.erase(0, 4096).await;
 //!     let _ = session.program(0, &[0; 4]).await;
 //!     drop(session);
-//!     let _ = old.begin().erase(0, 4096).await;
+//!     let _ = old.begin().wipe().await;
 //! }
 //! ```
 //!
@@ -40,7 +40,8 @@
 //! }
 //! ```
 //!
-//! The alternate configuration's session erases and never programs:
+//! The alternate configuration's session wipes the whole region, and never
+//! programs:
 //!
 //! ```compile_fail,E0599
 //! use eveningstar_storage::nor::Writer;
@@ -48,6 +49,17 @@
 //!
 //! async fn store(old: &mut Writer<'_, AlternateConfig>) {
 //!     let _ = old.begin().program(0, &[0; 4]).await;
+//! }
+//! ```
+//!
+//! and never erases part of it:
+//!
+//! ```compile_fail,E0599
+//! use eveningstar_storage::nor::Writer;
+//! use eveningstar_storage::roles::AlternateConfig;
+//!
+//! async fn store(old: &mut Writer<'_, AlternateConfig>) {
+//!     let _ = old.begin().erase(0, 4096).await;
 //! }
 //! ```
 //!

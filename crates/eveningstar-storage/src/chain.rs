@@ -365,7 +365,7 @@ pub struct LayoutHandles<'f> {
     pub otadata: Reader<'f, Otadata>,
     /// The current slot's configuration.
     pub current_config: Writer<'f, CurrentConfig>,
-    /// The alternate slot's configuration, which is only erased.
+    /// The alternate slot's configuration, which is only wiped whole.
     pub alternate_config: Writer<'f, AlternateConfig>,
     /// The diagnostics partition.
     pub diag: Writer<'f, Diag>,

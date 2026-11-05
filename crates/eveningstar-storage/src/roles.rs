@@ -20,7 +20,7 @@
 //! - [`CurrentConfig`]: the current slot's configuration. Sensitive;
 //!   [`LayoutSize`]; the writer erases and programs.
 //! - [`AlternateConfig`]: the alternate slot's configuration. Sensitive;
-//!   [`LayoutSize`]; the writer erases only.
+//!   [`LayoutSize`]; the writer only wipes the whole region.
 //! - [`Diag`]: `diag`. Sensitive; [`LayoutSize`], [`Placed`]; the writer
 //!   erases and programs.
 //! - [`Factory`]: `factory`. Sensitive; [`LayoutSize`], [`Placed`].
@@ -35,8 +35,8 @@
 //! publishable at its compiled offset, where the layout places it; the
 //! located otadata of the unverified tier isn't, as only its location is
 //! known, not that it is the otadata. Roles with a
-//! writer are [`Writable`]; those whose writer also programs are
-//! [`Programmable`]. Every trait here is sealed.
+//! writer are [`Writable`]; those whose writer also erases parts of its region
+//! and programs are [`Programmable`]. Every trait here is sealed.
 //!
 //! ```
 //! use eveningstar_storage::roles::{CurrentConfig, Diag, LayoutSize, Placed, PartitionTable};
@@ -116,10 +116,11 @@ pub trait Placed: LayoutSize {
 /// published.
 pub trait Publishable: Role {}
 
-/// A role with a writer, whose sessions erase.
+/// A role with a writer, whose sessions wipe the whole region.
 pub trait Writable: Role {}
 
-/// A role whose writer's sessions also program.
+/// A role whose writer's sessions also erase parts of the region and
+/// program.
 pub trait Programmable: Writable {}
 
 /// The bootloader at 0x0, up to the located table, or up to the compiled
