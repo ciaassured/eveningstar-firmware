@@ -12,8 +12,10 @@ use core::task::{Context, Poll, Waker};
 use eveningstar_boot::{App, AppSlot, Otadata};
 use eveningstar_esp_formats::pace::Yield;
 use eveningstar_storage::chain::{BootWriters, Handles};
-use eveningstar_storage::nor::{NorDevice, Reader, State};
-use eveningstar_storage::roles::{AlternateApp, CurrentApp, Otadata as OtadataRole};
+use eveningstar_storage::nor::{NorDevice, Reader, State, Writer};
+use eveningstar_storage::roles::{
+    AlternateApp, AlternateConfig, CurrentApp, Otadata as OtadataRole,
+};
 use eveningstar_storage::test_support::{TestFlash, run};
 use eveningstar_storage::{Slot, SlotPartitions as _, Span, Tier, layout, split};
 
@@ -85,11 +87,13 @@ fn leak<'f, T: 'f>(value: T) -> &'f T {
     Box::leak(Box::new(value))
 }
 
-/// [`Ota`] over `writers`, with the modules of `current`, `alternate` and
-/// `otadata` and the self-checks of `gate`, made once the running slot's
-/// check has kept its result, and the slots' checks.
+/// [`Ota`] over `writers` and `config`, the alternate slot's configuration,
+/// with the modules of `current`, `alternate` and `otadata` and the
+/// self-checks of `gate`, made once the running slot's check has kept its
+/// result, and the slots' checks.
 pub(crate) fn ota_of<'f>(
     writers: BootWriters<'f>,
+    config: Writer<'f, AlternateConfig>,
     current: Reader<'f, CurrentApp>,
     alternate: Reader<'f, AlternateApp>,
     otadata: Reader<'f, OtadataRole>,
@@ -101,7 +105,7 @@ pub(crate) fn ota_of<'f>(
     let checks = Checks {
         app: App::layout(current, alternate),
     };
-    let ota = checks.run(Ota::new(writers, current, alternate, otadata, gate));
+    let ota = checks.run(Ota::new(writers, config, current, alternate, otadata, gate));
     (ota, checks)
 }
 
@@ -126,6 +130,7 @@ pub(crate) fn ota_gated<'f>(
     };
     ota_of(
         writers,
+        handles.alternate_config,
         handles.current_app,
         handles.alternate_app,
         handles.otadata,
@@ -143,6 +148,7 @@ pub(crate) fn ota_on_spans(
 ) -> (Ota<'static>, Checks<'static>) {
     ota_of(
         flash.boot_writers(alternate, otadata, Slot::Ota0),
+        flash.writer(Span::from(layout::CONFIG_1), Slot::Ota0),
         flash.reader(Span::from(layout::OTA_0)),
         flash.reader(Span::from(layout::OTA_1)),
         flash.reader(Span::from(layout::OTADATA)),

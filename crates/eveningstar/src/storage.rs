@@ -43,8 +43,10 @@ use eveningstar_ota::{Ota, SelfCheck, SelfChecks};
 use eveningstar_storage::chain::{
     BootWriters, Handles, LayoutHandles, Located, Report, Storage, split,
 };
-use eveningstar_storage::nor::{NorDevice, Reader, State as StateTable};
-use eveningstar_storage::roles::{self, AlternateApp, CurrentApp, FoundApp, FoundTable};
+use eveningstar_storage::nor::{NorDevice, Reader, State as StateTable, Writer};
+use eveningstar_storage::roles::{
+    self, AlternateApp, AlternateConfig, CurrentApp, FoundApp, FoundTable,
+};
 use eveningstar_storage::{DeviceError, SECTOR_SIZE, Span, WriteState};
 use static_cell::{ConstStaticCell, StaticCell};
 
@@ -119,9 +121,9 @@ pub(crate) async fn start(
         partition_table,
         handles,
     } = storage;
-    // The configuration and diag writers have no owner yet, so they are
-    // dropped here; they can't be made again, as the flash is split once per
-    // boot.
+    // The current configuration's and diag's writers have no owner yet, nor
+    // the alternate configuration's below the boot tier, so they are dropped
+    // here; they can't be made again, as the flash is split once per boot.
     let placed = match handles {
         Handles::Unverified(located) => place_located(located),
         Handles::Layout(handles) => place_layout(handles, None),
@@ -250,8 +252,9 @@ fn place_located(located: Located<'static>) -> Placed {
 }
 
 /// The modules of the layout and boot tiers' readers, and the parts of the
-/// OTA mechanism when `writers`, the boot writers, are given. The
-/// configuration and diag writers are dropped.
+/// OTA mechanism when `writers`, the boot writers, are given, with the
+/// alternate configuration's writer. The other writers are dropped, and the
+/// alternate configuration's too without the boot writers.
 #[inline(never)]
 fn place_layout(handles: LayoutHandles<'static>, writers: Option<BootWriters<'static>>) -> Placed {
     static OTADATA: StaticCell<Otadata<'static>> = StaticCell::new();
@@ -268,6 +271,7 @@ fn place_layout(handles: LayoutHandles<'static>, writers: Option<BootWriters<'st
         located: None,
         ota: writers.map(|writers| OtaParts {
             writers,
+            alternate_config: handles.alternate_config,
             current,
             alternate,
             otadata,
@@ -288,10 +292,12 @@ pub(crate) enum Check {
 /// The self-checks, each pending until [`OtaParts::start`] decides it.
 pub(crate) static CHECKS: SelfChecks<Check, 1> = SelfChecks::new([Check::Slots]);
 
-/// The parts of the OTA mechanism, in the boot tier: the boot writers, and
-/// the modules [`Ota`] reads.
+/// The parts of the OTA mechanism, in the boot tier: the boot writers, the
+/// alternate configuration's writer, which an update wipes, and the modules
+/// [`Ota`] reads.
 pub(crate) struct OtaParts {
     writers: BootWriters<'static>,
+    alternate_config: Writer<'static, AlternateConfig>,
     current: &'static AppSlot<'static, CurrentApp>,
     alternate: &'static AppSlot<'static, AlternateApp>,
     otadata: &'static Otadata<'static>,
@@ -312,12 +318,23 @@ impl OtaParts {
 
         let Self {
             writers,
+            alternate_config,
             current,
             alternate,
             otadata,
         } = self;
         let [slots] = CHECKS.handles();
-        let ota = OTA.init(Ota::new(writers, current, alternate, otadata, &CHECKS).await);
+        let ota = OTA.init(
+            Ota::new(
+                writers,
+                alternate_config,
+                current,
+                alternate,
+                otadata,
+                &CHECKS,
+            )
+            .await,
+        );
         log::ota(ota);
         slots_checked(alternate, slots).await;
         log::checks(&CHECKS);
