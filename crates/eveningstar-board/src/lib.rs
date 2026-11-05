@@ -44,8 +44,8 @@ pub struct Board {
     pub from_cpu_intr0: FROM_CPU_INTR0<'static>,
     /// Hardware random number generator.
     pub rng: RNG<'static>,
-    /// ADC1. Together with [`Board::rng`] it can serve as the entropy source for
-    /// true random numbers; see [`esp_hal::rng::TrngSource`].
+    /// ADC1. Together with [`Board::rng`] it can serve as the entropy source
+    /// for true random numbers; see [`esp_hal::rng::TrngSource`].
     pub adc1: ADC1<'static>,
     /// The SHA accelerator, which hashes with SHA-1 and the SHA-2 family in
     /// hardware.
@@ -59,11 +59,11 @@ pub struct Ethernet {
     pub spi: EthernetSpi,
     /// Interrupt request, active low.
     pub int: Input<'static>,
-    /// Hardware reset, active low. Starts asserted (low), holding the controller
-    /// in reset.
+    /// Hardware reset, active low. Starts asserted (low), holding the
+    /// controller in reset.
     pub reset: Output<'static>,
-    /// MAC address assigned to the Ethernet interface. The controller has none of
-    /// its own.
+    /// MAC address assigned to the Ethernet interface. The controller has none
+    /// of its own.
     pub mac: [u8; 6],
 }
 

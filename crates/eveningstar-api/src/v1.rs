@@ -252,7 +252,8 @@ impl PathParam for TestItem {}
 pub enum Scope {
     /// Reading the device's state.
     Read,
-    /// Operational actions, such as a reboot, that leave its configuration as it is.
+    /// Operational actions, such as a reboot, that leave its configuration as
+    /// it is.
     Operate,
     /// Changing the device's persistent configuration.
     Configure,
@@ -384,7 +385,8 @@ pub struct Error {
 pub enum ErrorCode {
     /// The request's body is not what the endpoint expects.
     BadRequest,
-    /// The request has a body, and its `Content-Type` is not `application/json`.
+    /// The request has a body, and its `Content-Type` is not
+    /// `application/json`.
     UnsupportedMediaType,
     /// No endpoint at the requested path.
     NotFound,

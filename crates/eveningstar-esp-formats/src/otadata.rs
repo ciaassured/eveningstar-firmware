@@ -2,13 +2,14 @@
 //! the way the ESP-IDF bootloader reads them, and the writes that change them
 //! planned so that a power cut at any point leaves a bootable selection.
 //!
-//! The partition is two flash sectors, each holding one `esp_ota_select_entry_t`
-//! in its first 32 bytes: the sequence number (`u32`), a 20-byte label the
-//! bootloader ignores, the image state (`u32`) and a CRC (`u32`), all
-//! little-endian. The CRC covers the sequence number only, not the state.
+//! The partition is two flash sectors, each holding one
+//! `esp_ota_select_entry_t` in its first 32 bytes: the sequence number (`u32`),
+//! a 20-byte label the bootloader ignores, the image state (`u32`) and a CRC
+//! (`u32`), all little-endian. The CRC covers the sequence number only, not the
+//! state.
 //!
-//! The rules are those of ESP-IDF 5.5 built with `BOOTLOADER_APP_ROLLBACK_ENABLE`
-//! and without anti-rollback or a factory app:
+//! The rules are those of ESP-IDF 5.5 built with
+//! `BOOTLOADER_APP_ROLLBACK_ENABLE` and without anti-rollback or a factory app:
 //!
 //! - An entry is valid when its sequence number isn't `0xFFFFFFFF`, its CRC
 //!   matches and its state is neither [`State::Invalid`] nor
@@ -624,14 +625,14 @@ impl Otadata {
     /// it with state [`State::New`], so the bootloader boots it once as
     /// [`State::PendingVerify`] and rolls back unless it is confirmed.
     ///
-    /// The active entry has to select `running` with state
-    /// [`State::Valid`]: an unconfirmed image activates nothing. The new
-    /// entry goes to the sector that isn't active, with the active entry's sequence number plus
-    /// 1, and replaces the entry there, which isn't needed while the active
-    /// one stays. The state is programmed before the sequence number, which
-    /// makes the entry valid, so the entry is never valid with a state other
-    /// than `New`, and the bootloader never boots the activated image without
-    /// being able to roll it back.
+    /// The active entry has to select `running` with state [`State::Valid`]: an
+    /// unconfirmed image activates nothing. The new entry goes to the sector
+    /// that isn't active, with the active entry's sequence number plus 1, and
+    /// replaces the entry there, which isn't needed while the active one stays.
+    /// The state is programmed before the sequence number, which makes the
+    /// entry valid, so the entry is never valid with a state other than `New`,
+    /// and the bootloader never boots the activated image without being able to
+    /// roll it back.
     ///
     /// A power cut leaves the sector erased or holding a partial entry, which
     /// isn't valid, so the active entry still selects `running`.

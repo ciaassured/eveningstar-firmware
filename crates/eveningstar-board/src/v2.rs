@@ -61,13 +61,13 @@ const SPI_FREQUENCY: Rate = Rate::from_mhz(20);
 ///
 /// The flash shares SPI2 with the Ethernet controller but has its own SCK pin,
 /// and its datasheet forbids toggling SCLK while CS# is high ("While CS# is
-/// HIGH, keep SCLK at VCC or GND"). So the SPI clock is routed to the flash's SCK
-/// pin only while the flash is selected; the rest of the time the pin is a GPIO
-/// held low, the mode 0 idle level.
+/// HIGH, keep SCLK at VCC or GND"). So the SPI clock is routed to the flash's
+/// SCK pin only while the flash is selected; the rest of the time the pin is a
+/// GPIO held low, the mode 0 idle level.
 ///
-/// The shared-bus [`SpiDevice`] asserts CS after locking the bus and deasserts it
-/// before unlocking, including when a transaction is cancelled, so the clock is
-/// only ever switched while the bus is idle.
+/// The shared-bus [`SpiDevice`] asserts CS after locking the bus and deasserts
+/// it before unlocking, including when a transaction is cancelled, so the clock
+/// is only ever switched while the bus is idle.
 #[derive(Debug)]
 pub struct FlashCs {
     cs: Output<'static>,

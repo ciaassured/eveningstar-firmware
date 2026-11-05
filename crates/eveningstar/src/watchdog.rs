@@ -55,10 +55,12 @@ use esp_hal::{
     timer::timg::{MwdtStage, MwdtStageAction, Wdt},
 };
 
-/// How often the supervisor checks task mailboxes and feeds the hardware watchdogs.
+/// How often the supervisor checks task mailboxes and feeds the hardware
+/// watchdogs.
 pub(crate) const POLL_INTERVAL: Duration = Duration::from_secs(1);
 
-/// MWDT0 catches a hung supervisor/executor, so it only needs to cover a few missed polls.
+/// MWDT0 catches a hung supervisor/executor, so it only needs to cover a few
+/// missed polls.
 const TIMER0_WD_TIMEOUT: esp_hal::time::Duration =
     esp_hal::time::Duration::from_millis(POLL_INTERVAL.as_millis() * 5);
 
@@ -287,7 +289,8 @@ impl<const N: usize> Supervisor<N> {
 ///
 /// - a marker type `Kind` per task, for `WatchdogHandle<Kind>`;
 /// - `Handles`, holding one handle per task in field `field`;
-/// - `supervisor(rwdt, wdt)`, which builds the [`Supervisor`] and the `Handles`;
+/// - `supervisor(rwdt, wdt)`, which builds the [`Supervisor`] and the
+///   `Handles`;
 /// - `supervise`, the embassy task that runs the supervisor.
 ///
 /// Each `timeout` must be a const expression of at least 2× [`POLL_INTERVAL`];
