@@ -279,7 +279,9 @@ fn place_layout(handles: LayoutHandles<'static>, writers: Option<BootWriters<'st
 /// OTA's readiness.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Check {
-    /// The checks of both app slots have kept a result, whatever it is.
+    /// The checks of both app slots have kept a result, whatever it is. A
+    /// placeholder: it judges nothing about the running image, and only makes
+    /// a confirmation wait for the slots' checks.
     Slots,
 }
 
