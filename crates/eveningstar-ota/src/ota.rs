@@ -12,6 +12,7 @@ use eveningstar_storage::nor::{SECTOR_SIZE, Writer};
 use eveningstar_storage::roles::{self, AlternateApp, CurrentApp};
 use eveningstar_storage::{AccessError, WriteState};
 
+use crate::checks::{CheckState, ConfirmGate};
 use crate::error::{OtaError, Unavailable};
 use crate::update::{Expected, Update, VerifiedImage, checked};
 
@@ -43,7 +44,8 @@ const SETTLE_WRITES: u32 = 2;
 /// that is confirmed `Valid` ([`BootState::needs_confirmation`]). Any other
 /// booted image, whether booted `PendingVerify`, with no state, or as the
 /// bootloader's fallback from a slot that didn't load, becomes `Valid` only
-/// through `confirm`.
+/// through `confirm`, and only once every self-check of the gate given to
+/// [`new`](Self::new) has passed ([`SelfChecks`]).
 ///
 /// A power cut at any point leaves a selection that boots the running image,
 /// or an activated image that verified, started once with its rollback
@@ -54,6 +56,7 @@ const SETTLE_WRITES: u32 = 2;
 ///
 /// [`State::PendingVerify`]: otadata::State::PendingVerify
 /// [`App::run`]: eveningstar_boot::App::run
+/// [`SelfChecks`]: crate::SelfChecks
 pub struct Ota<'f> {
     alternate: Writer<'f, AlternateApp>,
     otadata: Writer<'f, roles::Otadata>,
@@ -68,6 +71,8 @@ pub struct Ota<'f> {
     /// Counts the updates begun, so a [`VerifiedImage`] from an earlier one
     /// is refused.
     generation: u32,
+    /// The self-checks a confirmation waits for.
+    gate: &'f dyn ConfirmGate,
 }
 
 impl<'f> Ota<'f> {
@@ -75,12 +80,14 @@ impl<'f> Ota<'f> {
     /// module, and `otadata`, the otadata's, both over the regions the
     /// writers write. It completes once `current`, the running slot's module,
     /// has kept the result of its check, and is ready when the running app's
-    /// image verified and its descriptor reads.
+    /// image verified and its descriptor reads. [`confirm`](Self::confirm)
+    /// writes only once every self-check of `gate` has passed.
     pub async fn new(
         writers: BootWriters<'f>,
         current: &AppSlot<'_, CurrentApp>,
         alternate: &'f AppSlot<'f, AlternateApp>,
         otadata: &'f Otadata<'f>,
+        gate: &'f dyn ConfirmGate,
     ) -> Self {
         let project = project_name(current).await;
         let running = writers.slot();
@@ -97,6 +104,7 @@ impl<'f> Ota<'f> {
             running,
             project,
             generation: 0,
+            gate,
         }
     }
 
@@ -268,23 +276,35 @@ impl<'f> Ota<'f> {
     /// written to the sector that isn't active. Nothing is written when it is
     /// confirmed already, during an activation not booted yet included.
     ///
+    /// An image that isn't confirmed already is confirmed only once every
+    /// self-check of the gate has passed. A check that passed stays passed,
+    /// so the gate read before the write holds when the write is made.
+    ///
     /// A power cut leaves the boot selection as before the call: a rollback
     /// for a `PendingVerify` image, the same fallback for one booted as a
     /// fallback.
     ///
     /// # Errors
     ///
-    /// [`OtaError::Unavailable`] until OTA is ready; [`OtaError::Plan`] when
-    /// a sector the write leaves alone can't be read or the sequence numbers
-    /// are exhausted, and [`OtaError::Access`] when the write fails.
+    /// [`OtaError::Unavailable`] until OTA is ready;
+    /// [`OtaError::ChecksPending`] while a self-check is pending and none
+    /// failed, and [`OtaError::ChecksFailed`] once one failed, in both cases
+    /// with nothing written; [`OtaError::Plan`] when a sector the write
+    /// leaves alone can't be read or the sequence numbers are exhausted, and
+    /// [`OtaError::Access`] when the write fails.
     ///
     /// [`plan_confirm`]: otadata::Otadata::plan_confirm
     pub async fn confirm(&mut self) -> Result<(), OtaError> {
         self.ready()?;
-        if let Some(write) = otadata::read(&self.otadata).plan_confirm(self.running)? {
-            self.execute(&write).await?;
+        let Some(write) = otadata::read(&self.otadata).plan_confirm(self.running)? else {
+            return Ok(());
+        };
+        match self.gate.verdict() {
+            CheckState::Passed => {}
+            CheckState::Pending => return Err(OtaError::ChecksPending),
+            CheckState::Failed => return Err(OtaError::ChecksFailed),
         }
-        Ok(())
+        Ok(self.execute(&write).await?)
     }
 
     /// Marks the running image `Invalid` in place, so the bootloader starts
@@ -332,6 +352,7 @@ impl fmt::Debug for Ota<'_> {
             .field("running", &self.running)
             .field("project", &self.project)
             .field("generation", &self.generation)
+            .field("checks", &self.gate.verdict())
             .finish_non_exhaustive()
     }
 }
