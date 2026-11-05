@@ -8,7 +8,7 @@
     "npm": "11.19.0"
   },
   "dependencies": {
-    "@preact/signals": "2.11.3",
+    "@preact/signals": "2.11.4",
     "preact": "11.1.0"
   },
   "devDependencies": {
