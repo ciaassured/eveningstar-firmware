@@ -149,16 +149,16 @@ doesn't give, so a page you visit can't make the device act. The check is by
 header, so it holds with or without authentication.
 
 Every answer the API gives, errors included, carries the headers in
-`http/api.rs`: `X-Content-Type-Options: nosniff` so a browser can't read the data
-as HTML or script, `Cache-Control: no-store`, `Cross-Origin-Resource-Policy:
-same-origin`, and a Content-Security-Policy of `default-src 'none';
-frame-ancestors 'none'` with its older form `X-Frame-Options: DENY`, so
-nothing in an answer runs or loads if someone opens one and it can't be framed.
-These are the headers of OWASP's REST security cheat sheet that matter for JSON;
-the headers that only concern pages that load and run things are left to the page
-(see [The web UI](#serving)). A path that no route takes is answered with the
-API's `404` in JSON, with the same headers, not the router's own plain text,
-which repeats the path it was asked for.
+`http/api.rs`: `X-Content-Type-Options: nosniff` so a browser can't read the
+data as HTML or script, `Cache-Control: no-store`,
+`Cross-Origin-Resource-Policy: same-origin`, and a Content-Security-Policy of
+`default-src 'none'; frame-ancestors 'none'` with its older form
+`X-Frame-Options: DENY`, so nothing in an answer runs or loads if someone opens
+one and it can't be framed. These are the headers of OWASP's REST security cheat
+sheet that matter for JSON; the headers that only concern pages that load and
+run things are left to the page (see [The web UI](#serving)). A path that no
+route takes is answered with the API's `404` in JSON, with the same headers, not
+the router's own plain text, which repeats the path it was asked for.
 
 ### Adding an endpoint
 
@@ -345,29 +345,29 @@ client has the seams they will use, and works without them.
 ### The theme
 
 Eventide is layered neutral greys with one blue for everything interactive, the
-sun and moon colours for solar and battery data and never for status, and a
-3 px bar marking the selected item and what needs attention. Light and dark
-follow the browser. The tokens are in `web/src/styles/tokens.css`, and a test
-checks every text and graphic pairing in both themes against WCAG AA. Status is
-always a shape and a word: off, standby, normal, caution, serious and critical
-each have their own shape. There are no font files and no image files; the mark
-and wordmark are inline SVG redrawn from the artwork in `web/brand`. The mark's
-star is split by the day-night curve: its day half takes `--mark-day`, and its
-night half, the orbit ring and its dots take `--mark-night`, so the mark is amber
-and navy on light surfaces and amber and pale blue on dark ones. The header is
-dark in both themes and sets the dark colours for the mark inside it.
-The favicon is the star alone, without the ring, filling the icon: its day half
-amber and its night half a bright blue, so both halves show on light and dark
-browser tabs. It is an inline `data:` URL, so the browser makes no extra request.
+sun and moon colours for solar and battery data and never for status, and a 3 px
+bar marking the selected item and what needs attention. Light and dark follow
+the browser. The tokens are in `web/src/styles/tokens.css`, and a test checks
+every text and graphic pairing in both themes against WCAG AA. Status is always
+a shape and a word: off, standby, normal, caution, serious and critical each
+have their own shape. There are no font files and no image files; the mark and
+wordmark are inline SVG redrawn from the artwork in `web/brand`. The mark's star
+is split by the day-night curve: its day half takes `--mark-day`, and its night
+half, the orbit ring and its dots take `--mark-night`, so the mark is amber and
+navy on light surfaces and amber and pale blue on dark ones. The header is dark
+in both themes and sets the dark colours for the mark inside it. The favicon is
+the star alone, without the ring, filling the icon: its day half amber and its
+night half a bright blue, so both halves show on light and dark browser tabs. It
+is an inline `data:` URL, so the browser makes no extra request.
 
 ### Dependencies
 
 The runtime dependencies are `preact` and `@preact/signals`; the development
-dependencies are `vite`, `typescript` and `@types/node`; and `openapi-typescript`
-has a lockfile of its own. Everything else is written here: routing, backoff,
-dialogs (the native `<dialog>`), formatting (`Intl`) and diffing. Nothing needs
-a runtime schema validator, as the page and the API are built together and the
-firmware ships the page.
+dependencies are `vite`, `typescript` and `@types/node`; and
+`openapi-typescript` has a lockfile of its own. Everything else is written here:
+routing, backoff, dialogs (the native `<dialog>`), formatting (`Intl`) and
+diffing. Nothing needs a runtime schema validator, as the page and the API are
+built together and the firmware ships the page.
 
 npm is held to these rules:
 
@@ -380,8 +380,8 @@ npm is held to these rules:
   package code.
 - `web-lint` checks that every lockfile entry is a tarball from the npm registry
   with a `sha512` integrity, that no package has an install script but the
-  optional `fsevents`, and scans the sources for what the Content-Security-Policy
-  and the dependency rules forbid.
+  optional `fsevents`, and scans the sources for what the
+  Content-Security-Policy and the dependency rules forbid.
 - CI audits both lockfiles and verifies their signatures in a job with no
   secrets.
 
@@ -972,8 +972,8 @@ image with no rollback.
 The confirmation window (`storage/confirmation.rs`) is the firmware's, not
 `Ota`'s, and runs in every tier. When the running image awaits a confirmation
 (`eveningstar_boot::otadata::awaits_confirmation`), `storage::start` spawns a
-task that requests a graceful reboot 10 minutes after boot (`Reason::Unconfirmed`,
-which the API reports as `cannot_confirm`).
+task that requests a graceful reboot 10 minutes after boot
+(`Reason::Unconfirmed`, which the API reports as `cannot_confirm`).
 
 - An image awaits a confirmation when it has no boot state, or its boot state
   `needs_confirmation`: any state but `Valid`, a fallback, no otadata or one
@@ -1064,18 +1064,19 @@ one byte flipped, selected as `New`, is refused by the bootloader, which starts
 state needs confirming, and the alternate slot's check fails on the checksum.
 
 The confirmation window was run with `EVENINGSTAR_CONFIRM_WINDOW_S=60`. On an
-image confirmed `Valid`, the window's watchdog handle retires at boot. A `New` entry booted as `PendingVerify` and rebooted after the
-60 s; the bootloader marked the entry `Aborted`. With no rollback target, the
-same image rebooted once per window.
+image confirmed `Valid`, the window's watchdog handle retires at boot. A `New`
+entry booted as `PendingVerify` and rebooted after the 60 s; the bootloader
+marked the entry `Aborted`. With no rollback target, the same image rebooted
+once per window.
 
 The bootloader's check of the image it starts, which activation and the
 fallback above rely on, holds only without a debugger attached. The ESP-IDF
-bootloader skips an image's checksum and SHA-256 while a debugger is attached (`esp_cpu_dbgr_is_attached()` in
-`bootloader_support/src/esp_image_format.c`), so with probe-rs attached during
-a boot it starts a corrupt image. The firmware's own check still fails the
-image, and OTA refuses every write (`Descriptor(Checksum)`). Board tests of
-image corruption attach the debugger a few seconds after the reset; the RTT
-buffer keeps the early boot lines.
+bootloader skips an image's checksum and SHA-256 while a debugger is attached
+(`esp_cpu_dbgr_is_attached()` in `bootloader_support/src/esp_image_format.c`),
+so with probe-rs attached during a boot it starts a corrupt image. The
+firmware's own check still fails the image, and OTA refuses every write
+(`Descriptor(Checksum)`). Board tests of image corruption attach the debugger
+a few seconds after the reset; the RTT buffer keeps the early boot lines.
 
 ## Faults and reboots
 

@@ -151,29 +151,29 @@ The code follows these where the sections below say otherwise.
   endpoint does, so an activated update rolls back after 10 minutes until one
   exists. This replaces "Rolling back an image that can't be confirmed" under
   "OTA" and the confirmation-window bullet above.
-- **The layout record.** Every app image embeds the compiled layout right
-  after its app descriptor, at offset 0x100 of the first segment's data: a
-  32-byte header (the magic `EVENINGSTAR-LYT1`, the table's offset, the flash
-  size and the entry count as little-endian `u32`, four zero bytes) and the
-  entries in the ESP-IDF table's 32-byte encoding
+- **The layout record.** Every app image embeds the compiled layout right after
+  its app descriptor, at offset 0x100 of the first segment's data: a 32-byte
+  header (the magic `EVENINGSTAR-LYT1`, the table's offset, the flash size and
+  the entry count as little-endian `u32`, four zero bytes) and the entries in
+  the ESP-IDF table's 32-byte encoding
   (`eveningstar_esp_formats::image::LayoutRecord`, read by `app_layout`; the
   compiled one is `eveningstar_storage::LAYOUT_RECORD`). The firmware links it
   into `.flash.appdesc.layout`, which esp-hal 1.2.2's `rodata.x` places after
-  `.flash.appdesc` in the first output section, and the record's alignment of
-  1 leaves no gap after the descriptor. The offset is fixed so that a reader
-  finds the record without a symbol table; `app_layout` gives none when the
-  first segment ends before the record does, the magic differs, the reserved
-  bytes aren't zero or the count exceeds the table's 96 entries.
-  `AppSlot::layout` (the `App` module) compares a verified image's record
-  with the compiled one, at the model's epoch. `Update::finish` and `Ota::verify_other`, so
-  `roll_back` too, refuse an image whose record is missing or differs
-  (`OtaError::Layout`), after the project name. `check-images`, in the `build`
-  group, fails when the release app lacks the record or it isn't the
-  generated layout. Reason: the layout can't change over OTA, and an update
-  built for another layout would boot into the unverified tier and could
-  leave a remote board on its default configuration. Consequence: after an
-  update from firmware without the record, a manual `roll_back` to it is
-  refused; the bootloader's own rollback isn't affected.
+  `.flash.appdesc` in the first output section, and the record's alignment of 1
+  leaves no gap after the descriptor. The offset is fixed so that a reader finds
+  the record without a symbol table; `app_layout` gives none when the first
+  segment ends before the record does, the magic differs, the reserved bytes
+  aren't zero or the count exceeds the table's 96 entries. `AppSlot::layout`
+  (the `App` module) compares a verified image's record with the compiled one,
+  at the model's epoch. `Update::finish` and `Ota::verify_other`, so `roll_back`
+  too, refuse an image whose record is missing or differs (`OtaError::Layout`),
+  after the project name. `check-images`, in the `build` group, fails when the
+  release app lacks the record or it isn't the generated layout. Reason: the
+  layout can't change over OTA, and an update built for another layout would
+  boot into the unverified tier and could leave a remote board on its default
+  configuration. Consequence: after an update from firmware without the record,
+  a manual `roll_back` to it is refused; the bootloader's own rollback isn't
+  affected.
 - **OTA readiness.** `Ota::new` waits for the current slot's check, and OTA
   refuses every write, `confirm` included, until the running image verified
   and its descriptor reads (`Unavailable`). Readiness is judged once. A change
@@ -891,9 +891,9 @@ table's MD5), without their API and firmware parts.
   cancelling its future, leaves a new epoch; a session whose calls the guard
   refused leaves the old epoch; `publish` refuses an epoch that moved; the
   second check refuses each sensitive span.
-- `compile_fail` doctests: a sensitive or located-otadata handle has no `publish`;
-  `Writer` has no `program` outside a session; a `Writer<AlternateApp>` isn't
-  a `Writer<CurrentApp>`; no handle is `Clone`.
+- `compile_fail` doctests: a sensitive or located-otadata handle has no
+  `publish`; `Writer` has no `program` outside a session; a
+  `Writer<AlternateApp>` isn't a `Writer<CurrentApp>`; no handle is `Clone`.
 - Publication: an app slot publishes its image and not the bytes after it; an
   image without an appended SHA-256 publishes nothing; a found app partition
   over leftover data whose SHA-256 doesn't verify publishes nothing; a
