@@ -546,16 +546,16 @@ Storage                                                        [Refresh]
   fills. Sensitive regions carry a lock shape, reserved ones are dimmed.
   Segments are links to their table rows; the table is the accessible source
   of truth, and the bar is `aria-hidden`.
-- **Region table.** Offsets in hex, sizes in binary units with exact bytes
-  and hex on hover and in the row's details. Each row expands to show type
-  and subtype numbers, end offset, flags, the image digests for app regions and, when the
-  board's table differs, expected against found field by field. The layout
-  column is a status shape and word (matches, differs in offset and size,
-  missing). The action is a download button, with a menu on app regions
-  (image only, whole slot, a custom range), or a lock with the reason:
-  "Holds configuration, secrets or factory data; never leaves the device",
-  "Reserved for later firmware", "Not readable in the untrusted tier". At
-  360 px the table becomes one card per region.
+- **Region table.** Offsets in hex, sizes in binary units with exact bytes and
+  hex on hover and in the row's details. Each row expands to show type and
+  subtype numbers, end offset, flags, the image digests for app regions and,
+  when the board's table differs, expected against found field by field. The
+  layout column is a status shape and word (matches, differs in offset and size,
+  missing). The action is a download button, with a menu on app regions (image
+  only, whole slot, a custom range), or a lock with the reason: "Holds
+  configuration, secrets or factory data; never leaves the device", "Reserved
+  for later firmware", "Not readable in the untrusted tier". At 360 px the table
+  becomes one card per region.
 - **Board table differs.** A switch over the table: Layout / On the board.
   "On the board" lists the found entries with each mismatch marked, the
   extra entries past the layout's, and how the table ends.
