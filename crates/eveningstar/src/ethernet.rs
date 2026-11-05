@@ -92,11 +92,11 @@ async fn probe(mut spi: ControllerSpi, mac: [u8; 6], wd: WatchdogHandle<Ethernet
     }
 }
 
-/// Requests a graceful reboot once the Ethernet link has been down, or up without
-/// an IPv4 address (static or from DHCP), for [`LINK_DOWN_REBOOT`].
+/// Requests a graceful reboot once the Ethernet link has been down, or up
+/// without an IPv4 address (static or from DHCP), for [`LINK_DOWN_REBOOT`].
 ///
-/// With no stack, because the controller never initialised, the link counts as down
-/// from boot, so the reboot also retries initialisation.
+/// With no stack, because the controller never initialised, the link counts as
+/// down from boot, so the reboot also retries initialisation.
 #[embassy_executor::task]
 async fn link_monitor(
     stack: Option<Stack<'static>>,
@@ -147,11 +147,11 @@ async fn net_status(stack: Stack<'static>) -> ! {
     }
 }
 
-/// Brings up the Ethernet controller and the IP stack, and spawns the tasks that drive,
-/// probe and monitor them.
+/// Brings up the Ethernet controller and the IP stack, and spawns the tasks
+/// that drive, probe and monitor them.
 ///
-/// If the controller fails to initialise, the probe's watchdog is retired, the link
-/// monitor runs with no link, and the error is returned.
+/// If the controller fails to initialise, the probe's watchdog is retired, the
+/// link monitor runs with no link, and the error is returned.
 #[allow(
     clippy::large_stack_frames,
     reason = "runs once at startup; the frame holds the driver and runners on their way into tasks"

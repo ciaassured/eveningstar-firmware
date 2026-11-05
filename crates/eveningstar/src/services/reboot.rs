@@ -14,8 +14,8 @@
 //!
 //! A graceful reboot waits until no [`RebootHold`] is alive, so a task can hold
 //! it off while it has work it must finish, such as flushing logged data. The
-//! wait is bounded: after [`DEADLINE`] the chip resets anyway, and if the reboot
-//! task itself stops, its task watchdog resets the chip after
+//! wait is bounded: after [`DEADLINE`] the chip resets anyway, and if the
+//! reboot task itself stops, its task watchdog resets the chip after
 //! [`WATCHDOG_TIMEOUT`]. An immediate reboot ignores holds and resets the chip
 //! during the request.
 //!

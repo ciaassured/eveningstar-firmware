@@ -73,9 +73,9 @@ impl RamFlash {
     }
 }
 
-/// A [`RamFlash`] lent to [`crate::chain::split`], which takes its flash mutably, while
-/// the test keeps reading it: the box is leaked, so the borrow lasts as long as
-/// `flash` does.
+/// A [`RamFlash`] lent to [`crate::chain::split`], which takes its flash
+/// mutably, while the test keeps reading it: the box is leaked, so the borrow
+/// lasts as long as `flash` does.
 pub(crate) fn lend(flash: &RamFlash) -> &mut dyn crate::nor::NorDevice {
     Box::leak(Box::new(Lent(flash)))
 }
