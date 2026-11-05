@@ -374,9 +374,11 @@ fn verified<'f>(
 ///
 /// ```
 /// use eveningstar_boot::{AppSlot, Otadata};
-/// use eveningstar_ota::{Ota, OtaError};
+/// use eveningstar_ota::{Ota, OtaError, SelfChecks};
 /// use eveningstar_storage::chain::{Handles, split};
 /// use eveningstar_storage::nor::{NorDevice, State};
+///
+/// static CHECKS: SelfChecks<(), 0> = SelfChecks::new([]);
 ///
 /// async fn switch_back(
 ///     flash: &mut dyn NorDevice,
@@ -388,7 +390,7 @@ fn verified<'f>(
 ///         let current = AppSlot::new(handles.current_app);
 ///         let alternate = AppSlot::new(handles.alternate_app);
 ///         let otadata = Otadata::compiled(handles.otadata);
-///         let mut ota = Ota::new(writers, &current, &alternate, &otadata).await;
+///         let mut ota = Ota::new(writers, &current, &alternate, &otadata, &CHECKS).await;
 ///         let image = ota.verify_other().await?;
 ///         ota.activate(image).await?;
 ///     }
@@ -400,9 +402,11 @@ fn verified<'f>(
 ///
 /// ```compile_fail,E0499
 /// use eveningstar_boot::{AppSlot, Otadata};
-/// use eveningstar_ota::{Ota, OtaError};
+/// use eveningstar_ota::{Ota, OtaError, SelfChecks};
 /// use eveningstar_storage::chain::{Handles, split};
 /// use eveningstar_storage::nor::{NorDevice, State};
+///
+/// static CHECKS: SelfChecks<(), 0> = SelfChecks::new([]);
 ///
 /// async fn switch_back(
 ///     flash: &mut dyn NorDevice,
@@ -415,14 +419,14 @@ fn verified<'f>(
 ///     let current = AppSlot::new(handles.current_app);
 ///     let alternate = AppSlot::new(handles.alternate_app);
 ///     let otadata = Otadata::compiled(handles.otadata);
-///     let image = Ota::new(writers, &current, &alternate, &otadata).await.verify_other().await?;
+///     let image = Ota::new(writers, &current, &alternate, &otadata, &CHECKS).await.verify_other().await?;
 ///     let Handles::Boot(handles, writers) = split(flash, state, booted).await.handles else {
 ///         return Ok(());
 ///     };
 ///     let current = AppSlot::new(handles.current_app);
 ///     let alternate = AppSlot::new(handles.alternate_app);
 ///     let otadata = Otadata::compiled(handles.otadata);
-///     Ota::new(writers, &current, &alternate, &otadata).await.activate(image).await
+///     Ota::new(writers, &current, &alternate, &otadata, &CHECKS).await.activate(image).await
 /// }
 /// ```
 ///

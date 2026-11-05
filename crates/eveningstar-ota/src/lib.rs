@@ -31,6 +31,12 @@
 //! has to match; until then it refuses every write with the reason
 //! ([`Unavailable`]).
 //!
+//! A confirmation also waits for a fixed set of self-checks ([`SelfChecks`]),
+//! each passed or failed once by its handle ([`SelfCheck`]): [`Ota::confirm`]
+//! refuses while one is pending ([`OtaError::ChecksPending`]) and for the
+//! rest of the boot once one failed ([`OtaError::ChecksFailed`]). Rolling
+//! back doesn't wait for them.
+//!
 //! The crate is `no_std`, allocation-free, and also builds on the host.
 //!
 //! [`BootWriters`]: eveningstar_storage::chain::BootWriters
@@ -41,12 +47,14 @@
 
 #![cfg_attr(not(test), no_std)]
 
+mod checks;
 mod error;
 mod ota;
 #[cfg(test)]
 mod test_support;
 mod update;
 
+pub use checks::{CheckState, ConfirmGate, SelfCheck, SelfChecks};
 pub use error::{OtaError, Unavailable};
 pub use ota::Ota;
 pub use update::{Update, VerifiedImage};

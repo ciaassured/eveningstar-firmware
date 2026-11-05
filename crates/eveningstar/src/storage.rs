@@ -15,7 +15,9 @@
 //! In the boot tier, [`start`] also returns the parts of the OTA mechanism
 //! ([`OtaParts`]): the boot writers and the modules [`Ota`] reads. Building
 //! it ([`OtaParts::start`]) waits for the running slot's check, so it runs
-//! after the check task is spawned, and places it in a `static`.
+//! after the check task is spawned, and places it in a `static`. A
+//! confirmation of the running image waits for the self-checks in
+//! [`CHECKS`] as well.
 //!
 //! In every tier, [`start`] also opens the confirmation window
 //! ([`confirmation`]) when the running image isn't confirmed `Valid`: unless
@@ -37,13 +39,13 @@ use esp_hal::peripherals::{FLASH, SPI0};
 use esp_storage::{FlashStorage, FlashStorageError};
 use eveningstar_boot::{App, AppSlot, Bootloader, Otadata, PartitionTable};
 use eveningstar_esp_formats::pace::Yield;
-use eveningstar_ota::Ota;
+use eveningstar_ota::{Ota, SelfCheck, SelfChecks};
 use eveningstar_storage::chain::{
     BootWriters, Handles, LayoutHandles, Located, Report, Storage, split,
 };
 use eveningstar_storage::nor::{NorDevice, Reader, State as StateTable};
 use eveningstar_storage::roles::{self, AlternateApp, CurrentApp, FoundApp, FoundTable};
-use eveningstar_storage::{DeviceError, SECTOR_SIZE, Span};
+use eveningstar_storage::{DeviceError, SECTOR_SIZE, Span, WriteState};
 use static_cell::{ConstStaticCell, StaticCell};
 
 use crate::services::reboot::GracefulReboot;
@@ -273,6 +275,17 @@ fn place_layout(handles: LayoutHandles<'static>, writers: Option<BootWriters<'st
     }
 }
 
+/// The self-checks a confirmation of the running image waits for, besides
+/// OTA's readiness.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Check {
+    /// The checks of both app slots have kept a result, whatever it is.
+    Slots,
+}
+
+/// The self-checks, each pending until [`OtaParts::start`] decides it.
+pub(crate) static CHECKS: SelfChecks<Check, 1> = SelfChecks::new([Check::Slots]);
+
 /// The parts of the OTA mechanism, in the boot tier: the boot writers, and
 /// the modules [`Ota`] reads.
 pub(crate) struct OtaParts {
@@ -283,9 +296,10 @@ pub(crate) struct OtaParts {
 }
 
 impl OtaParts {
-    /// Builds the OTA mechanism in its `static`, and logs its readiness and
-    /// the boot state. Completes once the running slot's check has kept its
-    /// result, so the check task has to run.
+    /// Builds the OTA mechanism in its `static`, with the self-checks of
+    /// [`CHECKS`], logs its readiness and the boot state, then decides the
+    /// self-checks and logs them. Completes once the checks of both slots
+    /// have kept a result, so the check task has to run.
     ///
     /// # Panics
     ///
@@ -300,9 +314,29 @@ impl OtaParts {
             alternate,
             otadata,
         } = self;
-        let ota = OTA.init(Ota::new(writers, current, alternate, otadata).await);
+        let [slots] = CHECKS.handles();
+        let ota = OTA.init(Ota::new(writers, current, alternate, otadata, &CHECKS).await);
         log::ota(ota);
+        slots_checked(alternate, slots).await;
+        log::checks(&CHECKS);
         ota
+    }
+}
+
+/// Decides `check` ([`Check::Slots`]) once the alternate slot's check has
+/// kept the result of the slot's epoch: passed whatever that result is, as
+/// a slot that holds no image is a board's state after `flash-all`, and
+/// failed when the slot is being written or was written while the result
+/// was awaited. The running slot's check kept its result before
+/// [`Ota::new`] completed.
+async fn slots_checked(alternate: &AppSlot<'_, AlternateApp>, check: SelfCheck<'_, Check>) {
+    let WriteState::Stable(epoch) = alternate.write_state() else {
+        check.fail();
+        return;
+    };
+    match alternate.verdict(epoch).await {
+        Ok(_) => check.pass(),
+        Err(_) => check.fail(),
     }
 }
 

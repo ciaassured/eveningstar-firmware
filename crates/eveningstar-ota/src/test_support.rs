@@ -17,7 +17,10 @@ use eveningstar_storage::roles::{AlternateApp, CurrentApp, Otadata as OtadataRol
 use eveningstar_storage::test_support::{TestFlash, run};
 use eveningstar_storage::{Slot, SlotPartitions as _, Span, Tier, layout, split};
 
-use crate::Ota;
+use crate::{ConfirmGate, Ota, SelfChecks};
+
+/// No self-checks: a confirmation waits for none.
+pub(crate) static NO_CHECKS: SelfChecks<(), 0> = SelfChecks::new([]);
 
 /// The most polls [`drive`] makes before it gives up.
 const MAX_POLLS: usize = 10_000_000;
@@ -83,13 +86,14 @@ fn leak<'f, T: 'f>(value: T) -> &'f T {
 }
 
 /// [`Ota`] over `writers`, with the modules of `current`, `alternate` and
-/// `otadata`, made once the running slot's check has kept its result, and
-/// the slots' checks.
+/// `otadata` and the self-checks of `gate`, made once the running slot's
+/// check has kept its result, and the slots' checks.
 pub(crate) fn ota_of<'f>(
     writers: BootWriters<'f>,
     current: Reader<'f, CurrentApp>,
     alternate: Reader<'f, AlternateApp>,
     otadata: Reader<'f, OtadataRole>,
+    gate: &'f dyn ConfirmGate,
 ) -> (Ota<'f>, Checks<'f>) {
     let current = leak(AppSlot::new(current));
     let alternate = leak(AppSlot::new(alternate));
@@ -97,13 +101,23 @@ pub(crate) fn ota_of<'f>(
     let checks = Checks {
         app: App::layout(current, alternate),
     };
-    let ota = checks.run(Ota::new(writers, current, alternate, otadata));
+    let ota = checks.run(Ota::new(writers, current, alternate, otadata, gate));
     (ota, checks)
 }
 
 /// [`Ota`] over the boot writers `split` hands out on `device`, booted from
-/// `running`, which reaches the boot tier, and the slots' checks.
+/// `running`, which reaches the boot tier, with no self-checks, and the
+/// slots' checks.
 pub(crate) fn ota_over(device: &mut dyn NorDevice, running: Slot) -> (Ota<'_>, Checks<'_>) {
+    ota_gated(device, running, &NO_CHECKS)
+}
+
+/// [`ota_over`] with the self-checks of `gate`.
+pub(crate) fn ota_gated<'f>(
+    device: &'f mut dyn NorDevice,
+    running: Slot,
+    gate: &'f dyn ConfirmGate,
+) -> (Ota<'f>, Checks<'f>) {
     let state = Box::leak(Box::new(State::new()));
     let storage = run(split(device, state, running.partition().offset));
     assert_eq!(storage.report.tier, Tier::Boot, "{:?}", storage.report);
@@ -115,6 +129,7 @@ pub(crate) fn ota_over(device: &mut dyn NorDevice, running: Slot) -> (Ota<'_>, C
         handles.current_app,
         handles.alternate_app,
         handles.otadata,
+        gate,
     )
 }
 
@@ -131,5 +146,6 @@ pub(crate) fn ota_on_spans(
         flash.reader(Span::from(layout::OTA_0)),
         flash.reader(Span::from(layout::OTA_1)),
         flash.reader(Span::from(layout::OTADATA)),
+        &NO_CHECKS,
     )
 }

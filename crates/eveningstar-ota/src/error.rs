@@ -58,6 +58,12 @@ pub enum OtaError {
     /// The otadata still didn't select the running slot alone after the
     /// writes that settle it.
     Unsettled,
+    /// A self-check that a confirmation waits for is pending, and none
+    /// failed. Nothing was written.
+    ChecksPending,
+    /// A self-check that a confirmation waits for failed: the running image
+    /// isn't confirmed during this boot. Nothing was written.
+    ChecksFailed,
 }
 
 impl From<Unavailable> for OtaError {

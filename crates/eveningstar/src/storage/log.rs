@@ -8,7 +8,7 @@ use eveningstar_boot::app::AppRole;
 use eveningstar_boot::bootloader::BootloaderModel;
 use eveningstar_boot::table::{Coverage, PartitionRow, TableModel, Valid};
 use eveningstar_boot::{AppSlot, Bootloader, LoadError, Otadata, PartitionTable};
-use eveningstar_ota::Ota;
+use eveningstar_ota::{Ota, SelfChecks};
 use eveningstar_storage::chain::{LayoutComparison, Report, Step, TableSource, Tier};
 use eveningstar_storage::otadata::{self, BootState, Sector, State, Validity};
 use eveningstar_storage::table::{Fields, Found, Label, Match};
@@ -453,6 +453,17 @@ pub(super) fn ota(ota: &Ota<'_>) {
     match ota.boot_state() {
         Ok(state) => boot_state(&state),
         Err(err) => warn!("OTA boot state not read: {}", Debug2Format(&err)),
+    }
+}
+
+/// Logs each self-check a confirmation waits for, and its state.
+pub(super) fn checks<const N: usize>(checks: &SelfChecks<super::Check, N>) {
+    for (check, state) in checks.states() {
+        info!(
+            "Self-check {}: {}",
+            Debug2Format(&check),
+            Debug2Format(&state)
+        );
     }
 }
 

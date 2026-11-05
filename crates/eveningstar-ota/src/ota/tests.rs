@@ -9,7 +9,8 @@ use core::task::{Context, Poll, Waker};
 use std::sync::LazyLock;
 
 use super::*;
-use crate::test_support::{Checks, ota_on_spans, ota_over};
+use crate::test_support::{Checks, ota_gated, ota_on_spans, ota_over};
+use crate::{ConfirmGate, SelfChecks};
 use crate::{OtaError, Unavailable, VerifiedImage};
 use Slot::{Ota0, Ota1};
 use eveningstar_boot::ImageFailure;
@@ -133,6 +134,22 @@ fn flashed(image: &[u8]) -> RamNor {
 /// boot tier, and the checks of its slots.
 fn ota_on(flash: &RamNor, running: Slot) -> (Ota<'_>, Checks<'_>) {
     ota_over(flash.lend(), running)
+}
+
+/// [`ota_on`] with the self-checks of `gate`.
+fn ota_gated_on<'f>(
+    flash: &'f RamNor,
+    running: Slot,
+    gate: &'f dyn ConfirmGate,
+) -> (Ota<'f>, Checks<'f>) {
+    ota_gated(flash.lend(), running, gate)
+}
+
+/// The names of the tests' self-checks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Check {
+    First,
+    Second,
 }
 
 /// Confirms the image `flash` runs from `running`.
@@ -1319,6 +1336,71 @@ fn confirming_rewrites_a_pending_image_s_entry_once() {
     assert_eq!(flash.writes().len(), ops + 4);
     assert_eq!(reboot(&flash), Ota1);
     assert_eq!(state_of(&flash, Ota1).state, Some(State::Valid));
+}
+
+#[test]
+fn confirming_waits_for_every_self_check() {
+    let flash = flashed(app());
+    update_and_boot(&flash, Ota0, &app_version("0.2.0"), &mut Rng::new(7));
+    let gate = SelfChecks::new([Check::First, Check::Second]);
+    let (mut ota, checks) = ota_gated_on(&flash, Ota1, &gate);
+    let [first, second] = gate.handles();
+    let ops = flash.writes().len();
+    assert_eq!(checks.run(ota.confirm()), Err(OtaError::ChecksPending));
+    first.pass();
+    assert_eq!(checks.run(ota.confirm()), Err(OtaError::ChecksPending));
+    assert_eq!(flash.writes().len(), ops, "nothing written while pending");
+    second.pass();
+    checks.run(ota.confirm()).unwrap();
+    assert_eq!(reboot(&flash), Ota1);
+    assert_eq!(state_of(&flash, Ota1).state, Some(State::Valid));
+}
+
+#[test]
+fn a_failed_self_check_leaves_the_image_unconfirmed_and_rolled_back() {
+    for dropped in [false, true] {
+        let flash = flashed(app());
+        update_and_boot(&flash, Ota0, &app_version("0.2.0"), &mut Rng::new(8));
+        let gate = SelfChecks::new([Check::First, Check::Second]);
+        let (mut ota, checks) = ota_gated_on(&flash, Ota1, &gate);
+        let [first, second] = gate.handles();
+        if dropped {
+            drop(first);
+        } else {
+            first.fail();
+        }
+        let ops = flash.writes().len();
+        assert_eq!(checks.run(ota.confirm()), Err(OtaError::ChecksFailed));
+        second.pass();
+        assert_eq!(checks.run(ota.confirm()), Err(OtaError::ChecksFailed));
+        assert_eq!(flash.writes().len(), ops, "nothing written");
+        assert_eq!(state_of(&flash, Ota1).state, Some(State::PendingVerify));
+        // Unconfirmed, the next boot rolls the update back.
+        assert_eq!(reboot(&flash), Ota0, "dropped: {dropped}");
+    }
+}
+
+#[test]
+fn a_valid_image_is_confirmed_already_whatever_the_self_checks() {
+    let flash = flashed(app());
+    let gate = SelfChecks::new([Check::First]);
+    let (mut ota, checks) = ota_gated_on(&flash, Ota0, &gate);
+    let [first] = gate.handles();
+    first.fail();
+    checks.run(ota.confirm()).unwrap();
+    assert_eq!(flash.writes(), [], "already valid");
+}
+
+#[test]
+fn rolling_back_doesnt_wait_for_the_self_checks() {
+    let flash = flashed(app());
+    update_and_boot(&flash, Ota0, &app_version("0.2.0"), &mut Rng::new(9));
+    let gate = SelfChecks::new([Check::First, Check::Second]);
+    let (mut ota, checks) = ota_gated_on(&flash, Ota1, &gate);
+    let [first, _second] = gate.handles();
+    first.fail();
+    checks.run(ota.roll_back()).unwrap();
+    assert_eq!(reboot(&flash), Ota0);
 }
 
 #[test]
