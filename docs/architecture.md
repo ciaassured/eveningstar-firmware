@@ -994,6 +994,19 @@ image with no rollback.
   running image is `Valid`, and nothing writes `Valid` for an image that wasn't.
   `roll_back` marks the running image `Invalid`, once the alternate slot is a
   rollback target holding an image that `verify_other` accepts.
+- `confirm` also waits for the self-checks (`SelfChecks`): a fixed set of
+  checks, named by a type the firmware declares, each pending until its handle
+  (`SelfCheck`) passes or fails it, and never changed after. A handle dropped
+  without a verdict fails its check. While one is pending `confirm` refuses
+  (`ChecksPending`), and once one has failed it refuses for the rest of the
+  boot (`ChecksFailed`), writing nothing either way, so the confirmation
+  window rolls the image back. A confirmation is never recorded to take effect
+  later: a caller asks again once the checks have passed. Because a check that
+  passed stays passed, the verdict `confirm` reads before its write still
+  holds when the write is made. `roll_back` doesn't wait for the checks, and
+  an image that is `Valid` already is confirmed whatever they say. `Ota`
+  reads them through the sealed `ConfirmGate`, which only `SelfChecks`
+  implements.
 - A power cut at any point leaves a selection that boots the running image, or
   an activated image that verified, started once with its rollback armed.
 
@@ -1022,7 +1035,11 @@ task that requests a graceful reboot 10 minutes after boot
   the build.
 
 The firmware builds `Ota` in a `static` last at boot, as it waits for the
-running slot's check. Nothing takes it yet, so nothing calls `Ota::confirm`:
+running slot's check. Its self-checks are `storage::CHECKS`; the one check so
+far, `Slots`, passes once the alternate slot's check has kept a result, whatever
+the result, as a blank slot is a board's state after `flash-all`, and fails
+when the slot is written while it waits. The checks are logged once decided.
+Nothing takes `Ota` yet, so nothing calls `Ota::confirm`:
 the API has no endpoint for it, and an activated update rolls back after 10
 minutes until one exists. The configuration and diag writers are dropped at
 boot, as no store owns them yet. The OTA service, not built yet, will decide
