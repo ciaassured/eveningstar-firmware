@@ -1141,8 +1141,8 @@ bytes mean belongs to the API of the service that owns them.
   answered with `503` and `Retry-After`.
 - A download holds off a graceful reboot through the HTTP server's reboot
   hold, from the lock until its body is acknowledged, so the reboot waits
-  for it up to its deadline. While a reboot is pending, a new download is
-  answered with `503`. An image's `Repr-Digest` is the file SHA-256 its check
+  for it up to its deadline. While a reboot is pending no hold can be taken,
+  so a new download is answered with `503`. An image's `Repr-Digest` is the file SHA-256 its check
   computed; a table or otadata view, and a range a `Want-Content-Digest`
   asks for, are hashed through the same buffer.
 - A sensitive region is refused by name, in every tier, before any reader is
@@ -1196,7 +1196,9 @@ own.
 - **Everything else requests a reboot** through the reboot service, with a
   reason, such as the Ethernet link staying down or the running image staying
   unconfirmed. A graceful reboot waits for holds to be released, up to a
-  deadline. An immediate one doesn't wait.
+  deadline, and once it is requested no new hold can be taken, so work that
+  starts later is refused and the reboot only comes closer. An immediate one
+  doesn't wait.
 
 The reboot service and the watchdog supervisor live in `eveningstar-system`.
 The firmware declares its reasons and holders (`services/reboot.rs`) and its
