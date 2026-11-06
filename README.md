@@ -5,9 +5,12 @@ solar charge controllers. The board connects to a charge controller's MeterBus
 port and makes it reachable over Ethernet. WiFi is only used for a
 configuration portal.
 
-**The board's hardware design lives in
-[ciaassured/eveningstar-hardware](https://github.com/ciaassured/eveningstar-hardware).**
-This repository holds only the firmware that runs on it.
+> [!TIP]
+> ### Looking for the hardware?
+>
+> The board's hardware design lives in
+> [ciaassured/eveningstar-hardware](https://github.com/ciaassured/eveningstar-hardware).
+> This repository holds only the firmware that runs on it.
 
 > [!WARNING]
 > This firmware is under active development and is missing the features needed
@@ -57,6 +60,23 @@ nix run .#checks
 
 [docs/architecture.md](docs/architecture.md) describes how the firmware is
 structured and why.
+
+## Disclaimer
+
+This project is experimental and is not affiliated with or endorsed by
+Morningstar Corporation.
+
+Use it at your own risk when interfacing with battery and solar equipment.
+
+### AI Assistance
+
+Portions of this project were created or modified using AI-assisted tools.
+AI-generated suggestions may be incomplete or incorrect and must not be treated
+as engineering certification.
+
+Before flashing or relying on this firmware, independently review its
+behaviour, test it on your own hardware, and confirm it is suitable for your
+installation.
 
 ## License
 
