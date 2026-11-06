@@ -19,6 +19,7 @@ mod endpoint;
 #[cfg(feature = "schema")]
 mod openapi;
 mod range;
+pub mod storage;
 
 pub use digest::{Sha256Field, wants_sha256};
 pub use endpoint::{
@@ -28,6 +29,7 @@ pub use endpoint::{
 #[cfg(feature = "schema")]
 pub use openapi::openapi;
 pub use range::{ContentRange, EntityTag, Selection, if_match};
+pub use storage::{GetLayout, GetRegion, GetRegions, GetStorage};
 
 /// Path prefix of every version 1 endpoint.
 pub const PATH: &str = "/api/v1";
@@ -172,6 +174,10 @@ operations!(
     GetSystem,
     GetRebootStatus,
     Reboot,
+    GetStorage,
+    GetLayout,
+    GetRegions,
+    GetRegion,
     #[cfg(test)]
     GetTestContent,
 );
@@ -634,6 +640,10 @@ mod tests {
                 ("GetSystem", Scope::Read),
                 ("GetRebootStatus", Scope::Read),
                 ("Reboot", Scope::Operate),
+                ("GetStorage", Scope::Read),
+                ("GetLayout", Scope::Read),
+                ("GetRegions", Scope::Read),
+                ("GetRegion", Scope::Read),
                 ("GetTestContent", Scope::Read),
             ]
         );
