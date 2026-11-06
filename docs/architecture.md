@@ -1135,9 +1135,14 @@ bytes mean belongs to the API of the service that owns them.
   read from the flash as it is written can't promise.
 - Downloads are given one at a time, through a static 1 KiB buffer and their
   own watchdog, which is fed per chunk written or hashed and paused between
-  downloads. A chunk the client takes longer than 5 s to drain ends the body,
-  so a slow client can't outlast the watchdog. A request while one is in progress is answered with `503` and
-  `Retry-After`. An image's `Repr-Digest` is the file SHA-256 its check
+  downloads. The server's write timeout, 5 s, is half the watchdog's, so a
+  client that drains a chunk slower than that has its connection aborted
+  rather than outlasting the watchdog. A request while one is in progress is
+  answered with `503` and `Retry-After`.
+- A download holds off a graceful reboot through the HTTP server's reboot
+  hold, from the lock until its body is acknowledged, so the reboot waits
+  for it up to its deadline. While a reboot is pending, a new download is
+  answered with `503`. An image's `Repr-Digest` is the file SHA-256 its check
   computed; a table or otadata view, and a range a `Want-Content-Digest`
   asks for, are hashed through the same buffer.
 - A sensitive region is refused by name, in every tier, before any reader is
