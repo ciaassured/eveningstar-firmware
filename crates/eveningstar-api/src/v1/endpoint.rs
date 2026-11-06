@@ -59,8 +59,9 @@ pub trait Endpoint {
     type Error: Errors;
 }
 
-/// The parameters of a path: `()` for a path with none, or a [`PathParam`] for
-/// a path with one.
+/// The parameters of a path: `()` for a path with none, a [`PathParam`] for a
+/// path with one, or a pair of them for a path with two, in the path's
+/// order.
 pub trait PathParams: Sized {
     /// The parameters `segments` hold, or `None` if one doesn't parse.
     /// `segments` are the segments of a path that its endpoint's path names
@@ -83,6 +84,12 @@ impl<T: PathParam> PathParams for T {
         let segment: value::StrDeserializer<'_, value::Error> =
             segments.next()?.into_deserializer();
         T::deserialize(segment).ok()
+    }
+}
+
+impl<A: PathParam, B: PathParam> PathParams for (A, B) {
+    fn parse<'a>(segments: &mut impl Iterator<Item = &'a str>) -> Option<Self> {
+        Some((A::parse(segments)?, B::parse(segments)?))
     }
 }
 

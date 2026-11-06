@@ -46,7 +46,7 @@ use eveningstar_esp_formats::table::{
     self as format, ENTRY_LEN, Found, Label, Md5Entry, RawEntry, TableError, Verified,
 };
 use eveningstar_storage::chain::{LayoutComparison, Report, TableSource, Tier};
-use eveningstar_storage::nor::{Published, Reader, Snapshot};
+use eveningstar_storage::nor::{PublicView, Published, Reader, Snapshot};
 use eveningstar_storage::roles::{self, FoundTable, Internal, Publishable};
 use eveningstar_storage::{
     Entry, Epoch, PublicRead as _, ReadError, SECTOR_SIZE, Source, Span, ViewError, layout,
@@ -668,6 +668,17 @@ pub enum TableView<'r> {
     Compiled(Published<'r, roles::PartitionTable>),
     /// The table the search found alone.
     Found(Published<'r, FoundTable>),
+}
+
+impl<'r> TableView<'r> {
+    /// The view without its reader's role ([`Published::erase`]).
+    #[must_use]
+    pub fn erase(self) -> PublicView<'r> {
+        match self {
+            Self::Compiled(view) => view.erase(),
+            Self::Found(view) => view.erase(),
+        }
+    }
 }
 
 impl TableView<'_> {

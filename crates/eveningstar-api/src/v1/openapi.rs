@@ -328,6 +328,12 @@ impl<T: PathParam + JsonSchema> DocumentParams for T {
     }
 }
 
+impl<A: PathParam + JsonSchema, B: PathParam + JsonSchema> DocumentParams for (A, B) {
+    fn document(document: &mut Document) -> Vec<Value> {
+        alloc::vec![document.request::<A>(), document.request::<B>()]
+    }
+}
+
 /// A response body the document can describe.
 pub(super) trait DocumentResponse {
     /// The successful responses of an operation whose status code is

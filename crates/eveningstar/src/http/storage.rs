@@ -8,24 +8,29 @@
 //! written in parts ([`JsonParts`]), each element built as it is written.
 
 use core::convert::Infallible;
+use core::fmt;
 
 use defmt::{Debug2Format, warn};
 use eveningstar_api::v1::storage::{self as api, Label};
+use eveningstar_api::v1::{EntityTag, Selection};
 use eveningstar_boot::app::AppRole;
 use eveningstar_boot::table::{
     Coverage, EXPECTED, PartitionRow, Rows, TableFailure, TableModel, Valid,
 };
 use eveningstar_boot::{AppSlot, ImageFailure, LoadError, Otadata, Unpublished};
+use eveningstar_esp_formats::hash::Sha256Hasher;
 use eveningstar_storage::chain::{Step, TableSource, Tier};
+use eveningstar_storage::nor::PublicView;
 use eveningstar_storage::otadata::Sector;
 use eveningstar_storage::table::{Fields, Found, Match};
 use eveningstar_storage::{
-    Epoch, PublicRead, PublishError, ReadError, SlotPartitions as _, Span, WriteState, known,
+    PublicRead, PublishError, ReadError, SlotPartitions as _, Span, ViewError, WriteState, known,
     layout,
 };
 
-use super::api::{Incomplete, JsonParts, Part, Parts};
-use crate::services::storage::Storage;
+use super::api::{Answer, Answers, Incomplete, JsonParts, Part, Parts, Source};
+use crate::services::storage::{Storage, TAG_LEN};
+use crate::services::system::System;
 
 // The API's bounds hold what the storage crates give.
 const _: () = assert!(eveningstar_storage::MAX_SANITIZED <= api::SANITIZED_MAX);
@@ -591,32 +596,13 @@ fn region(storage: &Storage, name: api::RegionName, span: Span) -> api::Region {
 
 /// Adds the views of the publishable region `name` to `views`, in the order
 /// its format defines them.
+#[inline(never)]
 fn add_views(storage: &Storage, name: api::RegionName, views: &mut Views) {
-    use api::RegionName as Name;
-
-    let app = storage.app();
-    match name {
-        Name::Bootloader => bootloader_view(storage, views),
-        Name::PartitionTable => table_view(storage, views),
-        Name::Otadata => {
-            otadata_view(storage, Sector::First, api::ViewName::Entry0, views);
-            otadata_view(storage, Sector::Second, api::ViewName::Entry1, views);
-        }
-        Name::AppCurrent => match (app.current(), app.found_app()) {
-            (Some(slot), _) => app_view(storage, slot, views),
-            (None, Some(slot)) => app_view(storage, slot, views),
-            (None, None) => {}
-        },
-        Name::AppAlternate => {
-            if let Some(slot) = app.alternate() {
-                app_view(storage, slot, views);
-            }
-        }
-        Name::Factory
-        | Name::ConfigCurrent
-        | Name::ConfigAlternate
-        | Name::Diag
-        | Name::Reserved => {}
+    for &view in name.views() {
+        add(
+            views,
+            view_document(storage, view, open(storage, name, view)),
+        );
     }
 }
 
@@ -670,42 +656,81 @@ fn located_entry(storage: &Storage, span: Span) -> Option<LocatedEntry> {
     })
 }
 
-/// A view that isn't published, with `status`.
-const fn unpublished(view: api::ViewName, status: api::ViewStatus) -> api::View {
-    api::View {
-        view,
-        status,
-        offset: None,
-        length: None,
-        sanitized: None,
-        etag: None,
+/// A view as the region's document gives it: `opened`, the view published,
+/// or why it isn't.
+#[inline(never)]
+fn view_document(
+    storage: &Storage,
+    view: api::ViewName,
+    opened: Result<Opened, api::ViewStatus>,
+) -> api::View {
+    match opened {
+        Ok(opened) => {
+            let published = &opened.view;
+            api::View {
+                view,
+                status: api::ViewStatus::Published,
+                offset: Some(published.span().offset),
+                length: Some(published.len()),
+                sanitized: Some(
+                    published
+                        .sanitized()
+                        .iter()
+                        .map(|span| api::Span {
+                            offset: span.offset,
+                            size: span.len,
+                        })
+                        .collect(),
+                ),
+                etag: Some(storage.tag(published.epoch())),
+            }
+        }
+        Err(status) => api::View {
+            view,
+            status,
+            offset: None,
+            length: None,
+            sanitized: None,
+            etag: None,
+        },
     }
 }
 
-/// A published view: at `span` within its region, with the `sanitized`
-/// spans, at `epoch`.
-fn published(
+/// A published view, and the SHA-256 of its bytes when the check that
+/// verified them computed it.
+struct Opened {
+    view: PublicView<'static>,
+    digest: Option<[u8; 32]>,
+}
+
+/// The view `view` of the publishable region `name`, published now, or the
+/// status that says why it isn't.
+fn open(
     storage: &Storage,
+    name: api::RegionName,
     view: api::ViewName,
-    span: Span,
-    sanitized: &[Span],
-    epoch: Epoch,
-) -> api::View {
-    api::View {
-        view,
-        status: api::ViewStatus::Published,
-        offset: Some(span.offset),
-        length: Some(span.len),
-        sanitized: Some(
-            sanitized
-                .iter()
-                .map(|span| api::Span {
-                    offset: span.offset,
-                    size: span.len,
-                })
-                .collect(),
-        ),
-        etag: Some(storage.tag(epoch)),
+) -> Result<Opened, api::ViewStatus> {
+    use api::RegionName as Name;
+    use api::ViewName as View;
+
+    let app = storage.app();
+    match (name, view) {
+        (Name::Bootloader, View::Image) => open_bootloader(storage),
+        (Name::PartitionTable, View::Table) => open_table(storage),
+        (Name::Otadata, View::Entry0) => open_otadata(storage, Sector::First),
+        (Name::Otadata, View::Entry1) => open_otadata(storage, Sector::Second),
+        (Name::AppCurrent, View::Image) => match (app.current(), app.found_app()) {
+            (Some(slot), _) => open_app(slot),
+            (None, Some(slot)) => open_app(slot),
+            (None, None) => Err(api::ViewStatus::Unverified),
+        },
+        (Name::AppAlternate, View::Image) => match app.alternate() {
+            Some(slot) => open_app(slot),
+            None => Err(api::ViewStatus::Unverified),
+        },
+        // Not a view of the region: the callers ask only for those
+        // `RegionName::views` gives.
+        _ => Err(api::ViewStatus::Unverified),
     }
 }
 
@@ -740,118 +765,271 @@ fn not_loaded(error: LoadError, writing: impl FnOnce() -> bool) -> api::ViewStat
     }
 }
 
-/// Whether a model's `image` failed to verify because the flash failed to
-/// read.
-const fn unreadable<T>(image: &Result<T, ImageFailure>) -> bool {
-    matches!(image, Err(ImageFailure::Read(ReadError::Device)))
-}
-
 /// Whether a session is open on a region in `state`.
 const fn writing(state: WriteState) -> bool {
     matches!(state, WriteState::Writing(_))
 }
 
+/// `view` as [`Opened`], or the status `refused` gives for a view that
+/// wasn't published.
 #[inline(never)]
-fn bootloader_view(storage: &Storage, views: &mut Views) {
-    add(views, bootloader_status(storage));
+fn opened<
+    R: eveningstar_storage::roles::Publishable<Device = eveningstar_storage::roles::Internal>,
+>(
+    view: Result<eveningstar_storage::nor::Published<'static, R>, Unpublished>,
+    digest: Option<[u8; 32]>,
+    writing: impl FnOnce() -> bool,
+) -> Result<Opened, api::ViewStatus> {
+    match view {
+        Ok(view) => Ok(Opened {
+            view: view.erase(),
+            digest,
+        }),
+        Err(error) => Err(refused(error, writing)),
+    }
 }
 
-fn bootloader_status(storage: &Storage) -> api::View {
-    const VIEW: api::ViewName = api::ViewName::Image;
+/// The digest a check computed of `image`, or `Err` with the status of an
+/// image the flash failed to read.
+fn image_digest<T>(
+    image: Result<&T, ImageFailure>,
+    file_sha256: impl FnOnce(&T) -> [u8; 32],
+) -> Result<Option<[u8; 32]>, api::ViewStatus> {
+    match image {
+        Ok(image) => Ok(Some(file_sha256(image))),
+        Err(ImageFailure::Read(ReadError::Device)) => Err(api::ViewStatus::Unreadable),
+        Err(_) => Ok(None),
+    }
+}
+
+#[inline(never)]
+fn open_bootloader(storage: &Storage) -> Result<Opened, api::ViewStatus> {
     let module = storage.bootloader();
     // The model loaded at boot. The region has no writer, so it stays at
     // that model's epoch, and loading it fails only for a region being
     // written.
     let Some(model) = module.model() else {
-        return unpublished(VIEW, api::ViewStatus::Checking);
+        return Err(api::ViewStatus::Checking);
     };
-    if unreadable(&model.image()) {
-        return unpublished(VIEW, api::ViewStatus::Unreadable);
-    }
-    match module.published(&model) {
-        Ok(view) => published(storage, VIEW, view.span(), view.sanitized(), view.epoch()),
-        Err(error) => unpublished(VIEW, refused(error, || false)),
-    }
+    let digest = image_digest(model.image(), |image| *image.file_sha256())?;
+    opened(module.published(&model), digest, || false)
 }
 
 #[inline(never)]
-fn table_view(storage: &Storage, views: &mut Views) {
-    add(views, table_status(storage));
-}
-
-fn table_status(storage: &Storage) -> api::View {
-    const VIEW: api::ViewName = api::ViewName::Table;
+fn open_table(storage: &Storage) -> Result<Opened, api::ViewStatus> {
     let module = storage.table();
     // The table's region has no writer.
     let model = match module.parse() {
         Ok(model) => model,
-        Err(error) => return unpublished(VIEW, not_loaded(error, || false)),
+        Err(error) => return Err(not_loaded(error, || false)),
     };
-    if matches!(
-        model.verdict(),
-        Err(TableFailure::Read {
-            error: ReadError::Device,
-            ..
-        })
-    ) {
-        return unpublished(VIEW, api::ViewStatus::Unreadable);
+    if let Err(TableFailure::Read {
+        error: ReadError::Device,
+        ..
+    }) = model.verdict()
+    {
+        return Err(api::ViewStatus::Unreadable);
     }
     match module.published(&model) {
-        Ok(view) => published(storage, VIEW, view.span(), view.sanitized(), view.epoch()),
-        Err(error) => unpublished(VIEW, refused(error, || false)),
+        Ok(view) => Ok(Opened {
+            view: view.erase(),
+            digest: None,
+        }),
+        Err(error) => Err(refused(error, || false)),
     }
 }
 
 #[inline(never)]
-fn otadata_view(storage: &Storage, sector: Sector, view: api::ViewName, views: &mut Views) {
-    add(views, otadata_status(storage, sector, view));
-}
-
-fn otadata_status(storage: &Storage, sector: Sector, view: api::ViewName) -> api::View {
+fn open_otadata(storage: &Storage, sector: Sector) -> Result<Opened, api::ViewStatus> {
     let Some(module) = storage.otadata() else {
-        return unpublished(view, api::ViewStatus::Unverified);
+        return Err(api::ViewStatus::Unverified);
     };
-    let state = || writing(module.write_state());
     let model = match module.parse() {
         Ok(model) => model,
-        Err(error) => return unpublished(view, not_loaded(error, state)),
+        Err(error) => return Err(not_loaded(error, || writing(module.write_state()))),
     };
-    let entry = model.otadata().entries.get(sector.index());
-    if matches!(entry, Some(Err(ReadError::Device))) {
-        return unpublished(view, api::ViewStatus::Unreadable);
+    if let Some(Err(ReadError::Device)) = model.otadata().entries.get(sector.index()) {
+        return Err(api::ViewStatus::Unreadable);
     }
-    match module.published(&model, sector) {
-        Ok(entry) => published(
-            storage,
-            view,
-            entry.span(),
-            entry.sanitized(),
-            entry.epoch(),
-        ),
-        Err(error) => unpublished(view, refused(error, state)),
-    }
+    opened(module.published(&model, sector), None, || {
+        writing(module.write_state())
+    })
 }
 
 #[inline(never)]
-fn app_view<R: AppRole>(storage: &Storage, slot: &AppSlot<'_, R>, views: &mut Views) {
-    add(views, app_status(storage, slot));
-}
-
-fn app_status<R: AppRole>(storage: &Storage, slot: &AppSlot<'_, R>) -> api::View {
-    const VIEW: api::ViewName = api::ViewName::Image;
-    let state = || writing(slot.write_state());
-    if state() {
-        return unpublished(VIEW, api::ViewStatus::Writing);
+fn open_app<R: AppRole>(slot: &'static AppSlot<'static, R>) -> Result<Opened, api::ViewStatus> {
+    if writing(slot.write_state()) {
+        return Err(api::ViewStatus::Writing);
     }
     // No model at the region's epoch yet: the check task hashes the image.
     let Some(model) = slot.model() else {
-        return unpublished(VIEW, refused(Unpublished::Stale, state));
+        return Err(refused(Unpublished::Stale, || writing(slot.write_state())));
     };
-    if unreadable(&model.image()) {
-        return unpublished(VIEW, api::ViewStatus::Unreadable);
+    let digest = image_digest(model.image(), |image| *image.file_sha256())?;
+    opened(slot.published(&model), digest, || {
+        writing(slot.write_state())
+    })
+}
+
+/// [`api::GetView`]: the view, which the binary body writer serves, or why
+/// it can't be, checked in the spec's order: a name that isn't a region's
+/// or a view of it, or a region that isn't listed, then a sensitive region,
+/// then a view that isn't published.
+pub(super) async fn get_view(
+    (storage, system, answers): (&'static Storage, &'static System, &'static Answers),
+    (name, view): (api::RegionName, api::ViewName),
+    (): (),
+) -> Result<ViewSource, api::ViewError> {
+    view_source(storage, system, answers, name, view)
+}
+
+#[inline(never)]
+fn view_source(
+    storage: &'static Storage,
+    system: &'static System,
+    answers: &'static Answers,
+    name: api::RegionName,
+    view: api::ViewName,
+) -> Result<ViewSource, api::ViewError> {
+    // By name, before any reader is used, listed or not.
+    if name.is_sensitive() {
+        return Err(api::ViewError::Sensitive);
     }
-    match slot.published(&model) {
-        Ok(view) => published(storage, VIEW, view.span(), view.sanitized(), view.epoch()),
-        Err(error) => unpublished(VIEW, refused(error, state)),
+    if !name.views().contains(&view) {
+        return Err(api::ViewError::NotFound);
+    }
+    let Some(span) = listed_span(storage, name) else {
+        return Err(api::ViewError::NotFound);
+    };
+    if name == api::RegionName::Otadata && storage.otadata().is_some_and(Otadata::is_found) {
+        return Err(api::ViewError::Sensitive);
+    }
+    source_of(storage, system, answers, name, view, span)
+}
+
+/// The source of the view `view` of the listed region `name`, at `span`,
+/// when the view is published.
+#[inline(never)]
+fn source_of(
+    storage: &'static Storage,
+    system: &'static System,
+    answers: &'static Answers,
+    name: api::RegionName,
+    view: api::ViewName,
+    span: Span,
+) -> Result<ViewSource, api::ViewError> {
+    let Ok(opened) = open(storage, name, view) else {
+        return Err(api::ViewError::Unpublished);
+    };
+    Ok(ViewSource {
+        tag: storage.tag(opened.view.epoch()),
+        opened,
+        storage,
+        system,
+        answers,
+        region: name,
+        span,
+        name: view,
+    })
+}
+
+/// The span of the region `name`, if it is listed.
+#[inline(never)]
+fn listed_span(storage: &Storage, name: api::RegionName) -> Option<Span> {
+    listed(storage)
+        .iter()
+        .find(|&&(listed, _)| listed == name)
+        .map(|&(_, span)| span)
+}
+
+/// The covered label of the region `name`, at `span`.
+#[inline(never)]
+fn label_at(storage: &Storage, name: api::RegionName, span: Span) -> Option<Label> {
+    match name {
+        api::RegionName::Bootloader | api::RegionName::PartitionTable => None,
+        _ => located_entry(storage, span).and_then(|entry| entry.label),
+    }
+}
+
+/// A published view, served as a [`v1::Bytes`] body.
+///
+/// [`v1::Bytes`]: eveningstar_api::v1::Bytes
+pub(super) struct ViewSource {
+    opened: Opened,
+    tag: heapless::String<TAG_LEN>,
+    storage: &'static Storage,
+    /// The device, whose name the filename starts with.
+    system: &'static System,
+    answers: &'static Answers,
+    region: api::RegionName,
+    /// The region's span, where the located table gives the label the
+    /// filename holds.
+    span: Span,
+    name: api::ViewName,
+}
+
+impl Source for ViewSource {
+    type Error = ViewError;
+
+    fn len(&self) -> u64 {
+        u64::from(self.opened.view.len())
+    }
+
+    fn tag(&self) -> Option<EntityTag<'_>> {
+        EntityTag::new(&self.tag)
+    }
+
+    fn answers(&self) -> &'static Answers {
+        self.answers
+    }
+
+    fn known_digest(&self) -> Option<[u8; 32]> {
+        self.opened.digest
+    }
+
+    async fn digest(
+        &self,
+        answer: &mut Answer<'_>,
+        first: u64,
+        count: u64,
+    ) -> Result<[u8; 32], ViewError> {
+        let mut sha = self.storage.sha().sha256();
+        let mut offset = first;
+        let end = first.checked_add(count).ok_or(ViewError::OutOfRange)?;
+        while offset < end {
+            let left = usize::try_from(end - offset).unwrap_or(usize::MAX);
+            let buffer = answer.buffer();
+            let len = left.min(buffer.len());
+            let chunk = buffer.get_mut(..len).ok_or(ViewError::OutOfRange)?;
+            self.read(offset, chunk).await?;
+            sha.update(chunk);
+            offset += len as u64;
+            answer.feed();
+            embassy_futures::yield_now().await;
+        }
+        Ok(sha.finalize())
+    }
+
+    fn filename(&self, selection: Selection, digest: &[u8; 32]) -> impl fmt::Display {
+        let label = label_at(self.storage, self.region, self.span);
+        fmt::from_fn(move |f| {
+            write!(f, "{}-{}", self.system.name(), self.region.as_str())?;
+            if let Some(label) = &label {
+                write!(f, "-{}", label.0)?;
+            }
+            write!(f, "-{}-", self.name.as_str())?;
+            for byte in &digest[..4] {
+                write!(f, "{byte:02x}")?;
+            }
+            if let Selection::Part { first, last } = selection {
+                write!(f, "-at{first:#x}-len{:#x}", last - first + 1)?;
+            }
+            f.write_str(".bin")
+        })
+    }
+
+    async fn read(&self, offset: u64, buffer: &mut [u8]) -> Result<(), ViewError> {
+        let offset = u32::try_from(offset).map_err(|_| ViewError::OutOfRange)?;
+        self.opened.view.read(offset, buffer).await
     }
 }

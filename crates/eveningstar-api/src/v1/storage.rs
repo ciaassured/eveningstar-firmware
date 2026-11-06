@@ -135,6 +135,130 @@ impl Endpoint for GetRegion {
     type Error = RegionError;
 }
 
+/// The endpoint answering with a published view's bytes, whole or by range,
+/// with their digest.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GetView;
+
+impl Endpoint for GetView {
+    const METHOD: Method = Method::Get;
+    const PATH: &'static str = "/storage/regions/{region}/views/{view}";
+    const STATUS: u16 = 200;
+    const SCOPE: Scope = Scope::Read;
+    const SUMMARY: &'static str = "Download a view of a region";
+    const DESCRIPTION: Option<&'static str> = Some(
+        "The view's bytes as the region's document describes it, sanitized \
+        bytes as `0xFF`. A sensitive region is answered with `403` whether or \
+        not it is listed, a view that isn't published with `409`, and a \
+        request while another download or digest is in progress with `503`. \
+        A region written while the body is sent ends the body before its \
+        length: the client sees a short body, never torn contents. Every \
+        answer closes the connection.",
+    );
+
+    type Params = (RegionName, ViewName);
+    type Request = super::Empty;
+    type Response = super::Bytes;
+    type Error = ViewError;
+}
+
+/// The errors of [`GetView`], besides those of a binary body.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ViewError {
+    /// [`ErrorCode::NotFound`]: the region isn't listed this boot, or doesn't
+    /// define the view.
+    NotFound,
+    /// [`ErrorCode::Sensitive`]: the region's bytes never leave the device.
+    Sensitive,
+    /// [`ErrorCode::Unpublished`]: the view isn't published now; the
+    /// region's document says why.
+    Unpublished,
+    /// [`ErrorCode::Busy`]: another download or digest is in progress.
+    Busy,
+}
+
+impl Errors for ViewError {
+    const CODES: &'static [ErrorCode] = &[
+        ErrorCode::NotFound,
+        ErrorCode::Sensitive,
+        ErrorCode::Unpublished,
+        ErrorCode::Busy,
+    ];
+
+    fn code(self) -> ErrorCode {
+        match self {
+            Self::NotFound => ErrorCode::NotFound,
+            Self::Sensitive => ErrorCode::Sensitive,
+            Self::Unpublished => ErrorCode::Unpublished,
+            Self::Busy => ErrorCode::Busy,
+        }
+    }
+}
+
+impl RegionName {
+    /// The name as the API writes it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Bootloader => "bootloader",
+            Self::PartitionTable => "partition_table",
+            Self::Factory => "factory",
+            Self::Otadata => "otadata",
+            Self::AppCurrent => "app_current",
+            Self::AppAlternate => "app_alternate",
+            Self::ConfigCurrent => "config_current",
+            Self::ConfigAlternate => "config_alternate",
+            Self::Diag => "diag",
+            Self::Reserved => "reserved",
+        }
+    }
+
+    /// The views the region's format defines, in order: none for a region
+    /// that isn't publishable.
+    #[must_use]
+    pub const fn views(self) -> &'static [ViewName] {
+        match self {
+            Self::Bootloader | Self::AppCurrent | Self::AppAlternate => &[ViewName::Image],
+            Self::PartitionTable => &[ViewName::Table],
+            Self::Otadata => &[ViewName::Entry0, ViewName::Entry1],
+            Self::Factory
+            | Self::ConfigCurrent
+            | Self::ConfigAlternate
+            | Self::Diag
+            | Self::Reserved => &[],
+        }
+    }
+
+    /// Whether the region's bytes never leave the device whatever the
+    /// board's tier: `factory`, the configurations, `diag` and `reserved`.
+    /// The otadata a located table gives is sensitive too, which its
+    /// document's class says.
+    #[must_use]
+    pub const fn is_sensitive(self) -> bool {
+        matches!(
+            self,
+            Self::Factory
+                | Self::ConfigCurrent
+                | Self::ConfigAlternate
+                | Self::Diag
+                | Self::Reserved
+        )
+    }
+}
+
+impl ViewName {
+    /// The name as the API writes it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Image => "image",
+            Self::Table => "table",
+            Self::Entry0 => "entry_0",
+            Self::Entry1 => "entry_1",
+        }
+    }
+}
+
 /// The errors of [`GetRegion`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RegionError {
@@ -936,6 +1060,47 @@ mod tests {
                 super::super::endpoint::path_params::<ViewName>("{view}", name),
                 expected,
                 "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn names_are_written_as_they_serialize() {
+        for name in RegionName::ALL {
+            assert_eq!(
+                serde_json::to_value(name).unwrap(),
+                serde_json::Value::from(name.as_str())
+            );
+            for view in name.views() {
+                assert_eq!(
+                    serde_json::to_value(view).unwrap(),
+                    serde_json::Value::from(view.as_str())
+                );
+            }
+            assert_eq!(name.is_sensitive(), name.views().is_empty(), "{name:?}");
+        }
+    }
+
+    #[test]
+    fn a_view_path_has_a_region_and_a_view() {
+        use super::super::endpoint::path_params;
+        assert_eq!(
+            path_params::<(RegionName, ViewName)>(
+                GetView::PATH,
+                "/storage/regions/otadata/views/entry_1"
+            ),
+            Some((RegionName::Otadata, ViewName::Entry1))
+        );
+        for path in [
+            "/storage/regions/otadata/views/entry_2",
+            "/storage/regions/other/views/image",
+            "/storage/regions/otadata/views",
+            "/storage/regions/otadata/views/entry_1/more",
+        ] {
+            assert_eq!(
+                path_params::<(RegionName, ViewName)>(GetView::PATH, path),
+                None,
+                "{path}"
             );
         }
     }

@@ -78,6 +78,8 @@ mod wd {
     pub(crate) enum AppCheck {}
     /// Marker of the confirmation window's watchdog.
     pub(crate) enum Confirmation {}
+    /// Marker of the watchdog of the storage API's binary answers.
+    pub(crate) enum Download {}
 
     pub(crate) const BLINKY: TaskWatchdog<Blinky> =
         TaskWatchdog::new("blinky", Duration::from_millis(5000));
@@ -98,6 +100,10 @@ mod wd {
         "confirmation",
         crate::storage::CONFIRMATION_WATCHDOG_TIMEOUT,
     );
+    /// An answer feeds it after each chunk written and each KiB hashed; a
+    /// write waits at most the HTTP write timeout, well within this.
+    pub(crate) const DOWNLOAD: TaskWatchdog<Download> =
+        TaskWatchdog::new("download", Duration::from_secs(10));
 
     /// The supervisor's slots, one per task above.
     pub(crate) const SLOTS: usize = [
@@ -107,6 +113,7 @@ mod wd {
         REBOOT.name(),
         APP_CHECK.name(),
         CONFIRMATION.name(),
+        DOWNLOAD.name(),
     ]
     .len();
 }
@@ -153,6 +160,7 @@ async fn main(spawner: Spawner) {
     let reboot_wd = wd_supervisor.register(wd::REBOOT);
     let app_check_wd = wd_supervisor.register(wd::APP_CHECK);
     let confirmation_wd = wd_supervisor.register(wd::CONFIRMATION);
+    let download_wd = wd_supervisor.register(wd::DOWNLOAD);
 
     esp_rtos::start(timg0.timer0, board.from_cpu_intr0);
     info!("Embassy initialized");
@@ -201,6 +209,7 @@ async fn main(spawner: Spawner) {
                 reboot,
                 reboot_holder: reboot.register_holder(Holder::Http),
                 storage,
+                answers: http::Answers::start(download_wd),
             },
         ),
         Err(err) => error!("Ethernet unavailable: {}", err),

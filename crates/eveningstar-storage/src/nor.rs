@@ -267,7 +267,7 @@ mod snapshot;
 mod state;
 
 pub use handle::{Reader, Session, Writer};
-pub use published::Published;
+pub use published::{PublicView, Published};
 pub use snapshot::Snapshot;
 pub use state::State;
 

@@ -10,6 +10,8 @@
 
 mod api;
 mod storage;
+
+pub(crate) use api::Answers;
 mod system;
 mod ui;
 
@@ -61,11 +63,19 @@ pub(crate) struct AppState {
     /// The HTTP server's reboot holder ([`Holder::Http`](crate::services::reboot::Holder::Http)).
     pub(crate) reboot_holder: RebootHolder,
     pub(crate) storage: &'static Storage,
+    /// The binary answers, given one at a time.
+    pub(crate) answers: &'static Answers,
 }
 
 impl FromRef<AppState> for &'static Storage {
     fn from_ref(state: &AppState) -> Self {
         state.storage
+    }
+}
+
+impl FromRef<AppState> for (&'static Storage, &'static System, &'static Answers) {
+    fn from_ref(state: &AppState) -> Self {
+        (state.storage, state.system, state.answers)
     }
 }
 
