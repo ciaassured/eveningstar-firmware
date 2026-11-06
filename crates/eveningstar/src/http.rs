@@ -43,7 +43,9 @@ static CONFIG: picoserve::Config = picoserve::Config::new(Timeouts {
     start_read_request: Duration::from_secs(5),
     persistent_start_read_request: Duration::from_secs(1),
     read_request: Duration::from_secs(3),
-    write: Duration::from_secs(1),
+    // The longest a write waits for the client to drain the connection: a
+    // download's chunk included, so half the `download` watchdog's timeout.
+    write: Duration::from_secs(5),
 })
 .keep_connection_alive();
 
