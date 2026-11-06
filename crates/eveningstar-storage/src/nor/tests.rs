@@ -929,6 +929,29 @@ fn a_view_fails_once_the_region_is_written() {
 }
 
 #[test]
+fn an_erased_view_reads_as_its_published_view() {
+    let flash = flash();
+    flash.device().poke(OTA_1.offset, &[1, 2, 3, 4, 5, 6, 7, 8]);
+    let (reader, mut writer) = alternate(&flash);
+    let epoch = stable(reader.write_state());
+    let sanitized = [Span::new(2, 3)];
+    let view = reader.publish(epoch, Span::new(0, 8), &sanitized).unwrap();
+    let mut published = [0; 8];
+    run(view.read(0, &mut published)).unwrap();
+    let erased = view.erase();
+    let mut buf = [0; 8];
+    run(erased.read(0, &mut buf)).unwrap();
+    assert_eq!(buf, published);
+    assert_eq!(buf, [1, 2, 0xFF, 0xFF, 0xFF, 6, 7, 8]);
+    assert_eq!(erased.len(), 8);
+    assert_eq!(erased.epoch(), epoch);
+    assert_eq!(erased.sanitized(), sanitized);
+    assert_eq!(erased.span(), Span::new(0, 8));
+    write_word(&mut writer, 0x1000);
+    assert_eq!(run(erased.read(0, &mut buf)), Err(ViewError::Stale));
+}
+
+#[test]
 fn a_view_read_that_straddles_a_session_is_stale() {
     let flash = flash();
     let (reader, mut writer) = alternate(&flash);

@@ -10,8 +10,11 @@
 use core::convert::Infallible;
 use core::fmt;
 
-use defmt::warn;
+use defmt::{Debug2Format, warn};
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::mutex::{Mutex, MutexGuard};
 use eveningstar_api::v1::{self, Call, Endpoint, Errors, Operation};
+use eveningstar_system::watchdog::WatchdogHandle;
 use picoserve::ResponseSent;
 use picoserve::extract::{FromRef, FromRequest, JsonRejection};
 use picoserve::io::{Read, Write};
@@ -25,7 +28,10 @@ use picoserve::routing::{MethodHandlerService, PathRouterService};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use super::{AppState, TCP_BUFFER_LEN, storage, system};
+use static_cell::{ConstStaticCell, StaticCell};
+
+use super::{AppState, storage, system};
+use crate::wd;
 
 /// The headers of every answer the API gives, including its errors. The answers
 /// are data: the browser mustn't read them as anything else, keep them, let
@@ -120,7 +126,8 @@ async fn dispatch<R: Read, W: ResponseWriter<Error = R::Error>>(
             call @ (Call::GetStorage(..)
             | Call::GetLayout(..)
             | Call::GetRegions(..)
-            | Call::GetRegion(..)),
+            | Call::GetRegion(..)
+            | Call::GetView(..)),
         ) => dispatch_storage(call, state, request, writer).await,
         Err(error) => {
             let connection = request.body_connection.finalize().await?;
@@ -183,6 +190,9 @@ async fn dispatch_storage<R: Read, W: ResponseWriter<Error = R::Error>>(
                 storage::get_region,
             )
             .await
+        }
+        Call::GetView(endpoint, params) => {
+            serve(endpoint, params, state, request, writer, storage::get_view).await
         }
         _ => {
             let connection = request.body_connection.finalize().await?;
@@ -252,6 +262,7 @@ fn error_response(code: v1::ErrorCode) -> Response<impl HeadersIter, impl Body> 
         .into_response()
         .with_status_code(status)
         .with_headers(HEADERS)
+        .with_headers(code.retry_after_s().map(|seconds| ("Retry-After", seconds)))
 }
 
 /// A request body the server reads.
@@ -535,23 +546,42 @@ impl<T, P: JsonParts<Document = T>> JsonBody<T> for Parts<P> {
     }
 }
 
-/// The source of a [`v1::Bytes`] body: its length, its tag, the name it is
-/// saved under, and its bytes, read a chunk at a time as the response is
-/// written.
+/// The source of a [`v1::Bytes`] body: its length, its tag, its digest, the
+/// name it is saved under, and its bytes, read a chunk at a time as the
+/// response is written, through the [`Answers`]' buffer.
 pub(super) trait Source {
     /// The error of a read, which ends the body early.
-    type Error: defmt::Format;
+    type Error: fmt::Debug;
 
     /// The body's length in bytes.
     fn len(&self) -> u64;
 
-    /// The body's strong entity tag, if it has one. A request whose
-    /// `If-Range` differs from it is answered with the whole body.
+    /// The body's strong entity tag. A request whose `If-Match` names no tag
+    /// of it is answered with `412`, and one whose `If-Range` differs from it
+    /// with the whole body. A body without one can't be served now, and is
+    /// answered with `409`.
     fn tag(&self) -> Option<v1::EntityTag<'_>>;
 
-    /// The name the part `selection` of the body is saved under. Characters
-    /// other than ASCII letters, digits, `.`, `-` and `_` are sent as `_`.
-    fn filename(&self, selection: v1::Selection) -> impl fmt::Display;
+    /// The answers the body is written through, one at a time.
+    fn answers(&self) -> &'static Answers;
+
+    /// The SHA-256 of the whole body when it is known without reading it.
+    fn known_digest(&self) -> Option<[u8; 32]>;
+
+    /// The SHA-256 of `count` bytes of the body from `first`, read a chunk
+    /// at a time through `answer`'s buffer ([`Answer::buffer`]), with the
+    /// pace of a body's chunks, feeding its watchdog ([`Answer::feed`]).
+    async fn digest(
+        &self,
+        answer: &mut Answer<'_>,
+        first: u64,
+        count: u64,
+    ) -> Result<[u8; 32], Self::Error>;
+
+    /// The name the part `selection` of the body, whose whole body has the
+    /// SHA-256 `digest`, is saved under. Characters other than ASCII
+    /// letters, digits, `.`, `-` and `_` are sent as `_`.
+    fn filename(&self, selection: v1::Selection, digest: &[u8; 32]) -> impl fmt::Display;
 
     /// Reads the bytes from `offset` into `buffer`, filling it.
     ///
@@ -563,14 +593,73 @@ pub(super) trait Source {
     async fn read(&self, offset: u64, buffer: &mut [u8]) -> Result<(), Self::Error>;
 }
 
-/// The most bytes of a binary body read and written at once: a quarter of a
-/// TCP buffer, which keeps the chunk's buffer within the stack frame limit.
-const CHUNK_LEN: usize = TCP_BUFFER_LEN / 4;
+/// The most bytes of a binary body read and written at once: the size of
+/// the [`Answers`]' buffer.
+const CHUNK_LEN: usize = 1024;
+
+/// The binary answers the device gives one at a time: the buffer their
+/// chunks pass through, and the watchdog that sees them progress.
+pub(crate) struct Answers(Mutex<CriticalSectionRawMutex, AnswerParts>);
+
+struct AnswerParts {
+    buffer: &'static mut [u8; CHUNK_LEN],
+    wd: WatchdogHandle<wd::Download>,
+}
+
+impl Answers {
+    /// The answers, in their `static`, supervised by `wd`, which sleeps
+    /// between answers.
+    ///
+    /// # Panics
+    ///
+    /// If called more than once.
+    pub(crate) fn start(wd: WatchdogHandle<wd::Download>) -> &'static Self {
+        static ANSWERS: StaticCell<Answers> = StaticCell::new();
+        // Built at compile time, so the buffer never passes through the stack.
+        static BUFFER: ConstStaticCell<[u8; CHUNK_LEN]> = ConstStaticCell::new([0; CHUNK_LEN]);
+
+        wd.pause();
+        ANSWERS.init(Self(Mutex::new(AnswerParts {
+            buffer: BUFFER.take(),
+            wd,
+        })))
+    }
+
+    /// The parts of an answer, unless another answer holds them.
+    #[inline(never)]
+    fn begin(&'static self) -> Option<Answer<'static>> {
+        let parts = self.0.try_lock().ok()?;
+        parts.wd.feed();
+        Some(Answer(parts))
+    }
+}
+
+/// The parts of one binary answer, held while it is given.
+pub(super) struct Answer<'a>(MutexGuard<'a, CriticalSectionRawMutex, AnswerParts>);
+
+impl Answer<'_> {
+    /// Tells the watchdog the answer is making progress.
+    pub(super) fn feed(&self) {
+        self.0.wd.feed();
+    }
+
+    /// The buffer the answer's chunks pass through, [`CHUNK_LEN`] bytes.
+    pub(super) fn buffer(&mut self) -> &mut [u8] {
+        &mut self.0.buffer[..]
+    }
+}
+
+impl Drop for Answer<'_> {
+    fn drop(&mut self) {
+        self.0.wd.pause();
+    }
+}
 
 impl<S: Source> WriteBody<S> for v1::Bytes {
-    /// Writes the part of the body `request` asks for. Every response with
-    /// the body or a part of it tells the client the connection closes, as
-    /// the connection closes once the body is written or a read of it fails.
+    /// Writes the part of the body `request` asks for, or for a `HEAD`
+    /// request the headers of the whole body. Every response with the body
+    /// or a part of it tells the client the connection closes, as the
+    /// connection closes once the body is written or a read of it fails.
     async fn write<R: Read, W: ResponseWriter<Error = R::Error>>(
         source: S,
         status: StatusCode,
@@ -579,71 +668,228 @@ impl<S: Source> WriteBody<S> for v1::Bytes {
         connection: Connection<'_, R>,
         writer: W,
     ) -> Result<ResponseSent, W::Error> {
-        let header = |name| {
-            request
-                .headers()
-                .get(name)
-                .and_then(|value| value.as_str().ok())
+        let mut answer = match prepare(&source, status, request) {
+            Ok(answer) => answer,
+            Err(refusal) => return write_refusal(&source, refusal, connection, writer).await,
         };
-        // Range requests are defined for `GET` alone.
-        let range = (request.method() == v1::Method::Get.as_str())
-            .then(|| header("Range"))
-            .flatten();
-        let len = source.len();
-        let tag = source.tag();
-        let selection = v1::Selection::new(len, tag, range, header("If-Range"));
-        let content_range = selection.content_range(len);
-
-        let (status, first, count) = match selection {
-            v1::Selection::Whole => (status, 0, len),
-            v1::Selection::Part { first, last } => (
-                StatusCode::new(v1::Bytes::PARTIAL_STATUS),
-                first,
-                last - first + 1,
-            ),
-            v1::Selection::Unsatisfiable => {
-                return write_unsatisfiable(tag, content_range, connection, writer).await;
-            }
+        let Some(digests) = digests(&source, &mut answer).await else {
+            let refusal = Refusal(v1::ErrorCode::Unpublished);
+            return write_refusal(&source, refusal, connection, writer).await;
         };
-
-        let headers = [
-            Some(("Content-Type", Header::Text("application/octet-stream"))),
-            Some(("Content-Length", Header::Number(count))),
-            Some(("Accept-Ranges", Header::Text("bytes"))),
-            tag.map(|tag| ("ETag", Header::Tag(tag))),
-            Some((
-                "Content-Disposition",
-                Header::Attachment(source.filename(selection)),
-            )),
-            content_range.map(|range| ("Content-Range", Header::Range(range))),
-        ];
-        // Custom, so the connection closes once the body is written: a body cut
-        // short leaves nothing else to read on it.
-        let response = CustomResponse::build(status)
-            .with_headers(headers)
-            .with_headers(HEADERS)
-            .with_body(Chunks {
-                source: &source,
-                first,
-                count,
-            });
-        response.write_to(connection, writer).await
+        respond(&source, answer, digests, connection, writer).await
     }
 }
 
-/// Writes the `416` response to a request for no part of a binary body whose
-/// tag is `tag`, with the `Content-Range` `content_range`. Its body is the
-/// JSON error, so it names no attachment.
-async fn write_unsatisfiable<R: Read, W: ResponseWriter<Error = R::Error>>(
-    tag: Option<v1::EntityTag<'_>>,
-    content_range: Option<v1::ContentRange>,
+/// Writes the answer `answer` prepared, with `digests` and the body from
+/// `source`.
+async fn respond<S: Source, R: Read, W: ResponseWriter<Error = R::Error>>(
+    source: &S,
+    answer: Prepared,
+    digests: Digests,
     connection: Connection<'_, R>,
     writer: W,
 ) -> Result<ResponseSent, W::Error> {
-    let response = error_response(v1::BytesError::RangeNotSatisfiable.code())
-        .with_header("Accept-Ranges", "bytes")
-        .with_headers(tag.map(|tag| ("ETag", tag)))
-        .with_headers(content_range.map(|range| ("Content-Range", range)));
+    // `prepare` found the tag.
+    let Some(tag) = source.tag() else {
+        return write_refusal(
+            source,
+            Refusal(v1::ErrorCode::Unpublished),
+            connection,
+            writer,
+        )
+        .await;
+    };
+    let content_range = answer.selection.content_range(source.len());
+    let headers = [
+        Some(("Content-Type", Header::Text("application/octet-stream"))),
+        Some(("Content-Length", Header::Number(answer.count))),
+        Some(("Accept-Ranges", Header::Text("bytes"))),
+        Some(("ETag", Header::Tag(tag))),
+        Some(("Repr-Digest", Header::Digest(digests.whole))),
+        digests
+            .part
+            .map(|part| ("Content-Digest", Header::Digest(part))),
+        Some((
+            "Content-Disposition",
+            Header::Attachment(source.filename(answer.selection, &digests.whole)),
+        )),
+        content_range.map(|range| ("Content-Range", Header::Range(range))),
+    ];
+    // Custom, so the connection closes once the body is written: a body cut
+    // short leaves nothing else to read on it.
+    let response = CustomResponse::build(answer.status)
+        .with_headers(headers)
+        .with_headers(HEADERS)
+        .with_body(Chunks {
+            source,
+            answer: answer.parts,
+            first: answer.first,
+            count: if answer.head { 0 } else { answer.count },
+        });
+    response.write_to(connection, writer).await
+}
+
+/// What a binary answer sends, once its request is found to be one the body
+/// can answer, and the parts it is sent through.
+struct Prepared {
+    parts: Answer<'static>,
+    status: StatusCode,
+    head: bool,
+    selection: v1::Selection,
+    first: u64,
+    count: u64,
+    /// Whether the request asks for the digest of the bytes sent.
+    wanted: bool,
+}
+
+/// The digests a binary answer sends.
+#[derive(Clone, Copy)]
+struct Digests {
+    /// The SHA-256 of the whole body.
+    whole: [u8; 32],
+    /// The SHA-256 of the bytes sent, when the request asks for it.
+    part: Option<[u8; 32]>,
+}
+
+/// Why a binary answer is an error: the error's code. Kept to the code, as
+/// each `?` on it holds a few copies in its function's frame.
+#[derive(Clone, Copy)]
+struct Refusal(v1::ErrorCode);
+
+/// The status of a response with part of a binary body.
+const PARTIAL: StatusCode = StatusCode::new(v1::Bytes::PARTIAL_STATUS);
+
+/// Checks `request` against `source` in the spec's order, `If-Match`, then
+/// the range, then whether another answer is in progress, and takes the
+/// answer's parts. `status` is the endpoint's. The digests are computed
+/// next, by [`digests`].
+#[inline(never)]
+fn prepare<S: Source>(
+    source: &S,
+    status: StatusCode,
+    request: RequestParts<'_>,
+) -> Result<Prepared, Refusal> {
+    let header = |name| header(&request, name);
+    let head = request.method() == "HEAD";
+    let len = source.len();
+    let tag = source.tag().ok_or(Refusal(v1::ErrorCode::Unpublished))?;
+    if !matches_tag(tag, header("If-Match")) {
+        return Err(Refusal(v1::BytesError::PreconditionFailed.code()));
+    }
+    // Range requests are defined for `GET` alone, and a `HEAD` answers with
+    // the headers of the whole body.
+    let range = (!head).then(|| header("Range")).flatten();
+    let selection = select(len, tag, range, header("If-Range"));
+    let (status, first, count) = match selection {
+        v1::Selection::Whole => (status, 0, len),
+        v1::Selection::Part { first, last } => (PARTIAL, first, last - first + 1),
+        v1::Selection::Unsatisfiable => {
+            return Err(Refusal(v1::BytesError::RangeNotSatisfiable.code()));
+        }
+    };
+    let wanted = !head && header("Want-Content-Digest").is_some_and(wants_digest);
+
+    let parts = source
+        .answers()
+        .begin()
+        .ok_or(Refusal(v1::ErrorCode::Busy))?;
+    Ok(Prepared {
+        parts,
+        status,
+        head,
+        selection,
+        first,
+        count,
+        wanted,
+    })
+}
+
+// The header parsers, each kept out of its caller's frame.
+
+/// The value of the header `name` of `request`, when it is text.
+#[inline(never)]
+fn header<'r>(request: &RequestParts<'r>, name: &str) -> Option<&'r str> {
+    request
+        .headers()
+        .get(name)
+        .and_then(|value| value.as_str().ok())
+}
+
+#[inline(never)]
+fn matches_tag(tag: v1::EntityTag<'_>, if_match: Option<&str>) -> bool {
+    v1::if_match(Some(tag), if_match)
+}
+
+#[inline(never)]
+fn select(
+    len: u64,
+    tag: v1::EntityTag<'_>,
+    range: Option<&str>,
+    if_range: Option<&str>,
+) -> v1::Selection {
+    v1::Selection::new(len, Some(tag), range, if_range)
+}
+
+#[inline(never)]
+fn wants_digest(value: &str) -> bool {
+    v1::wants_sha256(value)
+}
+
+/// Computes the digests `answer` sends: the whole body's, unless it is
+/// known, and the part's when the request asks for it. `None` when one
+/// can't be computed.
+async fn digests<S: Source>(source: &S, answer: &mut Prepared) -> Option<Digests> {
+    let len = source.len();
+    let whole = match source.known_digest() {
+        Some(digest) => digest,
+        None => logged(source.digest(&mut answer.parts, 0, len).await)?,
+    };
+    let part = match (answer.wanted, answer.first == 0 && answer.count == len) {
+        (false, _) => None,
+        (true, true) => Some(whole),
+        (true, false) => {
+            let (first, count) = (answer.first, answer.count);
+            Some(logged(
+                source.digest(&mut answer.parts, first, count).await,
+            )?)
+        }
+    };
+    Some(Digests { whole, part })
+}
+
+/// The digest `digest` gives; `None`, logged, when a read failed, which is
+/// answered with `409`, as the body can't be served now.
+fn logged<E: fmt::Debug>(digest: Result<[u8; 32], E>) -> Option<[u8; 32]> {
+    digest
+        .map_err(|error| warn!("A binary body can't be hashed: {}", Debug2Format(&error)))
+        .ok()
+}
+
+/// Writes the error response `refusal` gives for a request for `source`. A
+/// `416` names the body's length and tag, and as its body is the JSON error,
+/// it names no attachment.
+async fn write_refusal<S: Source, R: Read, W: ResponseWriter<Error = R::Error>>(
+    source: &S,
+    Refusal(code): Refusal,
+    connection: Connection<'_, R>,
+    writer: W,
+) -> Result<ResponseSent, W::Error> {
+    let unsatisfiable = code == v1::BytesError::RangeNotSatisfiable.code();
+    let len = source.len();
+    let response = error_response(code)
+        .with_headers(unsatisfiable.then_some(("Accept-Ranges", "bytes")))
+        .with_headers(
+            source
+                .tag()
+                .filter(|_| unsatisfiable)
+                .map(|tag| ("ETag", tag)),
+        )
+        .with_headers(
+            unsatisfiable
+                .then(|| v1::Selection::Unsatisfiable.content_range(len))
+                .flatten()
+                .map(|range| ("Content-Range", range)),
+        );
     writer.write_response(connection, response).await
 }
 
@@ -654,6 +900,8 @@ enum Header<'a, F> {
     Number(u64),
     Tag(v1::EntityTag<'a>),
     Range(v1::ContentRange),
+    /// A SHA-256 digest, as `Repr-Digest` and `Content-Digest` hold one.
+    Digest([u8; 32]),
     /// `attachment`, saved under the name `F` writes, its characters other
     /// than ASCII letters, digits, `.`, `-` and `_` written as `_`. The value
     /// can't then end the quoted name, or the header.
@@ -667,6 +915,7 @@ impl<F: fmt::Display> fmt::Display for Header<'_, F> {
             Self::Number(number) => write!(f, "{number}"),
             Self::Tag(tag) => write!(f, "{tag}"),
             Self::Range(range) => write!(f, "{range}"),
+            Self::Digest(digest) => write!(f, "{}", v1::Sha256Field(digest)),
             Self::Attachment(filename) => {
                 f.write_str("attachment; filename=\"")?;
                 fmt::write(&mut Filename(f), format_args!("{filename}"))?;
@@ -690,32 +939,36 @@ impl fmt::Write for Filename<'_, '_> {
     }
 }
 
-/// `count` bytes of `source` from `first`, written a chunk at a time.
+/// `count` bytes of `source` from `first`, written a chunk at a time through
+/// `answer`'s buffer.
 struct Chunks<'a, S> {
     source: &'a S,
+    answer: Answer<'static>,
     first: u64,
     count: u64,
 }
 
 impl<S: Source> CustomBody for Chunks<'_, S> {
-    async fn write_response_body<W: Write>(self, mut writer: W) -> Result<(), W::Error> {
-        let mut buffer = [0; CHUNK_LEN];
+    async fn write_response_body<W: Write>(mut self, mut writer: W) -> Result<(), W::Error> {
         let mut offset = self.first;
         let end = self.first + self.count;
         while offset < end {
             let len = usize::try_from(end - offset).map_or(CHUNK_LEN, |left| left.min(CHUNK_LEN));
-            let chunk = &mut buffer[..len];
+            let Some(chunk) = self.answer.0.buffer.get_mut(..len) else {
+                return Ok(());
+            };
             if let Err(error) = self.source.read(offset, chunk).await {
                 warn!(
                     "Binary response body cut short after {} of {} bytes: {}",
                     offset - self.first,
                     self.count,
-                    error
+                    Debug2Format(&error)
                 );
                 return Ok(());
             }
             writer.write_all(chunk).await?;
             offset += chunk.len() as u64;
+            self.answer.feed();
             // A client reading as fast as the network allows would otherwise
             // hold the executor until its socket buffer fills.
             embassy_futures::yield_now().await;

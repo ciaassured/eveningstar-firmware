@@ -101,11 +101,13 @@ impl<R: Publishable<Device = Internal>> Reader<'_, R> {
             }
         }
         Ok(Published {
-            extent,
-            span,
-            epoch,
-            sanitized: kept,
-            count,
+            view: PublicView {
+                extent,
+                span,
+                epoch,
+                sanitized: kept,
+                count,
+            },
             role: PhantomData,
         })
     }
@@ -119,6 +121,50 @@ impl<R: Publishable<Device = Internal>> Reader<'_, R> {
 /// served as `0xFF`; those whose flash bytes aren't `0xFF` at the epoch are
 /// listed ([`PublicRead::sanitized`]), and no others.
 pub struct Published<'r, R: Publishable<Device = Internal>> {
+    view: PublicView<'r>,
+    role: PhantomData<fn() -> R>,
+}
+
+impl<'r, R: Publishable<Device = Internal>> Published<'r, R> {
+    /// The view's span, relative to the region.
+    #[must_use]
+    pub const fn span(&self) -> Span {
+        self.view.span
+    }
+
+    /// The view without its role: the same bytes, read the same way, for a
+    /// caller that serves the views of several roles through one path.
+    #[must_use]
+    pub const fn erase(self) -> PublicView<'r> {
+        self.view
+    }
+}
+
+impl<R: Publishable<Device = Internal>> Sealed for Published<'_, R> {}
+
+impl<R: Publishable<Device = Internal>> PublicRead for Published<'_, R> {
+    fn len(&self) -> u32 {
+        self.view.len()
+    }
+
+    fn epoch(&self) -> Epoch {
+        self.view.epoch()
+    }
+
+    fn sanitized(&self) -> &[Span] {
+        self.view.sanitized()
+    }
+
+    /// As [`PublicView::read`].
+    async fn read(&self, offset: u32, buf: &mut [u8]) -> Result<(), ViewError> {
+        self.view.read(offset, buf).await
+    }
+}
+
+/// A published view whose role is left out, from [`Published::erase`]. It
+/// is made only from a [`Published`], so it holds the bytes a publication
+/// allowed, and reads them as the [`Published`] did.
+pub struct PublicView<'r> {
     /// The device, the view's absolute span, and the region's physical
     /// spans.
     extent: Extent<'r>,
@@ -129,10 +175,9 @@ pub struct Published<'r, R: Publishable<Device = Internal>> {
     /// view: the first `count`.
     sanitized: [Span; MAX_SANITIZED],
     count: usize,
-    role: PhantomData<fn() -> R>,
 }
 
-impl<R: Publishable<Device = Internal>> Published<'_, R> {
+impl PublicView<'_> {
     /// The view's span, relative to the region.
     #[must_use]
     pub const fn span(&self) -> Span {
@@ -140,9 +185,9 @@ impl<R: Publishable<Device = Internal>> Published<'_, R> {
     }
 }
 
-impl<R: Publishable<Device = Internal>> Sealed for Published<'_, R> {}
+impl Sealed for PublicView<'_> {}
 
-impl<R: Publishable<Device = Internal>> PublicRead for Published<'_, R> {
+impl PublicRead for PublicView<'_> {
     fn len(&self) -> u32 {
         self.span.len
     }
@@ -186,12 +231,22 @@ impl<R: Publishable<Device = Internal>> PublicRead for Published<'_, R> {
     }
 }
 
+impl fmt::Debug for PublicView<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PublicView")
+            .field("span", &self.span)
+            .field("epoch", &self.epoch)
+            .field("sanitized", &self.sanitized())
+            .finish_non_exhaustive()
+    }
+}
+
 impl<R: Publishable<Device = Internal>> fmt::Debug for Published<'_, R> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Published")
             .field("role", &R::NAME)
-            .field("span", &self.span)
-            .field("epoch", &self.epoch)
+            .field("span", &self.view.span)
+            .field("epoch", &self.view.epoch)
             .field("sanitized", &self.sanitized())
             .finish_non_exhaustive()
     }

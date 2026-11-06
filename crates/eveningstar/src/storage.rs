@@ -168,6 +168,7 @@ pub(crate) async fn start(
         modules.table,
         modules.otadata,
         modules.app,
+        sha,
         boot,
     ));
     (service, modules.ota)

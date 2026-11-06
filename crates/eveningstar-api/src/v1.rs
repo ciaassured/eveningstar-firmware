@@ -29,7 +29,7 @@ pub use endpoint::{
 #[cfg(feature = "schema")]
 pub use openapi::openapi;
 pub use range::{ContentRange, EntityTag, Selection, if_match};
-pub use storage::{GetLayout, GetRegion, GetRegions, GetStorage};
+pub use storage::{GetLayout, GetRegion, GetRegions, GetStorage, GetView};
 
 /// Path prefix of every version 1 endpoint.
 pub const PATH: &str = "/api/v1";
@@ -178,6 +178,7 @@ operations!(
     GetLayout,
     GetRegions,
     GetRegion,
+    GetView,
     #[cfg(test)]
     GetTestContent,
 );
@@ -644,6 +645,7 @@ mod tests {
                 ("GetLayout", Scope::Read),
                 ("GetRegions", Scope::Read),
                 ("GetRegion", Scope::Read),
+                ("GetView", Scope::Read),
                 ("GetTestContent", Scope::Read),
             ]
         );

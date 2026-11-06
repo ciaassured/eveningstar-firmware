@@ -8,6 +8,8 @@ use eveningstar_boot::{App, Bootloader, Otadata, PartitionTable};
 use eveningstar_storage::Epoch;
 use eveningstar_storage::chain::Report;
 
+use crate::sha::Sha;
+
 /// Most bytes of an entity tag: [`v1::storage::ETAG_MAX_LEN`].
 ///
 /// [`v1::storage::ETAG_MAX_LEN`]: eveningstar_api::v1::storage::ETAG_MAX_LEN
@@ -20,20 +22,22 @@ pub(crate) struct Storage {
     table: &'static PartitionTable<'static>,
     otadata: Option<&'static Otadata<'static>>,
     app: App<'static, 'static>,
+    sha: Sha,
     /// The boot's random value, which keeps entity tags of different boots
     /// apart, as epochs restart at every boot.
     boot: u64,
 }
 
 impl Storage {
-    /// The service over `report` and the content modules, its tags carrying
-    /// `boot`.
+    /// The service over `report` and the content modules, hashing views
+    /// with `sha`, its tags carrying `boot`.
     pub(crate) const fn new(
         report: Report,
         bootloader: &'static Bootloader<'static>,
         table: &'static PartitionTable<'static>,
         otadata: Option<&'static Otadata<'static>>,
         app: App<'static, 'static>,
+        sha: Sha,
         boot: u64,
     ) -> Self {
         Self {
@@ -42,6 +46,7 @@ impl Storage {
             table,
             otadata,
             app,
+            sha,
             boot,
         }
     }
@@ -69,6 +74,11 @@ impl Storage {
     /// The app slots' modules.
     pub(crate) const fn app(&self) -> App<'static, 'static> {
         self.app
+    }
+
+    /// Permission to hash a view.
+    pub(crate) const fn sha(&self) -> Sha {
+        self.sha
     }
 
     /// The strong entity tag of a view at `epoch`, quotes included: the

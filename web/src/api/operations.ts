@@ -9,6 +9,15 @@ export type OperationId = keyof operations;
 type Responses<K extends OperationId> = operations[K]["responses"];
 type SuccessCode<K extends OperationId> = Extract<keyof Responses<K>, 200 | 201 | 202 | 204>;
 
+/** How the operation's success response carries its body. */
+type ResponseKind<K extends OperationId> = Responses<K>[SuccessCode<K>] extends {
+  content: { "application/octet-stream": unknown };
+}
+  ? "bytes"
+  : [Success<K>] extends [undefined]
+    ? "empty"
+    : "json";
+
 /** The body of the operation's success response; `undefined` if it has none. */
 export type Success<K extends OperationId> =
   Responses<K>[SuccessCode<K>] extends { content: { "application/json": infer Body } } ? Body : undefined;
@@ -35,7 +44,7 @@ export function expandPath(template: string, params: Readonly<Record<string, str
   });
 }
 
-type Lowercase_ = "get" | "post" | "put" | "delete";
+type Lowercase_ = "get" | "head" | "post" | "put" | "delete";
 
 /** The path and lowercase method the OpenAPI document gives the operation. */
 type RouteOf<K extends OperationId> = {
@@ -63,7 +72,7 @@ export interface OperationMeta {
 type Descriptor<K extends OperationId> = OperationMeta & {
   method: Uppercase<RouteOf<K>[1]>;
   path: RouteOf<K>[0];
-  response: [Success<K>] extends [undefined] ? "empty" : "json";
+  response: ResponseKind<K>;
 };
 
 /**
@@ -121,4 +130,38 @@ export const OPERATIONS = {
     idempotent: true,
     scope: OPERATION_SCOPE.GetRegion,
   },
+  GetView: {
+    method: "GET",
+    path: "/storage/regions/{region}/views/{view}",
+    response: "bytes",
+    idempotent: true,
+    scope: OPERATION_SCOPE.GetView,
+  },
+  GetViewHead: {
+    method: "HEAD",
+    path: "/storage/regions/{region}/views/{view}",
+    response: "empty",
+    idempotent: true,
+    scope: OPERATION_SCOPE.GetViewHead,
+  },
 } as const satisfies { [K in OperationId]: Descriptor<K> };
+
+/**
+ * The operations whose response the typed client reads: those with a JSON body or
+ * none. A binary body and its `HEAD` are fetched by URL ({@link operationUrl}).
+ */
+export type ClientOperationId = {
+  [K in OperationId]: ResponseKind<K> extends "bytes" ? never : RouteOf<K>[1] extends "head" ? never : K;
+}[OperationId];
+
+/**
+ * The URL of an operation answered with bytes, for a link or a download, with the
+ * parameters of its path.
+ */
+export function operationUrl(
+  operation: keyof typeof OPERATIONS,
+  path: Readonly<Record<string, string>> = {},
+): string {
+  const { path: template }: { path: string } = OPERATIONS[operation];
+  return `${API_PREFIX}${expandPath(template, path)}`;
+}
