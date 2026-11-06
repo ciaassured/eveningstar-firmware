@@ -32,7 +32,8 @@
 use core::fmt;
 use core::ops::BitOr;
 
-use crate::md5::Md5;
+use md5::{Digest as _, Md5};
+
 use crate::source::{Source, read_array};
 use crate::{Entry, ReadError, TYPE_APP, TYPE_DATA, Text};
 
@@ -474,7 +475,7 @@ impl Judge {
             return Err(TableError::SecondMd5 { index });
         }
         let [_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, stored @ ..] = *bytes;
-        let computed = self.md5.clone().finalize();
+        let computed: [u8; 16] = self.md5.clone().finalize().into();
         if computed != stored {
             return Err(TableError::Md5 {
                 index,

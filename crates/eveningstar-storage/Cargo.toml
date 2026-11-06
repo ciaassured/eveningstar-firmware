@@ -10,6 +10,7 @@ publish.workspace = true
 embassy-sync.workspace = true
 embedded-storage-async.workspace = true
 eveningstar-esp-formats.workspace = true
+hex-literal.workspace = true
 sha2.workspace = true
 
 [dev-dependencies]

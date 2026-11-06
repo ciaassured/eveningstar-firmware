@@ -22,7 +22,6 @@
 mod future;
 pub mod hash;
 pub mod image;
-mod md5;
 pub mod otadata;
 pub mod pace;
 mod source;
