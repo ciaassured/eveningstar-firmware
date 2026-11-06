@@ -23,6 +23,7 @@ eveningstar-system      = { path = "crates/eveningstar-system" }
 # embassy crates that a host crate uses take `defmt` in each crate that logs
 # through them, so a host crate builds without `defmt` unless its own `defmt`
 # feature is on.
+base64                 = { version = "0.23.1", default-features = false }
 critical-section       = "1.2.0"
 defmt                  = "1.0.1"
 embassy-embedded-hal   = { version = "0.6.0", features = ["defmt"] }
