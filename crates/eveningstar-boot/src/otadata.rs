@@ -91,7 +91,7 @@ use eveningstar_esp_formats::otadata::{
 };
 use eveningstar_storage::nor::{Published, Reader};
 use eveningstar_storage::roles::{self, FoundOtadata, Internal, Role};
-use eveningstar_storage::{Epoch, ReadError, Slot, Span};
+use eveningstar_storage::{Epoch, ReadError, Slot, Span, WriteState};
 
 use crate::error::{LoadError, Unpublished, publish, whole};
 
@@ -438,6 +438,15 @@ impl<'f> Otadata<'f> {
         match &self.reader {
             OtadataReader::Compiled(reader) => reader.span(),
             OtadataReader::Found(reader) => reader.span(),
+        }
+    }
+
+    /// The region's write state now.
+    #[must_use]
+    pub fn write_state(&self) -> WriteState {
+        match &self.reader {
+            OtadataReader::Compiled(reader) => reader.write_state(),
+            OtadataReader::Found(reader) => reader.write_state(),
         }
     }
 

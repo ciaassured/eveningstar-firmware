@@ -671,6 +671,15 @@ pub enum TableView<'r> {
 }
 
 impl TableView<'_> {
+    /// The view's span, relative to the region.
+    #[must_use]
+    pub const fn span(&self) -> Span {
+        match self {
+            Self::Compiled(view) => view.span(),
+            Self::Found(view) => view.span(),
+        }
+    }
+
     /// Length of the view in bytes.
     #[must_use]
     pub fn len(&self) -> u32 {

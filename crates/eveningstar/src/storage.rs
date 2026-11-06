@@ -51,6 +51,7 @@ use eveningstar_storage::{DeviceError, SECTOR_SIZE, Span, WriteState};
 use static_cell::{ConstStaticCell, StaticCell};
 
 use crate::services::reboot::GracefulReboot;
+use crate::services::storage::Storage as StorageService;
 use crate::sha::Sha;
 use crate::wd;
 use eveningstar_system::watchdog::WatchdogHandle;
@@ -73,8 +74,9 @@ const MMU_MAX_PAGE_SIZE: u32 = 0x1_0000;
 
 /// Splits the internal flash, places the content modules in `static`s,
 /// loads and logs what they hold, and spawns the app check task on
-/// `spawner`, hashing with `sha` and supervised by `wd`. Returns the parts of
-/// the OTA mechanism in the boot tier.
+/// `spawner`, hashing with `sha` and supervised by `wd`. Returns the storage
+/// service, its entity tags carrying `boot`, the boot's random value, and the
+/// parts of the OTA mechanism in the boot tier.
 ///
 /// When the running image isn't confirmed `Valid`, it also spawns the
 /// confirmation task ([`confirmation`]), which reboots through `reboot` and
@@ -88,6 +90,10 @@ const MMU_MAX_PAGE_SIZE: u32 = 0x1_0000;
     clippy::large_stack_frames,
     reason = "runs once at boot; the frame holds split's future and the handles on their way to the modules"
 )]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each is a peripheral or handle one part of the storage takes"
+)]
 pub(crate) async fn start(
     spawner: Spawner,
     flash: FLASH<'static>,
@@ -96,7 +102,10 @@ pub(crate) async fn start(
     wd: WatchdogHandle<wd::AppCheck>,
     reboot: GracefulReboot,
     confirmation_wd: WatchdogHandle<wd::Confirmation>,
-) -> Option<OtaParts> {
+    boot: u64,
+) -> (&'static StorageService, Option<OtaParts>) {
+    static SERVICE: StaticCell<StorageService> = StaticCell::new();
+
     static INTERNAL_FLASH: StaticCell<InternalFlash> = StaticCell::new();
     static STATE: ConstStaticCell<StateTable> = ConstStaticCell::new(StateTable::new());
 
@@ -153,7 +162,15 @@ pub(crate) async fn start(
         sha,
         wd
     )));
-    modules.ota
+    let service = SERVICE.init(StorageService::new(
+        report,
+        modules.bootloader,
+        modules.table,
+        modules.otadata,
+        modules.app,
+        boot,
+    ));
+    (service, modules.ota)
 }
 
 /// The content modules, each in its `static`.
