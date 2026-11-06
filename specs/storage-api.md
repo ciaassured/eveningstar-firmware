@@ -403,8 +403,8 @@ The view's bytes, whole or by range.
 - **A graceful reboot waits for a download**, up to the reboot's deadline: a
   download holds the HTTP server's reboot hold (`http` in the reboot status)
   from the lock until its body is sent and acknowledged. While a reboot is
-  pending, a new download is `503`, so downloads can't hold it off. An
-  immediate reboot cuts the body short.
+  pending the reboot service takes no new hold, so a new download is `503`.
+  An immediate reboot cuts the body short.
 
 ### Filenames
 
