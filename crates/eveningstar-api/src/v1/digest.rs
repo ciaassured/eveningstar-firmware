@@ -6,6 +6,9 @@
 
 use core::fmt;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
+
 /// The value of a `Repr-Digest` or `Content-Digest` header holding one
 /// SHA-256 digest: `sha-256=:<digest in base64>:`, a Structured Fields
 /// dictionary with one byte sequence (RFC 9530, section 2).
@@ -14,27 +17,15 @@ pub struct Sha256Field<'a>(pub &'a [u8; 32]);
 
 impl fmt::Display for Sha256Field<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("sha-256=:")?;
-        for chunk in self.0.chunks(3) {
-            let mut quad = [b'='; 4];
-            let bits = chunk.iter().enumerate().fold(0_u32, |bits, (i, &byte)| {
-                bits | (u32::from(byte) << (16 - 8 * i))
-            });
-            // A chunk of n bytes is n + 1 characters, padded to 4 with `=`.
-            for (i, character) in quad.iter_mut().take(chunk.len() + 1).enumerate() {
-                let index = (bits >> (18 - 6 * i)) & 0x3f;
-                *character = BASE64[index as usize];
-            }
-            for character in quad {
-                fmt::Write::write_char(f, char::from(character))?;
-            }
-        }
-        f.write_str(":")
+        // 32 bytes are 44 characters of padded base64 (RFC 4648, section 4).
+        let mut encoded = [0; 44];
+        let len = STANDARD
+            .encode_slice(self.0, &mut encoded)
+            .map_err(|_| fmt::Error)?;
+        let encoded = core::str::from_utf8(&encoded[..len]).map_err(|_| fmt::Error)?;
+        write!(f, "sha-256=:{encoded}:")
     }
 }
-
-/// The alphabet of base64 (RFC 4648, section 4).
-const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 /// Whether a request with the `Want-Content-Digest` header `value` asks for a
 /// `Content-Digest` with SHA-256: the header is a valid Structured Fields
