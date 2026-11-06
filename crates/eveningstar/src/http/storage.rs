@@ -1011,7 +1011,10 @@ impl Source for ViewSource {
     }
 
     fn filename(&self, selection: Selection, digest: &[u8; 32]) -> impl fmt::Display {
-        let label = label_at(self.storage, self.region, self.span);
+        // A label that repeats the region's name, such as `otadata`, adds
+        // nothing to the name.
+        let label = label_at(self.storage, self.region, self.span)
+            .filter(|label| label.0.as_str() != self.region.as_str());
         fmt::from_fn(move |f| {
             write!(f, "{}-{}", self.system.name(), self.region.as_str())?;
             if let Some(label) = &label {
