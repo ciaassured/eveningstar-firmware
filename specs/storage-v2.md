@@ -64,7 +64,7 @@ writes, and those carry over. Four things change:
 - The table is judged exactly as the bootloader judges and reads it: no check
   is stricter than the bootloader's, and the partitions compared with the
   layout are the ones the bootloader loads.
-- Bytes between verified values that nothing reads, such as the table's MD5
+- Bytes between verified values that nothing checks, such as the table's MD5
   entry padding, are served as `0xFF` and reported as sanitized. Unused space
   elsewhere is cut, not exported. In the unverified tier a table with no MD5
   entry publishes no bytes, and entries after the MD5 entry are cut off.
@@ -528,7 +528,7 @@ pub trait PublicRead {
 - A view stores its sanitized spans in a fixed array with a count.
 
 **Sanitized bytes.** A view may serve bytes that sit between verified values,
-which nothing reads or checks, as `0xFF`, the value of erased flash. The view
+which nothing checks, as `0xFF`, the value of erased flash. The view
 records every such span whose flash bytes aren't `0xFF` already, and the API
 reports them, so a download that differs from a dump of the flash says where
 and why; the list reveals only that those bytes weren't erased, never their
@@ -836,8 +836,10 @@ Not built here; the shape leaves room for them.
 boot's random value (64 bits from the hardware TRNG, drawn apart from the
 network stack's seed) and the region's epoch; the value only keeps tags of
 different boots apart, as epochs restart at every boot, is public, and is
-never used as a key or nonce. Only published views have tags, so the epochs
-of sensitive regions never leave the device.
+never used as a key or nonce. The epoch in a tag reveals how many write
+sessions a public region has had this boot, which is accepted. Only
+published views have tags, so the epochs of sensitive regions never leave the
+device.
 
 ## Order of work
 
@@ -893,7 +895,7 @@ table's MD5), without their API and firmware parts.
 - Publication: an app slot publishes its image and not the bytes after it; an
   image without an appended SHA-256 publishes nothing; a found app partition
   over leftover data whose SHA-256 doesn't verify publishes nothing; a
-  table's ignored bytes that aren't `0xFF` are served as `0xFF` and listed as
+  table's unchecked bytes that aren't `0xFF` are served as `0xFF` and listed as
   sanitized, and ones that are `0xFF` aren't listed; several candidate tables
   publish nothing; an otadata entry publishes its 32 bytes when blank or
   pinned down, with a non-erased label sanitized, and nothing when its CRC

@@ -829,7 +829,7 @@ and which carry the epoch they were parsed at, and published views.
   found.
   - Model: the table as the bootloader judges it, the partitions it loads, the
     MD5 entry, the comparison with the layout, how it was located.
-  - Published view: the covered bytes, the ignored ones sanitized.
+  - Published view: the covered bytes, the unchecked ones sanitized.
 - `Otadata` owns the otadata, the compiled layout's or the located table's.
   - Model: both entries, the active one, the boot state.
   - Published view: each entry its parser pins down (compiled only).
@@ -1135,7 +1135,8 @@ bytes mean belongs to the API of the service that owns them.
   read from the flash as it is written can't promise.
 - Downloads are given one at a time, through a static 1 KiB buffer and their
   own watchdog, which is fed per chunk written or hashed and paused between
-  downloads. A request while one is in progress is answered with `503` and
+  downloads. A chunk the client takes longer than 5 s to drain ends the body,
+  so a slow client can't outlast the watchdog. A request while one is in progress is answered with `503` and
   `Retry-After`. An image's `Repr-Digest` is the file SHA-256 its check
   computed; a table or otadata view, and a range a `Want-Content-Digest`
   asks for, are hashed through the same buffer.

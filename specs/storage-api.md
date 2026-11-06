@@ -29,11 +29,11 @@ built later.
   `partition_table`, the app at the booted offset is `app_current`.
 - A region holds named views, the unit of download. A format with
   independent parts has one view per part (the otadata's two entries).
-- A view is the format's canonical form: the bytes it defines, the bytes it
-  ignores inside it served as `0xFF` (sanitized) and listed. Sanitization is
-  kept rather than splitting views around those bytes, so a table or otadata
-  download stays a file the ESP-IDF tools read and that writes back as the
-  bootloader reads it.
+- A view is the format's canonical form: the bytes it defines, the bytes
+  inside it that nothing checks served as `0xFF` (sanitized) and listed.
+  Sanitization is kept rather than splitting views around those bytes, so a
+  table or otadata download stays a file the ESP-IDF tools read and that
+  writes back as the bootloader reads it.
 - A view that isn't published says why, in its `status`.
 - The table comparison is its own endpoint, `/storage/layout`.
 - No digest of the contents in the region document. A download carries the
@@ -362,32 +362,37 @@ The view's bytes, whole or by range.
   `Content-Disposition`. It ignores `Range` and `If-Range` (RFC 9110 §14.2)
   and never carries `Content-Digest`, which on a `HEAD` would describe empty
   content (RFC 9530 Appendix B.2). `If-Match` applies as for `GET`.
-- **A write while an answer streams** fails the read `Stale`, and the device
-  closes the connection before the last byte. A client sees a short body,
-  never torn contents. A write during the digest pass, before the headers,
-  is answered with `409`.
+- **A write while an answer streams** fails the read `Stale`, and the body
+  ends before its length; a chunk the client takes longer than 5 s to drain
+  ends it the same way. A client sees a short body, never torn contents. A
+  write or a failed read during the digest pass, before the headers, is
+  answered with `409`.
 - **Headers**: `Content-Type: application/octet-stream`, `Content-Length`,
-  `Content-Disposition: attachment` with a filename (below), plus the API's
-  usual headers.
+  `Content-Disposition: attachment` with a filename (below), and
+  `Connection: close` on every answer with the body or its headers, plus the
+  API's usual headers. picoserve keeps the connection open until the next
+  request's wait times out (1 s), so a client that ignores the header sees a
+  short body when the connection closes then.
 - **Errors**, checked in this order:
-  1. `404 not_found`: no region or view of that name, a view the region
-     doesn't define, or a publishable region that isn't listed this boot.
-  2. `403 sensitive`: `factory`, `config_current`, `config_alternate`,
+  1. `403 sensitive`: `factory`, `config_current`, `config_alternate`,
      `diag` and `reserved` in every tier, by name, before any reader is used,
-     listed or not, whatever the view's name; and `otadata` when the found
-     otadata is listed.
-  3. `409 unpublished`: the view's status isn't `published`. The region
+     listed or not, whatever the view's name.
+  2. `404 not_found`: no region or view of that name, a view the region
+     doesn't define, or a publishable region that isn't listed this boot.
+  3. `403 sensitive`: `otadata` when the found otadata is listed.
+  4. `409 unpublished`: the view's status isn't `published`. The region
      document says why, and the status can be transient.
-  4. `412 precondition_failed`: `If-Match` doesn't match. Checked from the
+  5. `412 precondition_failed`: `If-Match` doesn't match. Checked from the
      model before the download lock is taken, so a client with a stale tag
      never gets `503`.
-  5. `416 range_not_satisfiable`.
-  6. `503 busy` with `Retry-After`: another download or digest pass holds
-     the lock.
+  6. `416 range_not_satisfiable`.
+  7. `503 busy` with `Retry-After`: another download or digest pass holds
+     the lock. A `HEAD` takes the lock too, so a `HEAD` during a download is
+     `503`, even of an image, whose digest is known.
 - **One download at a time**, through a static 1 KiB buffer and its own
-  watchdog handle (carried over from #69, `bd1c29b`), fed per chunk while
-  the body streams and through `Progress::advance` per KiB during the digest
-  pass (`digest::digest`), which runs with the same pace as a download.
+  watchdog handle, fed per 1 KiB chunk read through that buffer, in the
+  digest pass and while the body streams. The watchdog is paused between
+  downloads.
   Each chunk is at most 1 KiB, so no read holds the flash's critical section
   for long, and the handler yields between chunks. A download holds one HTTP
   worker for its length.
@@ -400,7 +405,7 @@ The view's bytes, whole or by range.
 eveningstar-0kd7-9c6-app_current-ota_0-image-07aa31c2.bin                the whole view
 eveningstar-0kd7-9c6-app_current-ota_0-image-07aa31c2-at0x0-len0x1000.bin a range of it
 eveningstar-0kd7-9c6-bootloader-image-8d02b7e4.bin
-eveningstar-0kd7-9c6-otadata-entry_0-1b9c4f20.bin
+eveningstar-0kd7-9c6-otadata-otadata-entry_0-1b9c4f20.bin
 ```
 
 - `<device-name>` is the system's name (`System.name`). `<label>` is the
@@ -414,8 +419,8 @@ eveningstar-0kd7-9c6-otadata-entry_0-1b9c4f20.bin
 
 ## Changes to `eveningstar-api`
 
-- `Method::Head`, for `GET` endpoints with a `Bytes` body. `HEAD` on the
-  JSON endpoints stays `405`.
+- `ResponseBody::HEAD`, which `Bytes` sets: a `GET` endpoint with a binary
+  body also answers `HEAD`. `HEAD` on the JSON endpoints stays `405`.
 - `If-Match` beside `If-Range` in `range.rs`; `Bytes`'s error set gains
   `PreconditionFailed` (412).
 - `Repr-Digest` and `Content-Digest` formatting, and `Want-Content-Digest`
@@ -462,7 +467,7 @@ eveningstar-0kd7-9c6-otadata-entry_0-1b9c4f20.bin
 
 ## Delivery
 
-A GitHub stack of PRs, each on the one before:
+PRs, #88 and #90 on `main` and #91 to #93 each on the one before:
 
 1. #87 `storage-api-spec`: this spec.
 2. #88 `api-http-conditions` (`eveningstar-api` only): `HEAD`, `If-Match`
