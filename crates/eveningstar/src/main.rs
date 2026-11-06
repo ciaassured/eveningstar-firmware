@@ -100,8 +100,9 @@ mod wd {
         "confirmation",
         crate::storage::CONFIRMATION_WATCHDOG_TIMEOUT,
     );
-    /// An answer feeds it after each chunk written and each KiB hashed; a
-    /// write waits at most the HTTP write timeout, well within this.
+    /// An answer feeds it after each chunk written and each chunk hashed,
+    /// and a chunk's write is cut off after 5 s (`http/api.rs`), well
+    /// within this.
     pub(crate) const DOWNLOAD: TaskWatchdog<Download> =
         TaskWatchdog::new("download", Duration::from_secs(10));
 
@@ -160,7 +161,9 @@ async fn main(spawner: Spawner) {
     let reboot_wd = wd_supervisor.register(wd::REBOOT);
     let app_check_wd = wd_supervisor.register(wd::APP_CHECK);
     let confirmation_wd = wd_supervisor.register(wd::CONFIRMATION);
-    let download_wd = wd_supervisor.register(wd::DOWNLOAD);
+    // Started now, which pauses its watchdog until a download, so it is
+    // supervised whether or not the network comes up.
+    let answers = http::Answers::start(wd_supervisor.register(wd::DOWNLOAD));
 
     esp_rtos::start(timg0.timer0, board.from_cpu_intr0);
     info!("Embassy initialized");
@@ -209,7 +212,7 @@ async fn main(spawner: Spawner) {
                 reboot,
                 reboot_holder: reboot.register_holder(Holder::Http),
                 storage,
-                answers: http::Answers::start(download_wd),
+                answers,
             },
         ),
         Err(err) => error!("Ethernet unavailable: {}", err),

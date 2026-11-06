@@ -152,8 +152,7 @@ impl Endpoint for GetView {
         not it is listed, a view that isn't published with `409`, and a \
         request while another download or digest is in progress with `503`. \
         A region written while the body is sent ends the body before its \
-        length: the client sees a short body, never torn contents. Every \
-        answer closes the connection.",
+        length: the client sees a short body, never torn contents.",
     );
 
     type Params = (RegionName, ViewName);
