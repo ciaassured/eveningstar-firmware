@@ -18,8 +18,10 @@
 //! `&dyn RebootRequest<S>` names neither `R` nor the service.
 //!
 //! A graceful reboot waits until no [`RebootHold`] is alive, so a task can hold
-//! it off while it has work it must finish, such as flushing logged data. The
-//! wait is bounded: after [`DEADLINE`] the chip resets anyway, and if the reboot
+//! it off while it has work it must finish, such as flushing logged data. Once
+//! a graceful reboot is requested, no new hold can be taken: work already
+//! holding it finishes, and new work is refused, so the reboot only comes
+//! closer. The wait is bounded: after [`DEADLINE`] the chip resets anyway, and if the reboot
 //! task itself stops, its task watchdog ([`WATCHDOG`]) resets the chip after
 //! [`WATCHDOG_TIMEOUT`]. An immediate reboot ignores holds and resets the chip
 //! during the request.
@@ -387,15 +389,24 @@ pub struct RebootHolder<R: 'static, H: 'static, const N: usize> {
 }
 
 impl<R, H: Copy, const N: usize> RebootHolder<R, H, N> {
-    /// Holds off a graceful reboot until the returned guard is dropped.
-    pub fn hold(self) -> RebootHold<R, H, N> {
-        self.service
-            .state
-            .lock(|state| state.borrow_mut().holds[self.slot] += 1);
-        RebootHold {
+    /// Holds off a graceful reboot until the returned guard is dropped, or
+    /// `None` once a graceful reboot is requested: a hold taken then would
+    /// put off a reboot already waiting for the work in progress.
+    #[must_use = "the reboot is only held off while the guard is alive"]
+    pub fn try_hold(self) -> Option<RebootHold<R, H, N>> {
+        let held = self.service.state.lock(|state| {
+            let mut state = state.borrow_mut();
+            let held = state.pending.is_none();
+            if held {
+                state.holds[self.slot] += 1;
+            }
+            held
+        });
+        // Built only when held, as dropping the guard releases a hold.
+        held.then(|| RebootHold {
             service: self.service,
             slot: self.slot,
-        }
+        })
     }
 
     /// The holder, as registered.
@@ -413,20 +424,7 @@ impl<R, H: Copy, const N: usize> RebootHolder<R, H, N> {
     }
 }
 
-impl<R, H, const N: usize> RebootHolder<R, H, N>
-where
-    R: Copy + fmt::Debug,
-    H: Copy + Eq + fmt::Debug,
-{
-    /// Whether a graceful reboot has been requested, so a holder can refuse
-    /// to start work that would hold it off.
-    #[must_use]
-    pub fn is_pending(self) -> bool {
-        self.service.is_pending()
-    }
-}
-
-/// Holds off a graceful reboot while alive; see [`RebootHolder::hold`].
+/// Holds off a graceful reboot while alive; see [`RebootHolder::try_hold`].
 #[must_use = "the reboot is only held off while the guard is alive"]
 pub struct RebootHold<R: 'static, H: 'static, const N: usize> {
     service: &'static RebootService<R, H, N>,

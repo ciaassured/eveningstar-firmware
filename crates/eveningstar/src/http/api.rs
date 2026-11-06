@@ -634,19 +634,13 @@ impl Answers {
     }
 
     /// The parts of an answer, unless another answer holds them or a
-    /// graceful reboot is pending, which an answer started now would hold
-    /// off.
+    /// graceful reboot is pending, which takes no new hold.
     #[inline(never)]
     fn begin(&'static self) -> Option<Answer<'static>> {
-        if self.holder.is_pending() {
-            return None;
-        }
+        let hold = self.holder.try_hold()?;
         let parts = self.parts.try_lock().ok()?;
         parts.wd.feed();
-        Some(Answer {
-            parts,
-            _hold: self.holder.hold(),
-        })
+        Some(Answer { parts, _hold: hold })
     }
 }
 

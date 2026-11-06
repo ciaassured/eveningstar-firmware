@@ -66,8 +66,9 @@ pub(super) async fn post_reboot(
     request: v1::RebootRequest,
 ) -> Result<impl Reply<()>, Infallible> {
     // With no other hold, a graceful reboot would reset the chip before the
-    // response is written.
-    let hold = holder.hold();
+    // response is written. None while a graceful reboot is pending already:
+    // the one asked for is on its way, and the answer may be cut short.
+    let hold = holder.try_hold();
     if request.mode == v1::RebootMode::Graceful {
         reboot.graceful(Reason::Api);
     }

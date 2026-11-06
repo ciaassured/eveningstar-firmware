@@ -45,6 +45,13 @@ fn start() -> (Reboot<Reason, Holder, 2>, RebootTask<Reason, Holder, 2>) {
     service.start(&RESET, unsupervised())
 }
 
+/// A hold of `holder`, taken before any graceful reboot is requested.
+fn hold(holder: RebootHolder<Reason, Holder, 2>) -> RebootHold<Reason, Holder, 2> {
+    holder
+        .try_hold()
+        .expect("no graceful reboot is requested yet")
+}
+
 fn holds(reboot: Reboot<Reason, Holder, 2>) -> Vec<(Holder, u16)> {
     reboot.status().holds().collect()
 }
@@ -69,9 +76,9 @@ fn a_graceful_reboot_waits_for_every_hold() {
     let mut task = pin!(task.run());
     assert_eq!(poll_reset(task.as_mut()), None);
 
-    let first = http.hold();
-    let second = http.hold();
-    let flush = log.hold();
+    let first = hold(http);
+    let second = hold(http);
+    let flush = hold(log);
     reboot.graceful(Reason::Api);
     assert_eq!(poll_reset(task.as_mut()), None);
 
@@ -92,7 +99,7 @@ fn a_graceful_reboot_resets_at_its_deadline_while_held() {
     let mut task = pin!(task.run());
     assert_eq!(poll_reset(task.as_mut()), None);
 
-    let _hold = http.hold();
+    let _hold = hold(http);
     reboot.graceful(Reason::LinkDown);
     assert_eq!(poll_reset(task.as_mut()), None);
     advance(DEADLINE - Duration::from_ticks(1));
@@ -106,7 +113,7 @@ fn the_deadline_runs_from_the_request() {
     let _time = time();
     let (reboot, task) = start();
     let http = reboot.register_holder(Holder::Http);
-    let _hold = http.hold();
+    let _hold = hold(http);
     advance(Duration::from_secs(100));
     reboot.graceful(Reason::Api);
 
@@ -128,7 +135,7 @@ fn an_immediate_reboot_ignores_holds() {
     let mut task = pin!(task.run());
     assert_eq!(poll_reset(task.as_mut()), None);
 
-    let _hold = http.hold();
+    let _hold = hold(http);
     reboot.graceful(Reason::LinkDown);
     assert_eq!(poll_reset(task.as_mut()), None);
     assert_eq!(
@@ -150,9 +157,9 @@ fn the_status_names_the_pending_reboot_and_the_live_holds() {
     assert_eq!(reboot.status().pending, None);
     assert_eq!(holds(reboot), []);
 
-    let first = http.hold();
-    let second = http.hold();
-    let flush = log.hold();
+    let first = hold(http);
+    let second = hold(http);
+    let flush = hold(log);
     assert_eq!(holds(reboot), [(Holder::Http, 2), (Holder::Log, 1)]);
     drop(flush);
     drop(first);
@@ -174,14 +181,23 @@ fn the_status_names_the_pending_reboot_and_the_live_holds() {
 }
 
 #[test]
-fn a_holder_sees_a_pending_graceful_reboot() {
+fn no_hold_is_taken_once_a_graceful_reboot_is_requested() {
     let _time = time();
-    let (reboot, _task) = start();
-    let holder = reboot.register_holder(Holder::Http);
-    assert!(!holder.is_pending());
+    let (reboot, task) = start();
+    let http = reboot.register_holder(Holder::Http);
+    let log = reboot.register_holder(Holder::Log);
+    let mut task = pin!(task.run());
+    let flush = hold(log);
 
     reboot.graceful(Reason::Api);
-    assert!(holder.is_pending());
+    assert!(http.try_hold().is_none());
+    assert!(log.try_hold().is_none());
+    assert_eq!(holds(reboot), [(Holder::Log, 1)]);
+
+    // The hold taken before the request is still waited for.
+    assert_eq!(poll_reset(task.as_mut()), None);
+    drop(flush);
+    assert_eq!(poll_reset(task.as_mut()), Some(ResetCause::GracefulReboot));
 }
 
 #[test]
@@ -271,7 +287,7 @@ fn the_reboot_task_feeds_its_watchdog_until_a_graceful_reboot() {
 
     // A held graceful reboot stops the feeds, and resets at its deadline,
     // before the watchdog's timeout.
-    let _hold = http.hold();
+    let _hold = hold(http);
     reboot.graceful(Reason::Api);
     for _ in 0..DEADLINE.as_secs() - 1 {
         assert_eq!(step(Duration::from_secs(1)), None);
