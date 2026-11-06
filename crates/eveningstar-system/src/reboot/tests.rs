@@ -174,6 +174,17 @@ fn the_status_names_the_pending_reboot_and_the_live_holds() {
 }
 
 #[test]
+fn a_holder_sees_a_pending_graceful_reboot() {
+    let _time = time();
+    let (reboot, _task) = start();
+    let holder = reboot.register_holder(Holder::Http);
+    assert!(!holder.is_pending());
+
+    reboot.graceful(Reason::Api);
+    assert!(holder.is_pending());
+}
+
+#[test]
 fn only_the_first_graceful_request_takes_effect() {
     let _time = time();
     let (reboot, _task) = start();

@@ -413,6 +413,19 @@ impl<R, H: Copy, const N: usize> RebootHolder<R, H, N> {
     }
 }
 
+impl<R, H, const N: usize> RebootHolder<R, H, N>
+where
+    R: Copy + fmt::Debug,
+    H: Copy + Eq + fmt::Debug,
+{
+    /// Whether a graceful reboot has been requested, so a holder can refuse
+    /// to start work that would hold it off.
+    #[must_use]
+    pub fn is_pending(self) -> bool {
+        self.service.is_pending()
+    }
+}
+
 /// Holds off a graceful reboot while alive; see [`RebootHolder::hold`].
 #[must_use = "the reboot is only held off while the guard is alive"]
 pub struct RebootHold<R: 'static, H: 'static, const N: usize> {

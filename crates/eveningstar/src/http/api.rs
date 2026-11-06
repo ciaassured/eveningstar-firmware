@@ -31,6 +31,7 @@ use serde::de::DeserializeOwned;
 use static_cell::{ConstStaticCell, StaticCell};
 
 use super::{AppState, storage, system};
+use crate::services::reboot::{RebootHold, RebootHolder};
 use crate::wd;
 
 /// The headers of every answer the API gives, including its errors. The answers
@@ -598,8 +599,12 @@ pub(super) trait Source {
 const CHUNK_LEN: usize = 1024;
 
 /// The binary answers the device gives one at a time: the buffer their
-/// chunks pass through, and the watchdog that sees them progress.
-pub(crate) struct Answers(Mutex<CriticalSectionRawMutex, AnswerParts>);
+/// chunks pass through, the watchdog that sees them progress, and the
+/// holder that holds off a graceful reboot while one is given.
+pub(crate) struct Answers {
+    parts: Mutex<CriticalSectionRawMutex, AnswerParts>,
+    holder: RebootHolder,
+}
 
 struct AnswerParts {
     buffer: &'static mut [u8; CHUNK_LEN],
@@ -608,50 +613,65 @@ struct AnswerParts {
 
 impl Answers {
     /// The answers, in their `static`, supervised by `wd`, which sleeps
-    /// between answers.
+    /// between answers, each holding off a graceful reboot for `holder`.
     ///
     /// # Panics
     ///
     /// If called more than once.
-    pub(crate) fn start(wd: WatchdogHandle<wd::Download>) -> &'static Self {
+    pub(crate) fn start(wd: WatchdogHandle<wd::Download>, holder: RebootHolder) -> &'static Self {
         static ANSWERS: StaticCell<Answers> = StaticCell::new();
         // Built at compile time, so the buffer never passes through the stack.
         static BUFFER: ConstStaticCell<[u8; CHUNK_LEN]> = ConstStaticCell::new([0; CHUNK_LEN]);
 
         wd.pause();
-        ANSWERS.init(Self(Mutex::new(AnswerParts {
-            buffer: BUFFER.take(),
-            wd,
-        })))
+        ANSWERS.init(Self {
+            parts: Mutex::new(AnswerParts {
+                buffer: BUFFER.take(),
+                wd,
+            }),
+            holder,
+        })
     }
 
-    /// The parts of an answer, unless another answer holds them.
+    /// The parts of an answer, unless another answer holds them or a
+    /// graceful reboot is pending, which an answer started now would hold
+    /// off.
     #[inline(never)]
     fn begin(&'static self) -> Option<Answer<'static>> {
-        let parts = self.0.try_lock().ok()?;
+        if self.holder.is_pending() {
+            return None;
+        }
+        let parts = self.parts.try_lock().ok()?;
         parts.wd.feed();
-        Some(Answer(parts))
+        Some(Answer {
+            parts,
+            _hold: self.holder.hold(),
+        })
     }
 }
 
-/// The parts of one binary answer, held while it is given.
-pub(super) struct Answer<'a>(MutexGuard<'a, CriticalSectionRawMutex, AnswerParts>);
+/// The parts of one binary answer, held while it is given, and its hold on
+/// a graceful reboot.
+pub(super) struct Answer<'a> {
+    parts: MutexGuard<'a, CriticalSectionRawMutex, AnswerParts>,
+    _hold: RebootHold,
+}
 
 impl Answer<'_> {
     /// Tells the watchdog the answer is making progress.
     pub(super) fn feed(&self) {
-        self.0.wd.feed();
+        self.parts.wd.feed();
     }
 
     /// The buffer the answer's chunks pass through, [`CHUNK_LEN`] bytes.
     pub(super) fn buffer(&mut self) -> &mut [u8] {
-        &mut self.0.buffer[..]
+        &mut self.parts.buffer[..]
     }
 }
 
 impl Drop for Answer<'_> {
     fn drop(&mut self) {
-        self.0.wd.pause();
+        self.parts.wd.pause();
     }
 }
 
@@ -958,7 +978,7 @@ impl<S: Source> CustomBody for Chunks<'_, S> {
         let end = self.first + self.count;
         while offset < end {
             let len = usize::try_from(end - offset).map_or(CHUNK_LEN, |left| left.min(CHUNK_LEN));
-            let Some(chunk) = self.answer.0.buffer.get_mut(..len) else {
+            let Some(chunk) = self.answer.parts.buffer.get_mut(..len) else {
                 return Ok(());
             };
             if let Err(error) = self.source.read(offset, chunk).await {
@@ -981,7 +1001,9 @@ impl<S: Source> CustomBody for Chunks<'_, S> {
             // hold the executor until its socket buffer fills.
             embassy_futures::yield_now().await;
         }
-        Ok(())
+        // Sent and acknowledged before the answer's hold is released, so a
+        // graceful reboot waiting for it doesn't cut the body's end.
+        writer.flush().await
     }
 }
 
