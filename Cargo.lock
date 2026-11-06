@@ -1098,6 +1098,7 @@ dependencies = [
  "picoserve",
  "rtt-target",
  "serde",
+ "serde-json-core",
  "static_cell",
 ]
 

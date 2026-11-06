@@ -9,6 +9,7 @@
 //! [services]: crate::services
 
 mod api;
+mod storage;
 mod system;
 mod ui;
 
@@ -22,6 +23,7 @@ use picoserve::{Router, Timeouts};
 use static_cell::ConstStaticCell;
 
 use crate::services::reboot::{Reboot, RebootHolder};
+use crate::services::storage::Storage;
 use crate::services::system::System;
 
 const PORT: u16 = 80;
@@ -58,6 +60,13 @@ pub(crate) struct AppState {
     pub(crate) reboot: Reboot,
     /// The HTTP server's reboot holder ([`Holder::Http`](crate::services::reboot::Holder::Http)).
     pub(crate) reboot_holder: RebootHolder,
+    pub(crate) storage: &'static Storage,
+}
+
+impl FromRef<AppState> for &'static Storage {
+    fn from_ref(state: &AppState) -> Self {
+        state.storage
+    }
 }
 
 impl FromRef<AppState> for &'static System {

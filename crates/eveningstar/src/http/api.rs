@@ -4,7 +4,8 @@
 //! [`v1::Error`].
 //!
 //! A [`v1::Bytes`] body is written from a [`Source`], whole or in the part
-//! the request's `Range` asks for, a chunk at a time.
+//! the request's `Range` asks for, a chunk at a time. A [`v1::Json`] body is
+//! written whole, or in parts ([`JsonParts`]) with chunked transfer coding.
 
 use core::convert::Infallible;
 use core::fmt;
@@ -15,6 +16,7 @@ use picoserve::ResponseSent;
 use picoserve::extract::{FromRef, FromRequest, JsonRejection};
 use picoserve::io::{Read, Write};
 use picoserve::request::{Path, ReadAllBodyError, Request, RequestBody, RequestParts};
+use picoserve::response::chunked::{self, ChunkWriter, ChunkedResponse, ChunksWritten};
 use picoserve::response::custom::{CustomBody, CustomResponse};
 use picoserve::response::{
     Body, Connection, HeadersIter, IntoResponse, Json, Response, ResponseWriter, StatusCode,
@@ -23,7 +25,7 @@ use picoserve::routing::{MethodHandlerService, PathRouterService};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use super::{AppState, TCP_BUFFER_LEN, system};
+use super::{AppState, TCP_BUFFER_LEN, storage, system};
 
 /// The headers of every answer the API gives, including its errors. The answers
 /// are data: the browser mustn't read them as anything else, keep them, let
@@ -114,16 +116,77 @@ async fn dispatch<R: Read, W: ResponseWriter<Error = R::Error>>(
             )
             .await
         }
-        // Not served yet.
         Ok(
-            Call::GetStorage(..) | Call::GetLayout(..) | Call::GetRegions(..) | Call::GetRegion(..),
-        ) => {
-            let connection = request.body_connection.finalize().await?;
-            write_error(v1::RouteError::NotFound.code(), connection, writer).await
-        }
+            call @ (Call::GetStorage(..)
+            | Call::GetLayout(..)
+            | Call::GetRegions(..)
+            | Call::GetRegion(..)),
+        ) => dispatch_storage(call, state, request, writer).await,
         Err(error) => {
             let connection = request.body_connection.finalize().await?;
             write_error(error.code(), connection, writer).await
+        }
+    }
+}
+
+/// Serves `call`, a call of a storage operation, with its handler. Apart
+/// from [`dispatch`], so the storage handlers' futures share one place in its
+/// frame.
+#[inline(never)]
+async fn dispatch_storage<R: Read, W: ResponseWriter<Error = R::Error>>(
+    call: Call,
+    state: &AppState,
+    request: Request<'_, R>,
+    writer: W,
+) -> Result<ResponseSent, W::Error> {
+    match call {
+        Call::GetStorage(endpoint, params) => {
+            serve(
+                endpoint,
+                params,
+                state,
+                request,
+                writer,
+                storage::get_storage,
+            )
+            .await
+        }
+        Call::GetLayout(endpoint, params) => {
+            serve(
+                endpoint,
+                params,
+                state,
+                request,
+                writer,
+                storage::get_layout,
+            )
+            .await
+        }
+        Call::GetRegions(endpoint, params) => {
+            serve(
+                endpoint,
+                params,
+                state,
+                request,
+                writer,
+                storage::get_regions,
+            )
+            .await
+        }
+        Call::GetRegion(endpoint, params) => {
+            serve(
+                endpoint,
+                params,
+                state,
+                request,
+                writer,
+                storage::get_region,
+            )
+            .await
+        }
+        _ => {
+            let connection = request.body_connection.finalize().await?;
+            write_error(v1::RouteError::NotFound.code(), connection, writer).await
         }
     }
 }
@@ -266,16 +329,204 @@ impl WriteBody<()> for v1::Empty {
     }
 }
 
-impl<T: Serialize> WriteBody<T> for v1::Json<T> {
+impl<T, V: JsonBody<T>> WriteBody<V> for v1::Json<T> {
     async fn write<R: Read, W: ResponseWriter<Error = R::Error>>(
-        value: T,
+        value: V,
         status: StatusCode,
         closes: bool,
         _request: RequestParts<'_>,
         connection: Connection<'_, R>,
         writer: W,
     ) -> Result<ResponseSent, W::Error> {
-        let response = Json(value)
+        value.write(status, closes, connection, writer).await
+    }
+}
+
+/// A value the body of a [`v1::Json<T>`] response is written from: a `T`,
+/// written whole, or the parts of one ([`JsonParts`]).
+trait JsonBody<T> {
+    async fn write<R: Read, W: ResponseWriter<Error = R::Error>>(
+        self,
+        status: StatusCode,
+        closes: bool,
+        connection: Connection<'_, R>,
+        writer: W,
+    ) -> Result<ResponseSent, W::Error>;
+}
+
+impl<T: Serialize> JsonBody<T> for T {
+    /// Writes the body with its length. picoserve formats `self` once to
+    /// measure it and again for each buffer of the body it sends.
+    async fn write<R: Read, W: ResponseWriter<Error = R::Error>>(
+        self,
+        status: StatusCode,
+        closes: bool,
+        connection: Connection<'_, R>,
+        writer: W,
+    ) -> Result<ResponseSent, W::Error> {
+        let response = Json(self)
+            .into_response()
+            .with_status_code(status)
+            .with_headers(HEADERS)
+            .with_headers(closes.then_some(("Connection", "close")));
+        writer.write_response(connection, response).await
+    }
+}
+
+/// A JSON document written in parts, for one whose lists are too large to
+/// build whole, or whose elements are read from the flash as they are
+/// written: the literal parts between its elements, and each element, built
+/// once and written as one chunk of the body.
+pub(super) trait JsonParts {
+    /// The document the parts make.
+    type Document;
+    /// The elements of the document's lists.
+    type Element: Serialize;
+
+    /// The parts, in order: [`Ended::Incomplete`] for an element that can't
+    /// be built, which ends the body before its JSON does.
+    fn parts(self) -> impl Iterator<Item = Result<Part<Self::Element>, Incomplete>>;
+}
+
+/// A part of a JSON document written in parts.
+pub(super) enum Part<T> {
+    /// JSON between elements, after which the next element is the first of a
+    /// list.
+    Literal(&'static str),
+    /// An element of a list.
+    Element(T),
+}
+
+/// An element of a document written in parts can't be built.
+pub(super) struct Incomplete;
+
+/// Why writing parts stopped before the document's end.
+enum Ended<E> {
+    /// The connection failed.
+    Io(E),
+    /// An element couldn't be built or didn't fit [`PART_LEN`].
+    Incomplete,
+}
+
+/// The longest element of a document written in parts, in bytes of JSON.
+const PART_LEN: usize = 768;
+
+/// Where [`JsonParts`] write: each part a chunk of the body.
+struct PartsWriter<'a, W: Write> {
+    chunks: &'a mut ChunkWriter<W>,
+    /// Whether the next element is the first of its list.
+    first: bool,
+}
+
+impl<W: Write> PartsWriter<'_, W> {
+    /// Writes `part`: an element after a separator unless it is the first
+    /// since the last literal.
+    async fn write<T: Serialize>(&mut self, part: &Part<T>) -> Result<(), Ended<W::Error>> {
+        let (separator, element) = match part {
+            Part::Literal(literal) => {
+                self.first = true;
+                (*literal, None)
+            }
+            Part::Element(element) => {
+                // Checked first: a chunk whose formatting fails is left out
+                // of the body, which would leave a document without the
+                // element.
+                if !fits(element) {
+                    warn!("A part of a JSON body is longer than {} bytes", PART_LEN);
+                    return Err(Ended::Incomplete);
+                }
+                let separator = if self.first {
+                    ""
+                } else {
+                    v1::storage::SEPARATOR
+                };
+                self.first = false;
+                (separator, Some(JsonText(element)))
+            }
+        };
+        let written = match element {
+            Some(element) => {
+                self.chunks
+                    .write_fmt(format_args!("{separator}{element}"))
+                    .await
+            }
+            None => self.chunks.write_chunk(separator.as_bytes()).await,
+        };
+        written.map_err(Ended::Io)
+    }
+}
+
+/// Whether `element`'s JSON is at most [`PART_LEN`] bytes.
+#[inline(never)]
+fn fits<T: Serialize>(element: &T) -> bool {
+    let mut buffer = [0; PART_LEN];
+    serde_json_core::to_slice(element, &mut buffer).is_ok()
+}
+
+/// A value's JSON as text, serialized each time it is formatted: a chunk is
+/// formatted once to measure it and again for each buffer it fills.
+struct JsonText<'a, T>(&'a T);
+
+impl<T: Serialize> fmt::Display for JsonText<'_, T> {
+    #[inline(never)]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut buffer = [0; PART_LEN];
+        let len = serde_json_core::to_slice(self.0, &mut buffer).map_err(|_| fmt::Error)?;
+        let text = buffer.get(..len).ok_or(fmt::Error)?;
+        f.write_str(core::str::from_utf8(text).map_err(|_| fmt::Error)?)
+    }
+}
+
+/// The parts `P` write, as a chunked body.
+struct Parted<P>(P);
+
+impl<P: JsonParts> chunked::Chunks for Parted<P> {
+    fn content_type(&self) -> &'static str {
+        "application/json"
+    }
+
+    async fn write_chunks<W: Write>(
+        self,
+        mut chunks: ChunkWriter<W>,
+    ) -> Result<ChunksWritten, W::Error> {
+        let mut out = PartsWriter {
+            chunks: &mut chunks,
+            first: true,
+        };
+        for part in self.0.parts() {
+            let written = match part {
+                Ok(part) => out.write(&part).await,
+                Err(Incomplete) => Err(Ended::Incomplete),
+            };
+            match written {
+                Ok(()) => {}
+                Err(Ended::Io(error)) => return Err(error),
+                // The body ends with the document unfinished, which a client
+                // can't parse, and asks again for.
+                Err(Ended::Incomplete) => {
+                    warn!("A JSON body ended before its document did");
+                    break;
+                }
+            }
+        }
+        chunks.finalize().await
+    }
+}
+
+/// The body of a document written in parts: a type that is the parts of one
+/// document, so it is never also a document written whole.
+pub(super) struct Parts<P>(pub(super) P);
+
+impl<T, P: JsonParts<Document = T>> JsonBody<T> for Parts<P> {
+    /// Writes the body in parts, with chunked transfer coding.
+    async fn write<R: Read, W: ResponseWriter<Error = R::Error>>(
+        self,
+        status: StatusCode,
+        closes: bool,
+        connection: Connection<'_, R>,
+        writer: W,
+    ) -> Result<ResponseSent, W::Error> {
+        let response = ChunkedResponse::new(Parted(self.0))
             .into_response()
             .with_status_code(status)
             .with_headers(HEADERS)

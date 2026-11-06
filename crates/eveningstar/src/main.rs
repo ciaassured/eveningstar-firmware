@@ -166,7 +166,10 @@ async fn main(spawner: Spawner) {
     )));
 
     let sha = sha::start(board.sha);
-    let ota = storage::start(
+    // Drawn apart from the network stack's seed: it only keeps entity tags
+    // of different boots apart, and is public.
+    let boot = random_seed(board.rng.reborrow(), board.adc1.reborrow());
+    let (storage, ota) = storage::start(
         spawner,
         board.internal_flash,
         board.flash_cache,
@@ -174,6 +177,7 @@ async fn main(spawner: Spawner) {
         app_check_wd,
         reboot.graceful_only(),
         confirmation_wd,
+        boot,
     )
     .await;
 
@@ -196,6 +200,7 @@ async fn main(spawner: Spawner) {
                 system,
                 reboot,
                 reboot_holder: reboot.register_holder(Holder::Http),
+                storage,
             },
         ),
         Err(err) => error!("Ethernet unavailable: {}", err),
