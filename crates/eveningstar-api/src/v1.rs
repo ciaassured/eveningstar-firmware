@@ -393,7 +393,8 @@ pub struct RebootHold {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum RebootHolder {
-    /// The HTTP server, while it answers a reboot request.
+    /// The HTTP server, while it answers a reboot request or serves a
+    /// download.
     Http,
     /// A holder this version of the crate does not know.
     #[serde(other)]

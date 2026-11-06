@@ -161,14 +161,16 @@ async fn main(spawner: Spawner) {
     let reboot_wd = wd_supervisor.register(wd::REBOOT);
     let app_check_wd = wd_supervisor.register(wd::APP_CHECK);
     let confirmation_wd = wd_supervisor.register(wd::CONFIRMATION);
-    // Started now, which pauses its watchdog until a download, so it is
-    // supervised whether or not the network comes up.
-    let answers = http::Answers::start(wd_supervisor.register(wd::DOWNLOAD));
+    let download_wd = wd_supervisor.register(wd::DOWNLOAD);
 
     esp_rtos::start(timg0.timer0, board.from_cpu_intr0);
     info!("Embassy initialized");
     spawner.spawn(defmt::unwrap!(watchdog::supervise(wd_supervisor)));
     let reboot = reboot::start(spawner, reset, reboot_wd);
+    let http_holder = reboot.register_holder(Holder::Http);
+    // Started now, which pauses its watchdog until a download, so it is
+    // supervised whether or not the network comes up.
+    let answers = http::Answers::start(download_wd, http_holder);
 
     spawner.spawn(defmt::unwrap!(blink(
         board.status_led,
@@ -210,7 +212,7 @@ async fn main(spawner: Spawner) {
             http::AppState {
                 system,
                 reboot,
-                reboot_holder: reboot.register_holder(Holder::Http),
+                reboot_holder: http_holder,
                 storage,
                 answers,
             },

@@ -25,7 +25,8 @@ pub(crate) enum Reason {
 /// What holds off a graceful reboot, as the [`Status`](reboot::Status) lists it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Holder {
-    /// The HTTP server, while it answers a reboot request.
+    /// The HTTP server, while it answers a reboot request or serves a
+    /// download.
     Http,
 }
 
@@ -45,6 +46,9 @@ pub(crate) type GracefulReboot = reboot::GracefulReboot<Reason, Holder, HOLDERS>
 
 /// Permission to hold off graceful reboots only, for one [`Holder`].
 pub(crate) type RebootHolder = reboot::RebootHolder<Reason, Holder, HOLDERS>;
+
+/// A hold off graceful reboots, alive until dropped.
+pub(crate) type RebootHold = reboot::RebootHold<Reason, Holder, HOLDERS>;
 
 static SERVICE: RebootService<Reason, Holder, HOLDERS> = RebootService::new();
 
