@@ -22,10 +22,10 @@ use core::pin::pin;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::task::{Context, Poll, Waker};
 
+use md5::Md5;
 use sha2::{Digest as _, Sha256};
 
 use crate::Entry;
-use crate::md5::Md5;
 use crate::table::ENTRY_LEN;
 
 /// Offset of the board's partition table.

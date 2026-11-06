@@ -41,7 +41,9 @@ esp-hal                = { version = "~1.2.2", features = ["defmt", "esp32c6", "
 esp-rtos               = { version = "0.4.0", features = ["defmt", "embassy", "esp32c6"] }
 esp-storage            = { version = "0.10.0", features = ["defmt", "esp32c6"] }
 heapless               = "0.9.3"
+hex-literal            = "1.1.0"
 jsonschema             = { version = "0.59.0", default-features = false }
+md-5                   = { version = "0.11.0", default-features = false }
 picoserve              = { version = "0.20.1", features = ["defmt", "embassy", "json"] }
 rtt-target             = { version = "0.6.2", features = ["defmt"] }
 schemars               = { version = "1.2.3", default-features = false, features = ["derive"] }

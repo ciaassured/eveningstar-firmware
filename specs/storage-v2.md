@@ -215,7 +215,7 @@ eveningstar-system        reboot service, reboot holds, watchdog supervisor
 - **`eveningstar-esp-formats`** reads the ESP formats from any `Source` and
   touches no flash. The otadata planners stay here: they are pure, and they
   describe ESP-IDF's rules. It takes `image.rs`, `table.rs`, `otadata.rs`,
-  `source.rs`, `text.rs`, `md5.rs`, `hash.rs` and `pace.rs` with their tests.
+  `source.rs`, `text.rs`, `hash.rs` and `pace.rs` with their tests.
   `ReadError` gains `Stale`, so a parser reading through a snapshot can tell
   a region written under it from a failed device read.
 - **`eveningstar-storage`** depends on the formats crate for the chain only:
