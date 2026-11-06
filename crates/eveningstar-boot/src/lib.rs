@@ -19,7 +19,7 @@
 //!   - Model: the table as the bootloader judges it, its partitions, MD5 entry
 //!     and comparison with the layout, how it was located.
 //!   - Published: the entries, the MD5 entry and the end entry a check covers,
-//!     with the bytes the bootloader ignores sanitized.
+//!     with the bytes nothing checks sanitized.
 //! - [`Otadata`] owns the otadata.
 //!   - Model: both entries, the active one, the boot state.
 //!   - Published: each entry of the compiled otadata the parser pins down,
