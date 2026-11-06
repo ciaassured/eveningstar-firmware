@@ -114,6 +114,13 @@ async fn dispatch<R: Read, W: ResponseWriter<Error = R::Error>>(
             )
             .await
         }
+        // Not served yet.
+        Ok(
+            Call::GetStorage(..) | Call::GetLayout(..) | Call::GetRegions(..) | Call::GetRegion(..),
+        ) => {
+            let connection = request.body_connection.finalize().await?;
+            write_error(v1::RouteError::NotFound.code(), connection, writer).await
+        }
         Err(error) => {
             let connection = request.body_connection.finalize().await?;
             write_error(error.code(), connection, writer).await

@@ -20,6 +20,21 @@ export type RequestBody<K extends OperationId> = operations[K] extends {
   ? Body
   : never;
 
+/** The parameters of the operation's path, by name; `never` if it has none. */
+export type PathParams<K extends OperationId> = NonNullable<operations[K]["parameters"]["path"]>;
+
+/**
+ * `template`, a path of the API document, with each `{name}` segment replaced by
+ * `params[name]`, percent-encoded.
+ */
+export function expandPath(template: string, params: Readonly<Record<string, string>> = {}): string {
+  return template.replace(/\{([^}]+)\}/g, (_match, name: string) => {
+    const value = params[name];
+    if (value === undefined) throw new Error(`missing path parameter ${name}`);
+    return encodeURIComponent(value);
+  });
+}
+
 type Lowercase_ = "get" | "post" | "put" | "delete";
 
 /** The path and lowercase method the OpenAPI document gives the operation. */
@@ -77,5 +92,33 @@ export const OPERATIONS = {
     response: "empty",
     idempotent: false,
     scope: OPERATION_SCOPE.Reboot,
+  },
+  GetStorage: {
+    method: "GET",
+    path: "/storage",
+    response: "json",
+    idempotent: true,
+    scope: OPERATION_SCOPE.GetStorage,
+  },
+  GetLayout: {
+    method: "GET",
+    path: "/storage/layout",
+    response: "json",
+    idempotent: true,
+    scope: OPERATION_SCOPE.GetLayout,
+  },
+  GetRegions: {
+    method: "GET",
+    path: "/storage/regions",
+    response: "json",
+    idempotent: true,
+    scope: OPERATION_SCOPE.GetRegions,
+  },
+  GetRegion: {
+    method: "GET",
+    path: "/storage/regions/{region}",
+    response: "json",
+    idempotent: true,
+    scope: OPERATION_SCOPE.GetRegion,
   },
 } as const satisfies { [K in OperationId]: Descriptor<K> };
