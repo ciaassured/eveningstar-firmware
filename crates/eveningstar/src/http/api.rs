@@ -13,6 +13,7 @@ use core::fmt;
 use defmt::{Debug2Format, warn};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::{Mutex, MutexGuard};
+use embassy_time::{Duration, with_timeout};
 use eveningstar_api::v1::{self, Call, Endpoint, Errors, Operation};
 use eveningstar_system::watchdog::WatchdogHandle;
 use picoserve::ResponseSent;
@@ -597,6 +598,10 @@ pub(super) trait Source {
 /// the [`Answers`]' buffer.
 const CHUNK_LEN: usize = 1024;
 
+/// The longest a chunk of a binary body may take to be written before the
+/// body is cut short: half the `download` watchdog's timeout.
+const CHUNK_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// The binary answers the device gives one at a time: the buffer their
 /// chunks pass through, and the watchdog that sees them progress.
 pub(crate) struct Answers(Mutex<CriticalSectionRawMutex, AnswerParts>);
@@ -673,6 +678,8 @@ impl<S: Source> WriteBody<S> for v1::Bytes {
             Err(refusal) => return write_refusal(&source, refusal, connection, writer).await,
         };
         let Some(digests) = digests(&source, &mut answer).await else {
+            // Released first, so a request meanwhile isn't told it is busy.
+            drop(answer);
             let refusal = Refusal(v1::ErrorCode::Unpublished);
             return write_refusal(&source, refusal, connection, writer).await;
         };
@@ -691,6 +698,7 @@ async fn respond<S: Source, R: Read, W: ResponseWriter<Error = R::Error>>(
 ) -> Result<ResponseSent, W::Error> {
     // `prepare` found the tag.
     let Some(tag) = source.tag() else {
+        drop(answer);
         return write_refusal(
             source,
             Refusal(v1::ErrorCode::Unpublished),
@@ -715,8 +723,9 @@ async fn respond<S: Source, R: Read, W: ResponseWriter<Error = R::Error>>(
         )),
         content_range.map(|range| ("Content-Range", Header::Range(range))),
     ];
-    // Custom, so the connection closes once the body is written: a body cut
-    // short leaves nothing else to read on it.
+    // Custom, so the body is written as it is read. A body cut short ends
+    // before its length, and the client sees a short body once the
+    // connection closes.
     let response = CustomResponse::build(answer.status)
         .with_headers(headers)
         .with_headers(HEADERS)
@@ -966,7 +975,17 @@ impl<S: Source> CustomBody for Chunks<'_, S> {
                 );
                 return Ok(());
             }
-            writer.write_all(chunk).await?;
+            // Bounded, so a client that drains the connection slowly can't
+            // hold a chunk past the watchdog's timeout.
+            let Ok(written) = with_timeout(CHUNK_TIMEOUT, writer.write_all(chunk)).await else {
+                warn!(
+                    "Binary response body cut short after {} of {} bytes: the client is too slow",
+                    offset - self.first,
+                    self.count
+                );
+                return Ok(());
+            };
+            written?;
             offset += chunk.len() as u64;
             self.answer.feed();
             // A client reading as fast as the network allows would otherwise
