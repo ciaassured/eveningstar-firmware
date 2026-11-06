@@ -363,20 +363,23 @@ The view's bytes, whole or by range.
   and never carries `Content-Digest`, which on a `HEAD` would describe empty
   content (RFC 9530 Appendix B.2). `If-Match` applies as for `GET`.
 - **A write while an answer streams** fails the read `Stale`, and the body
-  ends before its length; a chunk the client takes longer than 5 s to drain
-  ends it the same way. A client sees a short body, never torn contents. A
+  ends before its length. A client sees a short body, never torn contents. A
   write or a failed read during the digest pass, before the headers, is
   answered with `409`.
+- **A slow client**: a write the client takes longer than 5 s (the server's
+  write timeout, half the download watchdog's) to drain fails, and the
+  server aborts the connection, so the client sees a reset before the body's
+  end.
 - **Headers**: `Content-Type: application/octet-stream`, `Content-Length`,
   `Content-Disposition: attachment` with a filename (below), and
   `Connection: close` on every answer with the body or its headers, plus the
-  API's usual headers. picoserve keeps the connection open until the next
-  request's wait times out (1 s), so a client that ignores the header sees a
-  short body when the connection closes then.
+  API's usual headers. The server closes the connection once the answer is
+  written.
 - **Errors**, checked in this order:
   1. `403 sensitive`: `factory`, `config_current`, `config_alternate`,
      `diag` and `reserved` in every tier, by name, before any reader is used,
-     listed or not, whatever the view's name.
+     listed or not, whichever of the four view names is asked for. A name
+     that isn't a view's is `404`, as the path doesn't parse.
   2. `404 not_found`: no region or view of that name, a view the region
      doesn't define, or a publishable region that isn't listed this boot.
   3. `403 sensitive`: `otadata` when the found otadata is listed.
@@ -387,9 +390,9 @@ The view's bytes, whole or by range.
      never gets `503`.
   6. `416 range_not_satisfiable`.
   7. `503 busy` with `Retry-After`: another download or digest pass holds
-     the lock. A `HEAD` takes the lock too, so a `HEAD` during a download is
-     `503`, even of an image, whose digest is known; the client asks again
-     later.
+     the lock, or a graceful reboot is pending. A `HEAD` takes the lock too,
+     so a `HEAD` during a download is `503`, even of an image, whose digest
+     is known; the client asks again later.
 - **One download at a time**, through a static 1 KiB buffer and its own
   watchdog handle, fed per 1 KiB chunk read through that buffer, in the
   digest pass and while the body streams. The watchdog is paused between
@@ -397,6 +400,11 @@ The view's bytes, whole or by range.
   Each chunk is at most 1 KiB, so no read holds the flash's critical section
   for long, and the handler yields between chunks. A download holds one HTTP
   worker for its length.
+- **A graceful reboot waits for a download**, up to the reboot's deadline: a
+  download holds the HTTP server's reboot hold (`http` in the reboot status)
+  from the lock until its body is sent and acknowledged. While a reboot is
+  pending, a new download is `503`, so downloads can't hold it off. An
+  immediate reboot cuts the body short.
 
 ### Filenames
 
