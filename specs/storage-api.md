@@ -388,7 +388,8 @@ The view's bytes, whole or by range.
   6. `416 range_not_satisfiable`.
   7. `503 busy` with `Retry-After`: another download or digest pass holds
      the lock. A `HEAD` takes the lock too, so a `HEAD` during a download is
-     `503`, even of an image, whose digest is known.
+     `503`, even of an image, whose digest is known; the client asks again
+     later.
 - **One download at a time**, through a static 1 KiB buffer and its own
   watchdog handle, fed per 1 KiB chunk read through that buffer, in the
   digest pass and while the body streams. The watchdog is paused between
@@ -405,11 +406,12 @@ The view's bytes, whole or by range.
 eveningstar-0kd7-9c6-app_current-ota_0-image-07aa31c2.bin                the whole view
 eveningstar-0kd7-9c6-app_current-ota_0-image-07aa31c2-at0x0-len0x1000.bin a range of it
 eveningstar-0kd7-9c6-bootloader-image-8d02b7e4.bin
-eveningstar-0kd7-9c6-otadata-otadata-entry_0-1b9c4f20.bin
+eveningstar-0kd7-9c6-otadata-entry_0-1b9c4f20.bin
 ```
 
 - `<device-name>` is the system's name (`System.name`). `<label>` is the
-  partition's label, when it has a covered one. Characters outside
+  partition's label, when it has a covered one that isn't the region's name
+  (the otadata's `otadata` adds nothing). Characters outside
   `[A-Za-z0-9._-]` become `_`, as the `Filename` writer does.
 - `<hash>` is the first 8 hex digits of the view's SHA-256 (the
   `Repr-Digest`), so `sha256sum` of a whole download starts with it. A range
