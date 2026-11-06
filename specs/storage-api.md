@@ -180,7 +180,8 @@ The table the chain located, the compiled layout, and their comparison.
   `valid`.
 - `expected` is the compiled layout (`EXPECTED`), each partition with its
   comparison by label: `matches`, `differs` with the fields, or `missing`
-  (`fields` empty for the last).
+  (`fields` empty for the last). Unless the table is `valid`, nothing is
+  compared, and every partition is `missing`.
 - `found` is every row the bootloader loads from the located table, in
   table order, so a row's position in the array is its entry's index in the
   table (`Rows` yields every entry from 0, the MD5 entry included when it is
@@ -253,8 +254,10 @@ document in offset order.
     are the located table's, which in these tiers equal the compiled
     layout's.
   - In the unverified tier the regions are the ones the chain located:
-    `bootloader`, and `partition_table`, `app_current` and `otadata` when it
-    made their `Found*` readers. The located table's other partitions are in
+    `bootloader`, `partition_table` when the firmware holds a reader of the
+    located table (the compiled sector, which a known bootloader reads, or
+    the `FoundTable`), and `app_current` and `otadata` when it made their
+    `Found*` readers. The located table's other partitions are in
     `/storage/layout` only. A table located without a reader isn't listed
     (`/storage/layout` reports it as `unread`), nor is a found app or otadata
     over a span shared with a sensitive partition of the layout.
@@ -296,8 +299,9 @@ region lists the views its format defines, published or not, in this order.
 - `writing`: a write session is open on the region.
 - `checking`: the region is stable, but no model exists at its current epoch
   yet. In practice the app slots, whose check hashes the image in the
-  background. The bootloader's model is loaded at boot; when that load
-  failed, the handler loads it on request.
+  background. The bootloader's model is loaded at boot and stays: its region
+  has no writer, so the load can't fail (`Busy` and `Stale` need one), and a
+  flash read error is kept in the model as `unreadable`.
 - `unverified`: the contents don't pass the format's check: no image or an
   image that doesn't verify, a table whose check covers nothing (no MD5
   entry below the layout tier), an otadata entry whose CRC doesn't match or
@@ -358,9 +362,10 @@ The view's bytes, whole or by range.
   `Content-Disposition`. It ignores `Range` and `If-Range` (RFC 9110 §14.2)
   and never carries `Content-Digest`, which on a `HEAD` would describe empty
   content (RFC 9530 Appendix B.2). `If-Match` applies as for `GET`.
-- **A write while an answer streams** (or between the digest's pass and the
-  body's) fails the read `Stale`, and the device closes the connection
-  before the last byte. A client sees a short body, never torn contents.
+- **A write while an answer streams** fails the read `Stale`, and the device
+  closes the connection before the last byte. A client sees a short body,
+  never torn contents. A write during the digest pass, before the headers,
+  is answered with `409`.
 - **Headers**: `Content-Type: application/octet-stream`, `Content-Length`,
   `Content-Disposition: attachment` with a filename (below), plus the API's
   usual headers.
@@ -369,7 +374,8 @@ The view's bytes, whole or by range.
      doesn't define, or a publishable region that isn't listed this boot.
   2. `403 sensitive`: `factory`, `config_current`, `config_alternate`,
      `diag` and `reserved` in every tier, by name, before any reader is used,
-     listed or not; and `otadata` when the found otadata is listed.
+     listed or not, whatever the view's name; and `otadata` when the found
+     otadata is listed.
   3. `409 unpublished`: the view's status isn't `published`. The region
      document says why, and the status can be transient.
   4. `412 precondition_failed`: `If-Match` doesn't match. Checked from the
@@ -417,7 +423,7 @@ eveningstar-0kd7-9c6-otadata-entry_0-1b9c4f20.bin
 - Error codes `sensitive` (403), `unpublished` (409),
   `precondition_failed` (412), `busy` (503), and `Retry-After` on `busy`.
 - `{region}` and `{view}` as closed-enum path parameters; an unknown value
-  doesn't parse, so it is a 404 (`PathParam::is_known`, as in #69).
+  doesn't parse, so it is a 404. `GetView` takes the pair.
 - The OpenAPI document: the `HEAD` operations, the `Range`, `If-Range`,
   `If-Match` and `Want-Content-Digest` header parameters, the `206`, `412`
   and `416` answers, and the digest and `Retry-After` headers.
@@ -430,45 +436,48 @@ eveningstar-0kd7-9c6-otadata-entry_0-1b9c4f20.bin
   API's. The body reads through the content modules' views only, so no raw
   reader or snapshot reaches a response.
 - The documents are bounded: the region names, the table sector's 95
-  entries, `MAX_SANITIZED`. `/storage/regions` and `/storage/layout`
-  serialize one element at a time (`Serialize` over an iterator inside
-  `serialize_seq`), building each region document or row as it is written,
-  so only one is on the stack; `found` reads each row from the flash as it
-  is written. Their size is measured against the 1024-byte stack-frame lint
-  during implementation; the fallback is #69's static, `Shared<T>`.
+  entries, `MAX_SANITIZED`. `/storage/regions` and `/storage/layout` are
+  written in parts with chunked transfer coding (`JsonParts` in
+  `http/api.rs`): the literal JSON between their elements (`Regions::START`
+  and the other constants of the API crate), and each element, built when it
+  is written and serialized when its chunk is formatted. picoserve formats a
+  JSON body once to measure it and again for each TCP buffer it fills, and
+  needs the same output each time, which a list read from the flash as it is
+  written can't promise. Each element is checked to fit 768 bytes before its
+  chunk is written, as a chunk whose formatting fails is left out silently.
 - A streamed document is sent after its `200` and headers, so a flash read
   that fails partway through `found` (a device error; the table has no
   writer, so it can't go stale) can't change the status. The device then
-  closes the connection before the JSON ends, and the client sees a body
-  that doesn't parse and retries the request. A region document doesn't
-  fail this way: a region written while it is built reports `writing` or
-  `checking`. The web UI's client retries a
+  ends the chunked body before the JSON does, and the client sees a body
+  that doesn't parse and retries the request. The connection stays usable.
+  A region document doesn't fail this way: a region written while it is
+  built reports `writing` or `checking`. The web UI's client retries a
   document request whose body doesn't parse.
+- Clippy's stack-frame limit (1024 bytes) sums every MIR temporary and
+  awaited future it can size, without overlap. The documents and views are
+  therefore built by synchronous, non-inlined functions; each streamed
+  document has one await site; the storage routes are dispatched through one
+  future; and the storage crate's `PublicView` (`Published::erase`) gives
+  one read and digest path for every view.
 
 ## Delivery
 
 A GitHub stack of PRs, each on the one before:
 
-1. `storage-api-spec`: this spec.
-2. `api-http-conditions` (`eveningstar-api` only): `HEAD`, `If-Match` and
-   `412`, the digest headers and `Want-Content-Digest`, the new error codes,
-   `Retry-After`, and their OpenAPI description. Tested on the host.
-3. `storage-api-documents`: `/storage`, `/storage/layout` and the region
-   documents: the API types, the storage service and handlers, and the
-   regenerated web types.
-4. `storage-api-views`: the view downloads: the endpoint, the lock, buffer
-   and watchdog, the digests and the filenames.
-5. `storage-api-docs`: `docs/architecture.md` and the pointer in
-   `specs/storage-v2.md`.
+1. #87 `storage-api-spec`: this spec.
+2. #88 `api-http-conditions` (`eveningstar-api` only): `HEAD`, `If-Match`
+   and `412`, the digest headers and `Want-Content-Digest`, the new error
+   codes, `Retry-After`, and their OpenAPI description.
+3. #90 `storage-api-types`: the documents' API types, their parts, and the
+   web client's path parameters.
+4. #91 `storage-api-documents`: the storage service and the documents'
+   handlers.
+5. #92 `storage-api-views`: the view downloads, the lock, buffer and
+   watchdog, the digests and the filenames.
+6. `storage-api-docs`: `docs/architecture.md`, the pointer in
+   `specs/storage-v2.md`, and this spec brought in line with what was built.
 
 The firmware PRs are tested on the board in every tier the bench can reach.
-
-## Follow-up in other documents
-
-- `specs/storage-v2.md`, "What the API gets": replace the outline with a
-  pointer to this spec (it still has the epoch and parsed model in the
-  region document, and the transport digest endpoint).
-- `docs/architecture.md`: describe the storage API when it is built.
 
 ## Later APIs
 

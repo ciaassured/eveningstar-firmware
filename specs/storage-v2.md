@@ -571,8 +571,11 @@ enforced by the storage crate, the third by the content module.
      digest, and the end entry's 28 bytes after its magic, type and subtype.
      In the unverified tier:
      - entries between the MD5 entry and the end entry, which the bootloader
-       accepts but the MD5 doesn't cover, end the view after the MD5 entry,
-       whose padding is sanitized;
+       accepts but the MD5 doesn't cover, end the view after the MD5 entry.
+       The bootloader then reads the MD5 entry as a partition, its 14 bytes
+       as the type, subtype, offset, size and the label's first bytes, so
+       they aren't ignored but uncovered: nothing checks them, and they are
+       sanitized for that reason;
      - a table with no MD5 entry publishes no bytes and no labels: its offset
        and each partition's type, subtype, offset, size and flags are still
        reported, as they say where regions lie, not what they hold;
@@ -826,30 +829,15 @@ Not built here; the shape leaves room for them.
   of the user button as proof of physical presence is an option to decide
   then.
 
-## What the API gets (later, not part of this work)
+## What the API gets
 
-The storage view's PRs (#65–#69) are rebuilt on this after the storage
-crates land. In outline:
-
-- Each region lists its storage span and, separately, its content: the
-  published view's offset, length, epoch and sanitized spans, and the parsed
-  model.
-- A download serves a published view, whole or by range, with an entity tag
-  from the boot's random value, the region and the epoch. `SlotOf` and
-  whole-region downloads go.
-- The entity tag is never derived from the contents or a digest of them. The
-  boot's random value (64 bits from the hardware TRNG, drawn apart from the
-  network stack's seed) only keeps tags of different boots apart, as epochs
-  restart at every boot; it is public, and is never used as a key or nonce.
-  The epoch in a tag reveals how many write sessions a public region has had
-  this boot, which is accepted. Only published views have tags, so the epochs
-  of sensitive regions never leave the device.
-- A transport digest endpoint hashes any range of a published view.
-- `/storage/internal/table` gives the expected and found partitions, the table
-  source and the other candidates' offsets; the positional `layout` field per
-  region goes.
-- The otadata is served as parsed fields, and each entry the parser pins down
-  as its 32 raw bytes.
+`specs/storage-api.md` designs the storage API built on this, and
+`docs/architecture.md` ("The storage API") records it. Entity tags carry the
+boot's random value (64 bits from the hardware TRNG, drawn apart from the
+network stack's seed) and the region's epoch; the value only keeps tags of
+different boots apart, as epochs restart at every boot, is public, and is
+never used as a key or nonce. Only published views have tags, so the epochs
+of sensitive regions never leave the device.
 
 ## Order of work
 

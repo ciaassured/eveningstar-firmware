@@ -21,12 +21,15 @@
 //!   still given, as they say where regions lie, not what they hold.
 //!
 //! The view is the entries, the MD5 entry and the end entry, as the
-//! bootloader read them. The bytes the bootloader ignores between those it
-//! reads, the MD5 entry's 14 bytes between its magic and its digest and the
+//! bootloader read them. The bytes nothing checks between those that are
+//! checked, the MD5 entry's 14 bytes between its magic and its digest and the
 //! end entry's 28 bytes after its magic, type and subtype, are served as
 //! `0xFF`, and listed as sanitized when the flash holds something else there.
 //! Entries between the MD5 entry and the end entry, which the bootloader
-//! accepts but the MD5 doesn't cover, end the view after the MD5 entry. When
+//! accepts but the MD5 doesn't cover, end the view after the MD5 entry. The
+//! bootloader then reads the MD5 entry as a partition, its 14 bytes as the
+//! type, subtype, offset, size and the label's first bytes: uncovered rather
+//! than ignored, and sanitized for that. When
 //! the search finds several tables, none is located: their offsets are
 //! given, and neither their entries nor their bytes.
 //!
