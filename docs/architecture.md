@@ -166,6 +166,14 @@ Handlers live in one module per group of related operations, such as
 endpoint's errors. A reply that must act once the response is written, like a
 reboot, returns `Closing`.
 
+A `Json` body is written whole, with its length, or in parts (`JsonParts`) with
+chunked transfer coding, for a document whose lists are read from the flash as
+they are written. A `Bytes` body is written from a `Source` a chunk at a time:
+the writer checks `If-Match`, the range and the lock in that order, sends the
+`Repr-Digest` and, on request, a `Content-Digest`, answers `HEAD` with the
+headers alone, and closes the connection once the body is written or a read of
+it fails.
+
 Only `http.rs` and `http/api.rs` use picoserve. Replacing the HTTP server means
 rewriting those two files. The handlers and the API crate stay as they are.
 
@@ -775,9 +783,13 @@ secrets left elsewhere by another layout, which is why the allow rules are the
 ones relied on.
 
 **Sanitized bytes.** A view may serve bytes that lie between verified values,
-which nothing reads or checks, as `0xFF`, the value of erased flash: in the
-table, the MD5 entry's 14 bytes between its magic and its digest, and the end
-entry's 28 bytes after its magic, type and subtype. `publish` reads those spans
+which nothing checks, as `0xFF`, the value of erased flash: in the table, the
+MD5 entry's 14 bytes between its magic and its digest, and the end entry's 28
+bytes after its magic, type and subtype. The bootloader ignores them, except
+in a table with entries between the MD5 entry and the end entry: it then
+reads the MD5 entry as a partition, those 14 bytes as its type, subtype,
+offset, size and the first bytes of its label, so they are uncovered rather
+than ignored. `publish` reads those spans
 once and records each whose flash bytes aren't all `0xFF` already, so a
 download that differs from a dump of the flash says where and why; the list
 reveals only that the bytes weren't erased, never their values. Unused space
@@ -1097,6 +1109,38 @@ the results kept since the last wait are logged before each.
   refuse images with no layout record, with one four bytes after the
   descriptor, with a first segment that ends inside it and with one of another
   layout, and take only the record right after the descriptor.
+
+### The storage API
+
+`specs/storage-api.md` designs it. It describes the flash as a medium: the
+devices and the chain's result (`/storage`), the located table beside the
+compiled layout (`/storage/layout`), one document per region
+(`/storage/regions`, `/storage/regions/{region}`), and the bytes of a
+region's published views (`/storage/regions/{region}/views/{view}`). What the
+bytes mean belongs to the API of the service that owns them.
+
+- `services/storage.rs` holds the chain's report, the content modules, the
+  SHA handle and the boot's random value. `http/storage.rs` maps the storage
+  and boot crates' types to the API's, and reads the flash only through the
+  content modules' models and published views. A view's status in its
+  region's document and its download come from the same `open` function, so
+  they can't disagree.
+- A view's entity tag is the boot's random value in hex and the region's
+  epoch, so it changes at every boot and with every write session that
+  reached the flash, and is never derived from the contents.
+- `/storage/regions` and `/storage/layout` are written in parts with chunked
+  transfer coding, each region document or table row built when it is
+  written. picoserve formats a JSON body once to measure it and again for
+  each TCP buffer it fills, and needs the same output each time, which a list
+  read from the flash as it is written can't promise.
+- Downloads are given one at a time, through a static 1 KiB buffer and their
+  own watchdog, which is fed per chunk written or hashed and paused between
+  downloads. A request while one is in progress is answered with `503` and
+  `Retry-After`. An image's `Repr-Digest` is the file SHA-256 its check
+  computed; a table or otadata view, and a range a `Want-Content-Digest`
+  asks for, are hashed through the same buffer.
+- A sensitive region is refused by name, in every tier, before any reader is
+  used, and a region's document lists no views for it.
 
 ### On the board
 
