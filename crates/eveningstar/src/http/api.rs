@@ -13,7 +13,6 @@ use core::fmt;
 use defmt::{Debug2Format, warn};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::{Mutex, MutexGuard};
-use embassy_time::{Duration, with_timeout};
 use eveningstar_api::v1::{self, Call, Endpoint, Errors, Operation};
 use eveningstar_system::watchdog::WatchdogHandle;
 use picoserve::ResponseSent;
@@ -598,10 +597,6 @@ pub(super) trait Source {
 /// the [`Answers`]' buffer.
 const CHUNK_LEN: usize = 1024;
 
-/// The longest a chunk of a binary body may take to be written before the
-/// body is cut short: half the `download` watchdog's timeout.
-const CHUNK_TIMEOUT: Duration = Duration::from_secs(5);
-
 /// The binary answers the device gives one at a time: the buffer their
 /// chunks pass through, and the watchdog that sees them progress.
 pub(crate) struct Answers(Mutex<CriticalSectionRawMutex, AnswerParts>);
@@ -975,17 +970,11 @@ impl<S: Source> CustomBody for Chunks<'_, S> {
                 );
                 return Ok(());
             }
-            // Bounded, so a client that drains the connection slowly can't
-            // hold a chunk past the watchdog's timeout.
-            let Ok(written) = with_timeout(CHUNK_TIMEOUT, writer.write_all(chunk)).await else {
-                warn!(
-                    "Binary response body cut short after {} of {} bytes: the client is too slow",
-                    offset - self.first,
-                    self.count
-                );
-                return Ok(());
-            };
-            written?;
+            // The server bounds each write by its write timeout, below the
+            // watchdog's, so a client that drains the connection slowly can't
+            // hold a chunk past it: the write fails, and the server aborts
+            // the connection.
+            writer.write_all(chunk).await?;
             offset += chunk.len() as u64;
             self.answer.feed();
             // A client reading as fast as the network allows would otherwise
