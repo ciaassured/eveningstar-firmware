@@ -474,9 +474,13 @@ only by addition:
   value, one after the other, up to the total length; at most 1 KiB in all.
 - **Unknown types are skipped.** A newer image adds a type, and older
   firmware ignores it.
-- **A value only grows.** Its fields are fixed-size and at fixed offsets. A
-  later version appends fields; a reader takes the prefix it knows and
-  ignores the rest. A value shorter than the reader knows is refused.
+- **A value only grows.** Its fields are fixed-size and at fixed offsets.
+  Each type has a minimum length, set when the type is first released and
+  never raised. A later version appends optional fields; a reader takes the
+  fields it knows that the value holds, reads a later field the value ends
+  before as absent, and ignores bytes past what it knows. Only a value
+  shorter than the type's minimum is refused, so a newer firmware still
+  reads an older image's block.
 - **A field never changes meaning.** A change of meaning is a new type. For
   a transition both types are written; the old one is dropped once no
   supported release needs it.
@@ -1402,8 +1406,12 @@ The numbers stay as first proposed, so earlier references hold.
     ended), and `BOOTLOADER_APP_ANTI_ROLLBACK` off (it burns eFuses and can
     leave nothing to boot), and `BOOTLOADER_WDT_ENABLE` on with
     `BOOTLOADER_WDT_DISABLE_IN_USER_CODE` off (the RTC watchdog covers the
-    start-up until esp-hal takes over), in `nix/bootloader`, reserved like
-    `SECURE_*`.
+    start-up until esp-hal takes over), and `BOOTLOADER_FACTORY_RESET` and
+    `BOOTLOADER_CUSTOM_RESERVE_RTC` off (with `_IN_DEEP_SLEEP`, they are what
+    selects `BOOTLOADER_RESERVE_RTC_MEM`, whose retained struct sits at the
+    top of LP RAM, where `specs/diag.md` puts its mailbox), in
+    `nix/bootloader`, reserved like `SECURE_*` and checked by
+    `_check-sdkconfig.py`.
 17. **The image digest.** Recommended: the SHA accelerator, as now for the
     slot check and as the bootloader uses it; the board test compares it with
     `sha256sum`. Alternative: software `sha2` as well, for two independent
