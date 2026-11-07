@@ -46,8 +46,8 @@ shows it, other than the authors. The rest of the spec is the detail.
      `Signed` as the only value that activates; the trust set compiled in.
    - Shown by: stock signify and OpenBSD's own verification code agreeing
      with the verifier on every case (differential tests and fuzzing); the
-     trust set constants compared with `nix/keys.nix` by the `lint` group; Wycheproof and
-     RFC 8032 vectors; the model check of the update protocol; mutation
+     trust set constants compared with `nix/keys.nix` by the `lint` group;
+     Wycheproof and RFC 8032 vectors; the model check of the update protocol; mutation
      testing of the verifier and the policy; board refusals read back with
      `esptool`.
 2. **A trial always ends: confirmed, or rolled back to the image that ran
@@ -61,9 +61,9 @@ shows it, other than the authors. The rest of the spec is the detail.
    - Held by: no route to eFuse programming, and no reconfiguration of the
      USB pins or the USB Serial/JTAG pad, in the firmware ("eFuses"); a
      release image trusts only our release keys.
-   - Shown by: the link failing on any reference to the ROM's eFuse
-     programming functions; `release-check`'s constant scan of the release
-     ELF against a committed allowlist; bad fixtures each of these refuses;
+   - Shown by: the link map's cross-reference table holding no reference to
+     the ROM's eFuse programming functions; `release-check`'s constant scan
+     of the release ELF against a committed allowlist; bad fixtures each of these refuses;
      the lints. These guard against mistakes, not hostile code.
 4. **A confirmed image can take the next update.**
    - Held by: the OTA readiness self-check; a known-answer self-check of the
@@ -587,13 +587,18 @@ and the block are one `static` in one input section, the record first;
 `check-images` checks both offsets.
 
 The block's problem is the configuration's: an older firmware reads the
-block of a newer image. So it has one format that never changes, and grows
-only by addition:
+block of a newer image. So it uses one encoding that never changes and grows
+only by addition, which `specs/diag.md` also uses for its mailbox and log;
+it is defined here, once, and lives in a new host-buildable crate,
+`eveningstar-records` (`no_std`, no allocation, `#![forbid(unsafe_code)]`,
+in `host_crates`):
 
-- **Header:** magic (`u32`), total length (`u16`), little-endian. No format
-  version: the rules below make one unnecessary.
+- **Container:** magic (`u32`) and total length (`u16`), little-endian. No
+  format version: the rules below make one unnecessary. The block is at
+  most 1 KiB.
 - **Entries:** each a type (`u16`), a length (`u16`) and that many bytes of
-  value, one after the other, up to the total length; at most 1 KiB in all.
+  value, zero-padded to a multiple of 4 (the length counts the padding),
+  one after the other, up to the total length.
 - **Unknown types are skipped.** A newer image adds a type, and older
   firmware ignores it.
 - **A value only grows.** Its fields are fixed-size and at fixed offsets.
@@ -608,6 +613,9 @@ only by addition:
   supported release needs it.
 - **Each reader names the types it requires.** A missing one, or a type that
   appears twice, refuses the upload.
+- **The registry.** The crate exports every type's number, minimum length
+  and field offsets; a committed copy is compared in CI, so a release can't
+  raise a minimum or move a field.
 
 The types now:
 
@@ -684,14 +692,16 @@ parses to the same result as without the additions.
   other slot is a development build. It can't be started again after
   confirmation, except by flashing over USB."
 - One build setting chooses the flavour: `EVENINGSTAR_RELEASE`, set only by
-  `nix build .#release`. The build script derives everything from it and
-  from `nix/keys.nix`: the trust set (with or without the development key),
-  the trust entry's `signing` (the release generation, or 0 for a
-  development build), and `secure_version` (the release's value from
-  `nix/release.nix`, or 0). It refuses an inconsistent combination, and
-  `check-images` checks the result. Cargo's `[env]` table (in
-  `.cargo/esp-config.toml`) yields to the process environment, so nothing
-  sets `ESP_BOOTLOADER_ESP_IDF_CONFIG_SECURE_VERSION` by hand.
+  `nix build .#release`. The firmware's build script derives everything
+  from it and from `nix/keys.nix` and `nix/release.nix`: the trust set (with
+  or without the development key), the trust entry's `signing` (the release
+  generation, or 0 for a development build), and `secure_version` (the
+  release's value, or 0). `main.rs` passes that `secure_version` to the
+  long form of `esp_app_desc!`, so the descriptor's value has one source;
+  `ESP_BOOTLOADER_ESP_IDF_CONFIG_SECURE_VERSION`, which the short form
+  reads when that crate compiles, isn't used. `nix/release.nix` keeps every
+  release's `secure_version`, so a check knows the previous one at the tag.
+  `check-images` checks the combination.
 - Nix signs every development build with the development key and writes
   `SHA256` and `SHA256.sig` beside the image, so development exercises the
   same path as a release.
@@ -831,11 +841,14 @@ esp-hal's `efuse` module only reads, through the same registers. The guards:
   `esp_hal::peripherals::Peripherals::steal`; the board crate expects the
   lint where it takes the peripheral.
 - **The ROM functions.** The firmware's build script passes
-  `--wrap=<symbol>` for each of the four symbols to the linker and defines
-  no wrapper, so a reference from any object, a dependency or a binary blob
-  included, fails the link. If rust-lld doesn't apply `--wrap` to symbols a
-  linker script defines, `release-check` reads the link map
-  (`--Map --cref`) instead and fails on any object that references them.
+  `--Map=<file> --cref` to the linker, and the release output carries the
+  map. Its cross-reference table lists every symbol with the objects that
+  reference it, archive members and binary blobs included; the check fails
+  on any row for the four names. `--wrap` doesn't serve: with rust-lld
+  (LLD 23.1.1) a reference to a symbol a linker script defines links to the
+  script's address under the `__wrap_` name, without an error (tested;
+  GNU ld does fail). A call through a computed address names no symbol, so
+  the constant scan also looks for the four ROM addresses.
 - **The registers.** `release-check` disassembles the release ELF, resolves
   every address built from `lui` or `auipc` with `addi` (the `0x600B1` with
   a negative offset form included) and every 32-bit word in `.rodata` and
@@ -843,9 +856,9 @@ esp-hal's `efuse` module only reads, through the same registers. The guards:
   The report must equal a committed allowlist of esp-hal's readers. An
   address carried through memory or an argument isn't resolved, so this
   catches constants, not every route.
-- **Fixtures** `release-check` must refuse: a PAC `EFUSE::steal().cmd()`
-  write, a raw volatile write to the controller, and an `extern "C"` call of
-  `ets_efuse_program`.
+- **Fixtures** `release-check` must report: a PAC `EFUSE::steal().cmd()`
+  write, a raw volatile write to the controller, an `extern "C"` call of
+  `ets_efuse_program`, and a call through its address.
 - **The USB link.** The same lints cover `esp_hal::peripherals::USB_DEVICE`
   and the GPIO12 and GPIO13 pins; reconfiguring them, or clearing the USB
   Serial/JTAG pad enable, drops the link before the host can enumerate. The
@@ -998,9 +1011,10 @@ N+1, trusts N+1 to N+3, `secure_version` 2.
   itself guarantees and what recovery needs: storage and the configuration
   migration, the boot tier and OTA readiness, the API answering, the
   watchdog supervisor running, and the verifier's known answers: a built-in
-  signature that must verify, one that must not, and the image's own
-  signature sector against its own trust set. A failed one means the image
-  can't be confirmed and rolls back.
+  signature that must verify and one that must not. A failed one means the
+  image can't be confirmed and rolls back. The image's own signature sector
+  is checked against its own trust set as an advisory check: an image
+  installed over USB may carry none, or a stale one.
 - **Advisory** checks cover what depends on the environment, and states the
   user should know of: an MQTT upload, the charge controller answering on
   MeterBus, WiFi association, the running image trusting the development
@@ -1499,14 +1513,14 @@ and so on), so a doctest that fails for another reason doesn't pass:
 
 ## Decisions
 
-The numbers stay as first proposed, so earlier references hold.
+The numbers stay as first proposed, so earlier references hold; 38 isn't
+used.
 
 ### Decided with the user (2026-11-07 and 2026-11-08)
 
-7. **Downgrade floor.** The ESP descriptor's `secure_version`, set through
-   `ESP_BOOTLOADER_ESP_IDF_CONFIG_SECURE_VERSION`, derived by the build from
-   the release flavour ("Development and release keys"), the full `u32` (no
-   eFuse). Lower than the running image's is
+7. **Downgrade floor.** The ESP descriptor's `secure_version`, derived by
+   the build from the release flavour ("Development and release keys"), the
+   full `u32` (no eFuse). Lower than the running image's is
    refused for updates, and for switches once the running image is
    confirmed; nothing is refused during a trial; equal is allowed whatever
    the version string. Warnings at upload and at confirmation, which say
@@ -1575,6 +1589,11 @@ The numbers stay as first proposed, so earlier references hold.
     every pull request commit, the `.gitignore` rule, and passphrase-protected
     release keys.
 
+40. **eFuses.** Nothing is write-protected in advance, so the owner stays
+    free to install a fork that uses secure boot. Recommended guards: the board crate keeping the peripheral and the
+    USB pins, lints, the link map's cross-reference check of the ROM's
+    programming functions, and `release-check`'s allowlisted constant scan.
+
 ### Open, with a recommendation
 
 1. **Signed format.** Recommended: the signed manifest (`signify -C`). Not
@@ -1615,7 +1634,7 @@ The numbers stay as first proposed, so earlier references hold.
     start-up until esp-hal takes over), and `BOOTLOADER_FACTORY_RESET` and
     `BOOTLOADER_CUSTOM_RESERVE_RTC` off (with `_IN_DEEP_SLEEP`, they are what
     selects `BOOTLOADER_RESERVE_RTC_MEM`, whose retained struct sits at the
-    top of LP RAM, where `specs/diag.md` puts its mailbox), in
+    top of LP RAM, where `specs/diag.md` puts its mailbox), and
     `BOOTLOADER_FLASH_XMC_SUPPORT` on (this board's flash), in
     `nix/bootloader`, reserved like `SECURE_*` and checked by
     `_check-sdkconfig.py`, which also fails when
@@ -1652,11 +1671,6 @@ The numbers stay as first proposed, so earlier references hold.
     (any subset of the state word's bits, with the sequence number and CRC
     whole), and the installed invariant's property test runs with it.
 
-40. **eFuses.** Decided (2026-11-08): nothing is write-protected in
-    advance, so the owner stays free to install a fork that uses secure
-    boot. Recommended guards: the board crate keeping the peripheral and the
-    USB pins, lints, the link-time `--wrap` of the ROM's programming
-    functions, and `release-check`'s allowlisted constant scan.
 41. **The model checker.** Recommended: a small explicit-state checker over
     the real host code (or `stateright`), not TLA+, so the checked model is
     the shipped code.
@@ -1664,15 +1678,14 @@ The numbers stay as first proposed, so earlier references hold.
 44. **Reproducibility before the first signed release.** Recommended: the
     first signed release waits until a second machine's build matches its
     `SHA256`; until then requirement 7 rests on signify alone.
-45. **Known-answer self-check.** Recommended: required before confirmation,
-    so a release whose own verifier is broken rolls back instead of being
-    confirmed into a state where it can't take the fix.
+45. **Known-answer self-check.** Recommended: built-in positive and negative
+    vectors required before confirmation, so a release whose own verifier is
+    broken rolls back instead of being confirmed into a state where it can't
+    take the fix; the image's own signature is advisory.
 
 ## Left open
 
 - Reproducible app images: rustc's output across machines (decision 44).
-- `release-check` and the other release tools are defined in "Release
-  tooling", added with the release documentation (PR #99).
 - The stack frame of `verify_strict` on the 32-bit backend under the
   `large_stack_frames` lint, and its time on the ESP32-C6.
 - Code size of ed25519-dalek and curve25519-dalek in the image.
