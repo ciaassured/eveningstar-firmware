@@ -50,6 +50,10 @@ probe-rs and streams its logs.
 > OTA update support. The firmware also sees a layout it doesn't know and runs
 > without persistent storage. Run `flash-all` to restore them.
 
+Releasing firmware and installing it on a device are described in
+[`docs/releasing.md`](docs/releasing.md) and
+[`docs/updating.md`](docs/updating.md).
+
 Checks (formatting, Clippy and a release build), the same ones CI runs:
 
 ```sh
