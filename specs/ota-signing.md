@@ -800,15 +800,19 @@ procedures in terms of three tools not built yet (decision 43):
   `EVENINGSTAR_RELEASE` set ("Development and release keys"): trust set
   `signing` to `signing + 2`, `secure_version` from `nix/release.nix`, at
   least 1. Its output is the image and the ELF, named
-  `eveningstar-<version>-esp32c6.{bin,elf}`, and a `SHA256` listing
-  (`sha256sum --tag` format).
-- `release-check <dir>`: `check-images` on the image, then the release rules:
-  no development key in the trust entry, `secure_version` at least 1 and not
-  below the previous release's, the trusted generations those of
-  `nix/keys.nix` and the entry's `signing` equal to it, the `SHA256`
-  listing matching the files, and the eFuse constant scan and link map of
-  "eFuses" within their allowlist.
-  It prints what it read.
+  `eveningstar-<version>-esp32c6.{bin,elf}`, the link map with its
+  cross-reference table, and a `SHA256` listing (`sha256sum --tag`
+  format).
+- `release-check <dir> [--expect <digest>]`: `check-images` on the image,
+  then the release rules: no development key in the trust entry,
+  `secure_version` at least 1 and not below the previous release's (from
+  `nix/release.nix`), the trusted generations those `nix/keys.nix` yields
+  and the entry's `signing` equal to its `signing`, the `SHA256` listing
+  matching the files and, with `--expect`, the image's digest equal to the
+  one given (read off CI by hand, so the offline machine doesn't rely on
+  the networked one alone), and the eFuse constant scan and the link map
+  of "eFuses" within their allowlist. It prints what it read. Bad fixtures
+  for every rule run in the `build` group.
 - `nix build .#signing-iso`: a live system for the offline machine with
   `signify`, `sha256sum` and `release-check`, built from the tag, so the
   offline machine runs the same checks without a network.

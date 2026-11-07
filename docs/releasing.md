@@ -34,11 +34,13 @@ These checks stop the mistakes they name; each runs without being asked.
   request) refuses any signify secret key in the repository other than the
   development key.
 - `release-check` _(planned)_ refuses an image that trusts the development
-  key, has `secure_version` 0 or lower than the previous release's, trusts
-  generations other than `signing` to `signing + 2`, names a different
-  `signing` generation than `nix/keys.nix`, refers to the eFuse controller
-  outside the committed allowlist of esp-hal's readers, or fails any
-  `check-images` check (layout, size, chip, project).
+  key, has `secure_version` 0 or lower than the previous release's (from
+  the history in `nix/release.nix`), trusts a set of generations other than
+  the one `nix/keys.nix` yields, names a different `signing` generation,
+  refers to the eFuse controller outside the committed allowlist of
+  esp-hal's readers or to the ROM's eFuse programming functions (the link
+  map's cross-reference table), or fails any `check-images` check (layout,
+  size, chip, project).
 - Every firmware refuses at upload an image signed with a release key that
   trusts the development key, an image whose trust set lacks the key that
   signed it, an image with a lower `secure_version`, an image signed with
@@ -58,8 +60,11 @@ notes that omit a stepping-stone release.
    _(planned)_; only the release build reads it, and development builds
    always have 0):
    - raise it by one when the release fixes a vulnerability that makes
-     earlier firmware unsafe to run;
+     earlier firmware unsafe to run, or drops a compromised generation;
    - otherwise keep it.
+
+   `nix/release.nix` keeps each release's value, so the check knows the
+   previous one.
 
    Raising it means devices that confirm the release can't switch back to an
    earlier one except over USB, and the web UI says so at upload and at
@@ -76,7 +81,8 @@ notes that omit a stepping-stone release.
      trusts;
    - the releases a device must install first: the oldest configuration
      schema it migrates from, and the oldest release whose firmware trusts
-     its signing generation.
+     its signing generation;
+   - who rebuilt it independently, once that rebuild has matched.
 6. Merge to `main`, and tag the commit with a signed tag
    (`git tag -s v<version>`).
 
@@ -89,12 +95,14 @@ notes that omit a stepping-stone release.
    ```
 
    `result/` holds `eveningstar-<version>-esp32c6.bin`,
-   `eveningstar-<version>-esp32c6.elf` and `SHA256`
+   `eveningstar-<version>-esp32c6.elf`, the link map, and `SHA256`
    (`SHA256 (<file>) = <hex>` lines).
 2. Compare the two `SHA256` files byte for byte. They must be identical;
    different digests mean the build isn't reproducible, and nothing is
-   signed. The descriptor's build date comes from `SOURCE_DATE_EPOCH`, which
-   Nix sets, so it doesn't differ between the builds.
+   signed (`diffoscope` shows where they differ). The descriptor's build
+   date comes from `SOURCE_DATE_EPOCH`, which Nix sets, so it doesn't differ
+   between the builds. Write down the image's digest as CI's log shows it,
+   read from CI's page, not from a file the local machine produced.
 3. Run the checks and read the report:
 
    ```sh
@@ -113,14 +121,15 @@ network interface up, built from the tag as `nix build .#signing-iso`
 _(planned)_ so that it carries `signify`, `sha256sum` and `release-check`.
 
 1. Copy `result/` to a USB stick and attach it to the offline machine.
-2. Run `release-check` on it again, and check that the digests in `SHA256`
-   match the files:
+2. Run `release-check` on it again, giving it the image digest written
+   down from CI's page, so a networked machine that swapped both the image
+   and the listing is caught:
 
    ```sh
-   release-check /media/release
-   sha256sum --tag eveningstar-<version>-esp32c6.bin \
-     eveningstar-<version>-esp32c6.elf | diff - SHA256
+   release-check /media/release --expect <digest from CI>
    ```
+
+   It also checks that the digests in `SHA256` match the files.
 
 3. Attach the medium holding the secret key of the signing generation and
    sign:
@@ -149,7 +158,7 @@ _(planned)_ so that it carries `signify`, `sha256sum` and `release-check`.
    release ("Updating firmware", `docs/updating.md`): it must verify, boot
    as a trial, pass its self-checks and confirm. On a second board, let the
    trial expire and check that it rolls back.
-3. Publish a GitHub release for the tag with the image, the ELF,
+3. Publish a GitHub release for the tag with the image, the ELF, `SHA256`,
    `SHA256.sig` and the release notes.
 
 ## Rotating keys
@@ -164,23 +173,30 @@ Once a year with a release, and at once after a compromise or loss.
    ```
 
    Copy the secret key to both offline media. Copy only the `.pub` out.
-2. Add `keys/eveningstar-<N+3>-fw.pub` and its entry in `nix/keys.nix`, and
-   raise `signing` by one. Commit with a signed commit.
+2. Add `keys/eveningstar-<N+3>-fw.pub` and its entry in `nix/keys.nix`,
+   raise `signing` by one, and regenerate the README's key table. Commit
+   with a signed commit.
 3. The next release is signed with the new `signing` generation and trusts
    it and the two after it.
 
-## After a compromise
+## After a compromise or a loss
 
 A release secret key, or the passphrase and a copy of it, has left the
-offline media.
+offline media (compromised), or both copies of a key are gone (lost).
 
-1. Mark its generation `compromised = true` in `nix/keys.nix`, and raise
-   `signing` past it.
-2. Release at once, signed with the next generation, with `secure_version`
-   raised: devices that confirm it stop trusting the compromised key and
-   can't switch back to a release that trusts it.
-3. Say in the release notes which generation is compromised and since when.
-   Devices that don't update keep trusting it.
+1. Mark its generation `compromised = true` or `lost = true` in
+   `nix/keys.nix`. The trust set becomes the next three generations from
+   `signing` that are neither; generate a further key if needed
+   ("Rotating keys", step 1).
+2. Raise `signing` only if the marked generation was the signing one. A
+   future generation is skipped instead: installed images already trust
+   the current one, which keeps signing.
+3. Release at once, signed with the current usable generation. After a
+   compromise, raise `secure_version`: devices that confirm the release
+   stop trusting the compromised key and can't switch back to a release
+   that trusts it.
+4. Say in the release notes which generation is compromised or lost, and
+   since when. Devices that don't update keep trusting a compromised key.
 
 A secret key committed to the repository counts as published, even if the
 commit is removed.
