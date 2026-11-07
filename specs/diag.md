@@ -34,8 +34,8 @@ authors.
    - Held by: the log's per-record CRC, the mount rules, words programmed
      once.
    - Shown by: the host model of the log with torn and unstable flash, and
-     board power cuts during a drain and during a rotation (the USB power-cut
-     rig of `specs/ota-signing.md`).
+     board power cuts during a drain and during a rotation (the power-cut rig
+     of `specs/ota-signing.md`, which switches the board's DC input).
 3. **Every firmware version reads every other's records.**
    - Held by: the record encoding's rules.
    - Shown by: the committed fixtures of every released format and the
@@ -156,33 +156,21 @@ What they establish:
 
 ## The record encoding
 
-The mailbox, the log and the OTA spec's image information block share one
-encoding, in a new host-buildable crate, `eveningstar-records` (`no_std`, no
-allocation, `#![forbid(unsafe_code)]`, listed in `host_crates` in
-`nix/checks.nix`). Older firmware reads what newer firmware wrote (after a
-rollback), and newer reads older (after an update).
+The mailbox and the log use the record encoding `specs/ota-signing.md`
+defines for the image information block ("The image's own records"): the
+`eveningstar-records` crate, containers of type-length-value entries padded
+to 4 bytes, unknown types skipped, values that grow at the end only, meanings
+that never change, and the committed registry. Older firmware reads what
+newer firmware wrote (after a rollback), and newer reads older (after an
+update). On top of it, fixed for good:
 
-- A **container** starts with a magic (`u32`) and a total length, and holds
-  entries up to that length. The container header never changes.
-- An **entry** is a type (`u16`), a length (`u16`) and that many bytes of
-  value, zero-padded to a multiple of 4; the length counts the padding.
-- **Unknown types are skipped**, and reported as unknown with their type and
-  length.
-- **Values grow at the end only.** Fields are fixed-size and at fixed
-  offsets. Each type has a minimum length, set when the type is first
-  released and never raised; fields added later are optional, and a reader
-  reads one the value ends before as absent and ignores bytes past what it
-  knows. Only a value shorter than the type's minimum is refused.
-- **A field never changes meaning.** A new meaning is a new type. Codes are
-  enumerations that only gain values; a reader shows a value it doesn't
-  know as its number.
-- **Fixed for good:** little-endian throughout; the CRC is the otadata's
-  CRC-32 (`esp_rom_crc32_le` with an initial value of `0xFFFF_FFFF`, as
-  `eveningstar-esp-formats` implements it); the magics: `0x424D_5345`
-  ("ESMB") for the mailbox and `0x4C44_5345` ("ESDL") for a log sector.
-- **The registry.** The crate exports every type's number, minimum length
-  and field offsets; a committed copy is compared in CI.
-- **Stable codes.** Every code a record carries is a number fixed for good:
+- **Integrity:** mailbox entries, log records and log sector headers carry a
+  CRC-32, the otadata's (`esp_rom_crc32_le` with an initial value of
+  `0xFFFF_FFFF`, as `eveningstar-esp-formats` implements it).
+- **Magics:** `0x424D_5345` ("ESMB") for the mailbox and `0x4C44_5345`
+  ("ESDL") for a log sector.
+- **Codes:** enumerations that only gain values; a reader shows a value it
+  doesn't know as its number. Every code a record carries is fixed for good:
   reboot reasons, self-checks (each check gets a permanent ID), refusal
   reasons, trial end reasons, reset causes.
 
@@ -425,8 +413,8 @@ log, nothing is written, rather than a wrong record.
   producing exactly the expected `Rollback` records.
 - **Board, retention:** with a test build, the mailbox across a software
   reset, a panic, MWDT0, the RWDT system reset, a reset through USB
-  Serial/JTAG (probe-rs, esptool), a brownout (code 0x0F expected, mailbox
-  kept) if one can be provoked safely, and a power cycle (lost).
+  Serial/JTAG (probe-rs, esptool), a brownout from the power-cut rig's slow
+  ramp (code 0x0F expected, mailbox kept), and a full power cycle (lost).
 - **Board, end to end:** a panic and a missed deadline appear in `GET /diag`
   after the reboot; a hang with interrupts on gives a `Hang` record with a
   PC inside the hanging function; a panic before `esp_rtos::start`, inside a
@@ -456,8 +444,8 @@ Each with a recommendation.
    day hold something sensitive. Recommended: kept, at most 96 bytes, and
    served only with the highest permission tier; the other fields with the
    read tier.
-7. **The shared encoding.** Recommended: one crate for the image information
-   block, the mailbox and the log, with a committed registry.
+7. **The shared encoding.** Recommended: the one `specs/ota-signing.md`
+   defines, with its committed registry.
 8. **Hangs.** Recommended: MWDT0's stage 0 as an interrupt that records the
    PC, stage 1 resetting a second later.
 9. **Where the `unsafe` lives.** Recommended: one module in the firmware
