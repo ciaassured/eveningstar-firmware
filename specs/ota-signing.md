@@ -9,10 +9,9 @@ Builds on `specs/storage-v2.md` ("OTA") and on `eveningstar-ota` as merged
 ## Fixed by the user
 
 - No secure boot and no flash encryption, ever. The board belongs to its
-  owner, who can reflash it over USB at any time. The firmware never writes
-  an eFuse; provisioning may burn the write protection that keeps secure
-  boot, flash encryption and the disabling of USB recovery out of anyone's
-  reach (decision 40).
+  owner, who can reflash it over USB at any time. This firmware never writes
+  an eFuse, and nothing is burnt to stop a fork the owner installs from
+  doing so (user, 2026-11-08).
 - Every image that arrives remotely is verified for integrity and source. No
   code path skips that verification: nothing reaches a slot remotely except
   through an update, an update's image becomes loadable only once it
@@ -57,12 +56,13 @@ shows it, other than the authors. The rest of the spec is the detail.
    - Shown by: the model check, with the real bootloader's rules and torn
      and unstable flash; the real bootloader on the board, under the
      power-cut rig and the catalogue of broken images.
-3. **The owner can always reflash over USB.**
-   - Held by: no eFuse writes in the firmware; the provisioning's write
-     protection of the eFuses that could disable it ("eFuses"); the flash's
-     status register never written by the firmware.
-   - Shown by: `espefuse summary` at provisioning and the firmware's report
-     of the protection; `esptool` recovering a board after each fault case.
+3. **Our firmware never takes USB recovery from the owner.**
+   - Held by: no route to eFuse programming in the firmware ("eFuses"); a
+     release image trusts only our release keys.
+   - Shown by: the lints, and `release-check`'s scan of the release ELF for
+     any reference to the eFuse controller's programming registers or the
+     ROM's programming functions; `esptool` recovering a board after each
+     fault case.
 4. **A confirmed image can take the next update.**
    - Held by: the OTA readiness self-check; an upload refused unless its
      image trusts the key that signed it.
@@ -337,13 +337,15 @@ whoever has it can reflash anything, by design.
   the key, isn't stored apart from the signature file, and isn't shown. The
   release instructions always pass `-p`, so the desktop doesn't use it
   either.
-- **Taking the board from its owner.** Firmware that runs with any trusted
-  key, the public development key included, can burn eFuses: enable secure
-  boot with its own key, enable flash encryption, or disable download mode
-  or USB Serial/JTAG. Each is permanent, and leaves the owner unable to
-  reflash the board. Provisioning burns the `WR_DIS` bits that freeze those
-  fields as shipped ("eFuses", decision 40); until then the risk is accepted
-  and the firmware reports it.
+- **Taking the board from its owner.** Firmware that runs can burn eFuses:
+  enable secure boot with its own key, enable flash encryption, or disable
+  download mode or USB Serial/JTAG, each permanently. Our releases contain no
+  route to it ("eFuses"), and a release image installs only images signed by
+  our release keys. What remains is accepted: a board running a development
+  build accepts firmware anyone signs with the public development key, and a
+  stolen release key could sign firmware that burns them. Nothing is burnt
+  in advance to prevent it, since that would also stop the owner from
+  installing a fork that uses secure boot.
 - **Leftovers of a refused upload.** A refused image may be a well-formed
   ESP image with a correct appended SHA-256, or an upload may be cut by a
   power loss before verification. Neither is installed: `begin_update`
@@ -782,44 +784,35 @@ line code with no waits, in which a panic resets through the panic handler.
 From there the executor has the supervisor's main timeout to start it.
 
 The floor of recovery: USB Serial/JTAG and the ROM download mode are in the
-chip's ROM, and the firmware never burns the eFuses that disable them. A
-board whose firmware is broken in every slot is still reflashed over USB, as
-long as no firmware has burnt them ("eFuses").
+chip's ROM, and this firmware never burns the eFuses that disable them
+("eFuses"). A board whose firmware is broken in every slot is still
+reflashed over USB.
 
 ### eFuses
 
-Any code that runs on the chip can program its eFuses; the ROM refuses only
-fields whose `WR_DIS` bit is set. The fields that could take the board from
-its owner, and the `WR_DIS` bit that freezes each group (TRM table 6.3-1):
+This firmware never programs an eFuse. What a fork the owner installs does
+is the owner's business, so nothing is write-protected in advance.
 
-- bit 2: `DIS_USB_SERIAL_JTAG`, `DIS_FORCE_DOWNLOAD`, `DIS_USB_JTAG`,
-  `DIS_PAD_JTAG` and others;
-- bit 4: `SPI_BOOT_CRYPT_CNT` (flash encryption);
-- bit 16: `SECURE_BOOT_EN`;
-- bit 17: `SPI_DOWNLOAD_MSPI_DIS` (the flash controller in download mode);
-- bit 18: `DIS_DOWNLOAD_MODE`, `DIS_USB_SERIAL_JTAG_DOWNLOAD_MODE`,
-  `ENABLE_SECURITY_DOWNLOAD`, `SECURE_VERSION` and others;
-- bit 30: `USB_EXCHG_PINS` (swaps D+ and D-) and `VDD_SPI_AS_GPIO`;
-- bit 31: `SOFT_DIS_JTAG` (probe-rs's path).
+On the ESP32-C6 an eFuse is programmed in two ways only: through the eFuse
+controller's registers (`EFUSE` at `0x600B_0800`: the `PGM_DATA` registers,
+then the `CONF` op code and `CMD`), or through the ROM's
+`ets_efuse_program`, `ets_efuse_write_key` and
+`ets_efuse_clear_program_registers` (`0x4000_0804`–`0x4000_080C`). esp-hal's
+`efuse` module only reads. The firmware closes both:
 
-Provisioning (`provision`, over USB, once per board) burns these seven bits
-with `espefuse write-protect-efuse`, after `espefuse summary` shows the
-fields as shipped. That is itself permanent, and it is what makes "secure
-boot and flash encryption never" and "USB always recovers" hold against
-firmware the owner didn't write. The key blocks and their purposes stay
-writable, for a later device secret; without `SECURE_BOOT_EN` and
-`SPI_BOOT_CRYPT_CNT` a key purpose enables nothing.
-
-The firmware:
-
-- never writes an eFuse or the flash's status register: esp-hal's eFuse
-  write functions and the status register commands are disallowed methods
-  outside a module that has none;
-- reads the `WR_DIS` bits and the seven fields at boot, and reports them in
-  the API; an unprotected board is an advisory self-check, as the
-  development key is.
-
-
+- The board crate takes the `EFUSE` peripheral out of the peripherals
+  `esp_hal::init` returns, and keeps it; nothing else receives it. Reads go
+  through esp-hal's read functions.
+- Clippy's `disallowed-types` lists `esp_hal::peripherals::EFUSE` and the
+  PAC's `esp32c6::EFUSE`, with their `steal`, `ptr` and `regs`; the board
+  crate expects the lint where it takes the peripheral. No crate declares the
+  ROM's eFuse functions.
+- `release-check` disassembles the release ELF and fails on any reference to
+  the controller's address range or a call to those ROM addresses, which
+  also catches a route through a dependency or raw pointers the lints can't
+  see.
+- The flash's status register is written only by esp-storage's unlock,
+  which clears protection; the firmware sets no protection bits.
 
 ### OpenBSD
 
@@ -1255,9 +1248,6 @@ impl Update<'_, '_> {
 - Each slot's file SHA-256, as `sha256sum` prints it, so the owner can
   compare the image the device runs with the release's published `SHA256`
   (requirement 7).
-- `recovery`: the eFuse protection's state ("eFuses"): protected, or which
-  of the seven `WR_DIS` bits are unset, and whether any protected field has
-  left its shipped value.
 - Security release warning, at upload once the image verified and on the
   confirm control, when the image raises `secure_version` above the other
   slot's: "This release fixes a security vulnerability. Once it is
@@ -1630,11 +1620,10 @@ The numbers stay as first proposed, so earlier references hold.
     (any subset of the state word's bits, with the sequence number and CRC
     whole), and the installed invariant's property test runs with it.
 
-40. **Protecting the eFuses.** Recommended: provisioning burns `WR_DIS` bits
-    2, 4, 16, 17, 18, 30 and 31, once per board, after checking the fields
-    are as shipped. Irreversible; it is what keeps the board its owner's
-    against firmware with a trusted key. Alternative: accept the risk and
-    only report it.
+40. **eFuses.** Decided (2026-11-08): nothing is write-protected in
+    advance, so the owner stays free to install a fork that uses secure
+    boot; our firmware has no route to programming them, enforced by the
+    board crate keeping the peripheral, lints, and `release-check`'s scan.
 41. **The model checker.** Recommended: a small explicit-state checker over
     the real host code (or `stateright`), not TLA+, so the checked model is
     the shipped code.
