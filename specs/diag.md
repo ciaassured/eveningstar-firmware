@@ -202,8 +202,12 @@ update). On top of it, fixed for good:
   else. The reset reason is recorded, never used to discard: random bytes
   after a power-on don't pass a CRC-32.
 - **The head** is the valid entry with the highest sequence number, as with
-  the otadata. A writer writes the next slot, the entry's CRC last, so an
-  interrupted write tears at most that entry. There is no index to update.
+  the otadata. A writer writes the next slot with the next sequence number,
+  the entry's CRC last, so an interrupted write tears at most that entry.
+  There is no index to update.
+- **Sequence numbers never restart** while the mailbox lives: clearing
+  replaces each moved entry with a `Drained` entry that keeps its number,
+  so the highest stays readable.
 
 ### The boot ID
 
@@ -252,9 +256,12 @@ described.
   clears the entries up to the highest sequence number it moved, keeping
   any written since.
 - A log record keeps the entry's boot ID and sequence number. An entry whose
-  pair is in the head sector (or the sector before it, after a rotation) isn't
-  written again, so a reset between the log write and the clear duplicates
-  nothing.
+  pair is in the head sector (or the sector before it, after a rotation)
+  isn't written again, so a reset between the log write and the clear
+  duplicates nothing. After a chip reset the numbers start afresh, and
+  entries written before the boot ID exists carry 0, so an entry with boot
+  ID 0 is never skipped this way; a reset in that window can duplicate one,
+  which is accepted.
 - In the unverified tier there is no writer of `diag`: the entries stay in
   the mailbox, and the API serves them from RAM. A board flashed with
   `cargo run` is in that tier, and relies on this.
