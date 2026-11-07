@@ -664,8 +664,10 @@ parses to the same result as without the additions.
   trusts N, N+1 and N+2: as OpenBSD release N ships N+1's key, with one more
   generation so a device can skip releases.
 - Generations rotate on a schedule whatever happens (decision 11), and at
-  once on a compromise or loss. The next release is signed with N+1 and
-  trusts N+1 to N+3; N+3 is generated in that release's ceremony.
+  once when the signing generation is compromised or lost. The next release
+  is signed with N+1 and trusts N+1 to N+3; N+3 is generated in that
+  release's ceremony. A compromised or lost future generation is skipped
+  instead, and the current one keeps signing.
 - A device stays directly updatable while the release it runs trusts the
   signing generation: up to two rotations behind. Further behind, it updates
   through a release in between, or over USB. No `sigbundle`: a key bundle
@@ -723,12 +725,11 @@ parses to the same result as without the additions.
   release notes and the README. Each fits on one line (56 base64 characters)
   for comparison by eye or voice.
 - Signing a release: the image is built twice from the tag (CI and a local
-  Nix build) and the digests compared. The offline machine computes
-  `sha256 -h SHA256 <files>` (or `sha256sum --tag`) over the image copied to
-  it, prints the image's trust entry with the storage crate's
-  `check-images` example and refuses an image whose trust set holds the
-  development key, then `signify -S -e -s eveningstar-N-fw.sec -m SHA256 -x
-  SHA256.sig`. Only `SHA256.sig` leaves it.
+  Nix build) and the digests compared. The offline machine runs
+  `release-check` over the shipped files and `SHA256` listing, with the
+  image digest read off CI's page as an independent input, then
+  `signify -S -e -s eveningstar-N-fw.sec -m SHA256 -x SHA256.sig`. Only
+  `SHA256.sig` leaves it. `docs/releasing.md` is the procedure.
 - Reproducible builds are a precondition. The descriptor's build time and
   date already are: `esp-bootloader-esp-idf`'s build script takes them from
   `SOURCE_DATE_EPOCH`, which Nix sets. What remains open is rustc's own
@@ -757,8 +758,10 @@ on offline media. These checks catch a mistake anyway:
   The ceremony refuses a release secret key with 0 rounds.
 - **If one is published anyway**, it is compromised: rewriting history
   doesn't unpublish it. Its generation is marked `compromised` in
-  `nix/keys.nix`, the next release is signed with the generation after it
-  and raises `secure_version` (decision 33).
+  `nix/keys.nix`, and the next release raises `secure_version` (decision
+  33). It is signed with the generation after the compromised one when that
+  was the signing generation, and with the current one when it was a
+  future generation, which is then skipped.
 
 ## Rollback and recovery
 
@@ -1103,7 +1106,8 @@ every past schema to the current one.
    RAM by the update task and parsed and verified at once, so a wrong key or
    format is refused before anything is erased. This early verdict decides
    nothing later.
-2. `PUT /firmware/update/image`: `Ota::begin_update` settles the otadata on
+2. `PUT /firmware/update/image`, refused before anything is erased unless a
+   signature file is held: `Ota::begin_update` settles the otadata on
    the running slot, erases the alternate slot's first sector and signature
    sector, and wipes the alternate configuration. `Update::write` programs the
    body as it arrives, each sector erased before its first bytes, refusing
@@ -1281,8 +1285,9 @@ impl Update<'_, '_> {
 - `public_key` is the key file's second line; `keynum` is hex. Names come
   from the generated trust set, never from a comment.
 - `signature.status`: `verified`, `unsigned` (no signature sector),
-  `unknown_key`, `invalid` (with a reason: format, signature, digest),
-  `checking`.
+  `stale` (a signature that verifies under a trusted key but lists no digest
+  of this image, as a USB flash leaves behind), `unknown_key`, `invalid`
+  (with a reason: format, signature), `checking`.
 - `update.state`: `idle`, `signature_held`, `receiving` (bytes written),
   `verifying`, `refused` (reason), `activated` (next boot).
 - `PUT /firmware/update/signature`, `PUT /firmware/update/image` (upload,
@@ -1293,8 +1298,10 @@ impl Update<'_, '_> {
   schema range, trust entry) and `switch.refusal`: `not_installed`,
   `corrupted`, `no_appended_hash` (an image flashed over USB without one,
   which the bootloader boots but the image check refuses),
-  `lower_secure_version`, `running_unconfirmed` (a fallback boot or an
-  undefined entry, where no switch can be planned), `checking`.
+  `lower_secure_version`, `running_unconfirmed` (a fallback boot, where
+  the running entry isn't the active one and no switch can be planned),
+  `checking`. A switch during a trial whose entry a torn write left
+  undefined is the same write as the deadline rollback, and is allowed.
 - `confirmation` in `GET /firmware`: whether the running image awaits it,
   the rollback deadline, the latest deadline an extension may reach (boot
   plus 24 hours), the required and the advisory self-checks with their
@@ -1534,9 +1541,10 @@ used.
 10. **Trust sets per build.** Development builds trust the development key
     and N to N+2, so a board flashed with one by mistake updates over the air
     to a release; release builds trust N to N+2 only.
-11. **Rotation.** On a schedule whatever happens, and at once on a
-    compromise or loss. Images trust N, N+1 and N+2. Recommended schedule:
-    once a year, with a release.
+11. **Rotation.** On a schedule whatever happens, and at once when the
+    signing generation is compromised or lost; a compromised or lost future
+    generation is skipped. Images trust the signing generation and the next
+    two usable ones. Recommended schedule: once a year, with a release.
 12. **Switching across a generation.** An installed image is switchable
     whatever key signed it; rotation decides only what can be installed.
 13. **USB-flashed slots.** Installed under the same rule and switchable;
@@ -1565,7 +1573,8 @@ used.
     physical access means USB.
 30. **Self-checks.** Required checks gate confirmation, advisory checks are
     shown. Recommended required set: configuration migration, boot tier and
-    OTA readiness, the API answering, the supervisor running.
+    OTA readiness, the API answering, the supervisor running, the verifier's
+    known answers.
 31. **Extending the trial.** Up to 24 hours after boot, in RAM only.
     Recommended: steps of one hour, same permission as confirm.
 32. **Configuration writes during a trial.** Allowed; they go to the trial
