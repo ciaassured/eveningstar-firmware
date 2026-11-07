@@ -266,8 +266,16 @@ whoever has it can reflash anything, by design.
   power loss before verification. Neither is installed: `begin_update`
   removes every otadata entry naming the slot before its first erase, and
   only the activation of a verified image writes one again, so a switch
-  refuses the slot ("Rollback and recovery"). The refusal also erases the
-  slot's first sector.
+  refuses the slot ("Rollback and recovery"). Not installed isn't the same
+  as not bootable: the bootloader's fallback loop boots any image that
+  loads, without consulting the otadata, when the selected one fails to
+  load. So the upload's first word, which holds the image's magic, is held
+  in RAM and programmed last, in `finish`; an upload abandoned or cut before
+  then never has a loadable header. A refused or abandoned upload then
+  erases the slot's first sector (decision 15). What remains is the window
+  from `finish` to that erase, during which the slot holds a complete
+  unverified image; it matters only if the running slot fails to load in
+  that window, which no network request causes.
 
 ### Accepted
 
@@ -302,11 +310,12 @@ whoever has it can reflash anything, by design.
 - **No threshold signatures.** One key signs. signify has no multi-signature
   form, and a second scheme would break the desktop check.
 - **Writes outside the firmware.** A probe-rs or esptool write after
-  verification isn't seen by the firmware's write state. The re-verification
-  at activation (decision 5) shrinks the window to the otadata write, and the
-  bootloader's SHA-256 check catches an uncoordinated change at boot, except
-  with a debugger attached. A coordinated rewrite (image and appended digest)
-  boots: that is physical access.
+  verification isn't seen by the firmware's write state. No firmware write
+  can reach the slot between verification and activation (`Signed` holds
+  its writer, and activation checks the epoch), and both run in one request;
+  a write from outside needs physical access, which is out of scope, so the
+  slot isn't hashed again (decision 5). The bootloader's SHA-256 check still
+  catches an uncoordinated change at boot, except with a debugger attached.
 - **Switching with no authentication.** Until authentication exists, anyone
   on the network can switch to the installed image in the other slot. Once
   it exists, switching needs the highest permission tier.
@@ -449,7 +458,10 @@ descriptor, through the `.flash.appdesc.*` input sections esp-hal's linker
 script puts at the start of the first segment, and reads it from a fixed
 offset (`image::app_layout`). The other facts an update is judged by follow
 it in one block, the image information, at the offset right after the
-layout record.
+layout record. esp-hal's `.flash.appdesc` output section keeps the
+`.flash.appdesc.*` input sections in no defined order, so the layout record
+and the block are one `static` in one input section, the record first;
+`check-images` checks both offsets.
 
 The block's problem is the configuration's: an older firmware reads the
 block of a newer image. So it has one format that never changes, and grows
@@ -488,8 +500,10 @@ at the same epoch as the signature. That is how it knows what the new image
 trusts before activating it, and checks:
 
 - the key that signed the upload is in the new image's trust entry
-  (decision 26), and is the generation the entry names as `signing`;
+  (decision 26);
 - a release-signed upload doesn't trust the development key (decision 34);
+- a development-signed upload has `secure_version` 0, and a release-signed
+  one at least 1 (decision 33);
 - the board and the configuration schema fit (decisions 8 and 35).
 
 The API shows each slot's block, and `check-images` and the ceremony print
@@ -542,6 +556,15 @@ parses to the same result as without the additions.
   trusts no development key. The confirm control says: "The image in the
   other slot is a development build. It can't be started again after
   confirmation, except by flashing over USB."
+- One build setting chooses the flavour: `EVENINGSTAR_RELEASE`, set only by
+  `nix build .#release`. The build script derives everything from it and
+  from `nix/keys.nix`: the trust set (with or without the development key),
+  the trust entry's `signing` (the release generation, or 0 for a
+  development build), and `secure_version` (the release's value from
+  `nix/release.nix`, or 0). It refuses an inconsistent combination, and
+  `check-images` checks the result. Cargo's `[env]` table (in
+  `.cargo/esp-config.toml`) yields to the process environment, so nothing
+  sets `ESP_BOOTLOADER_ESP_IDF_CONFIG_SECURE_VERSION` by hand.
 - Nix signs every development build with the development key and writes
   `SHA256` and `SHA256.sig` beside the image, so development exercises the
   same path as a release.
@@ -566,9 +589,10 @@ parses to the same result as without the additions.
   `check-images` example and refuses an image whose trust set holds the
   development key, then `signify -S -e -s eveningstar-N-fw.sec -m SHA256 -x
   SHA256.sig`. Only `SHA256.sig` leaves it.
-- Reproducible builds are a precondition: the descriptor's build time and
-  date must be fixed by the build (open: `esp-bootloader-esp-idf` reads them
-  from the environment).
+- Reproducible builds are a precondition. The descriptor's build time and
+  date already are: `esp-bootloader-esp-idf`'s build script takes them from
+  `SOURCE_DATE_EPOCH`, which Nix sets. What remains open is rustc's own
+  output (paths, codegen unit partitioning), checked by the two builds.
 
 ### Secret keys and the repository
 
@@ -613,6 +637,13 @@ without `BOOTLOADER_APP_ANTI_ROLLBACK` and without secure boot.
   rolls back at the next boot, and the trial image is never started again
   from its entry. An entry selected in state `NEW` is rewritten
   `PENDING_VERIFY` before its image is loaded.
+- **Its own writes can tear.** `write_otadata` erases the sector and
+  programs the 32-byte entry in one write. A power cut during it can leave
+  the sequence number and CRC whole and the state word partly programmed:
+  a valid entry, selecting the trial slot, in a state that is neither
+  `PENDING_VERIFY` nor `VALID`, which no later boot aborts. The firmware's
+  own writes avoid this by programming the sequence number last; the
+  bootloader's don't.
 - **Loading.** `bootloader_utility_load_boot_image` tries the selected slot,
   then works down to slot 0 and the factory app, then up through the other
   OTA slots, then the test app, without consulting the otadata. The first
@@ -721,8 +752,9 @@ Three operations:
    version or configuration is consulted. The previous `Valid` entry boots.
 2. **Switching to the other slot**, at any time, in either direction, with
    the highest permission tier (decision 29). The other slot must hold an
-   installed image that passes the ESP image check (hashed again), the
-   project name, the layout record and the board entry; a corrupted image
+   installed image that passes the ESP image check (the slot check's result
+   at the slot's current epoch), the project name, the layout record and
+   the board entry; a corrupted image
    is refused, as the bootloader would refuse it. No signature or trust set
    is checked: the image was verified when it arrived, and its signature
    status is shown. Once the running image is confirmed, a target whose
@@ -735,7 +767,11 @@ Three operations:
      entry with a newer one for the same slot. The switch boots as a trial,
      and the running image's `Valid` entry stays: a failed switch rolls back
      to it, and after a confirmed one both slots are still installed, so the
-     owner can switch back again.
+     owner can switch back again. The new entry replaces the target's only
+     entry, in the one sector the write can use: a power cut during it
+     leaves the running image selected and the target no longer installed,
+     though its image is intact. The target is then installed again by
+     uploading it as an update.
 3. **Updates**, the only way bytes reach a slot remotely: written, verified
    as `Signed`, activated as a trial.
 
@@ -750,11 +786,24 @@ What makes 1 always come for an image that can't be confirmed:
   confirmation window's handle is registered before the executor starts and
   retired only when the image is `Valid`, so a confirmation task that never
   starts, or stalls, resets the board (decision 24);
+- the firmware's own rollback before that reboot: when the deadline passes,
+  the running image isn't `Valid` and the other slot is a rollback target,
+  the confirmation window marks the running entry `Invalid` (as a switch
+  during a trial does) and then reboots. This also ends a trial whose entry
+  a torn bootloader write left in an undefined state, which the bootloader
+  would otherwise boot again forever (decision 39);
 - a power cycle, which needs no tools.
 
-All of these are code of the new image; only the bootloader stays the same
-across an update, and it has no timer. An image whose bug breaks the
-supervisor itself rolls back at the next power cycle.
+All of these except the bootloader's abort are code of the new image; only
+the bootloader stays the same across an update, and it has no timer. An
+image whose bug breaks the supervisor itself rolls back at the next power
+cycle, unless a torn bootloader write also left its entry undefined, which
+then needs USB.
+
+A boot the bootloader fell back to, after the selected image failed to load,
+has no rollback target to return to: the running entry isn't the active one.
+There the confirmation window only reboots, and a confirmation writes a new
+`Valid` entry for the running slot.
 
 What keeps a confirmed image updatable, so a bad image that was confirmed can
 also be fixed forward:
@@ -846,10 +895,11 @@ every past schema to the current one.
 - **Switching after confirmation (2).** The target slot's configuration is as
   it was when the update began, and lacks every change made since. Its trial
   boot would migrate from the alternate configuration, which the newer image
-  wrote in a newer schema. Recommended (decision 27): migrate only from a
-  schema version the image knows, otherwise keep its own configuration; the
-  API says before the switch that changes made since the update aren't
-  carried back.
+  wrote in a newer schema. Recommended (decision 27): when the target's own
+  configuration is present, keep it and ignore the alternate one; when it is
+  empty, migrate from the alternate one if its schema is one the image
+  knows, and otherwise start from defaults. The API says before the switch
+  that changes made since the update aren't carried back.
 
 ### USB-flashed slots
 
@@ -869,8 +919,11 @@ every past schema to the current one.
 - The signature sector belongs to the image: `begin_update` erases it with the
   first sector, and the slot's content module reads it at the same epoch as
   the image.
-- A `signature` view of each slot publishes the file once it verified, under
-  the publication rules (decision 3).
+- A `signature` view of each slot publishes the file once it verified
+  (decision 3). This changes a publication rule: today nothing past an
+  image is published (`app.rs`). The signature file is public data, its
+  bytes are pinned down by its parser, and nothing secret is ever written
+  there; the spec asks for the change here.
 
 ### Byte path
 
@@ -883,8 +936,9 @@ every past schema to the current one.
    sector, and wipes the alternate configuration. `Update::write` programs the
    body as it arrives, each sector erased before its first bytes, refusing
    bytes past the signature sector.
-3. `Update::finish` programs the last word, then the held signature file into
-   the signature sector, and ends the write session at epoch E.
+3. `Update::finish` programs the last word, then the held first word (the
+   image's magic), then the held signature file into the signature sector,
+   and ends the write session at epoch E.
 4. The slot's check reads the slot at E through a snapshot: header, segments,
    checksum, appended SHA-256, the file SHA-256 (accelerator), the
    descriptor, the layout record and the image information block; then
@@ -894,19 +948,22 @@ every past schema to the current one.
    from the HTTP body is trusted.
 5. `Update::finish` checks on that model the length written, the project, the
    layout, the board and configuration compatibility, the downgrade floor,
-   that the signing key is in the new image's trust entry as its `signing`
-   generation, and that a release-signed image doesn't trust the development
-   key; then it returns a `Signed` image.
-6. `Signed::activate` re-runs step 4 on the slot (decision 5), checks the slot
-   is still at E, and writes the otadata entry that selects the slot with
-   state `New`.
+   that the signing key is in the new image's trust entry, that a
+   release-signed image doesn't trust the development key, and that the
+   signing key's kind matches `secure_version` (0 for the development key,
+   at least 1 for a release key); then it returns a `Signed` image.
+6. `Signed::activate` checks the slot is still at E and writes the otadata
+   entry that selects the slot with state `New`. It doesn't hash the slot
+   again (decision 5).
 7. At the next boot the bootloader checks the image's SHA-256 (no debugger
    attached) and starts it as `PendingVerify`; the confirmation window
    applies as now.
 
 The signature is checked against the signature file and the file SHA-256 as
 read from the flash, at the epoch the activation also requires. A refusal at
-step 4 or 5 erases the first sector (decision 15).
+step 4 or 5, or an upload abandoned before `finish` (a dropped connection, a
+client timeout), erases the first sector (decision 15); the request handler
+does it, as `Update`'s `Drop` can't wait for an erase.
 
 ### Types
 
@@ -933,8 +990,11 @@ pub fn verify<'s>(file: &'s [u8], trust: &TrustSet) -> Result<Verified<'s>, SigE
 ```
 
 `eveningstar-boot`'s app check calls it at the slot's epoch and keeps the
-result in the model (`Signature::Verified { key, name }`, `Unsigned`,
-`Invalid(reason)`), so both slots report their signature.
+result in the model (`Signature::Verified { key, line }`, `Unsigned`,
+`Invalid(reason)`), so both slots report their signature. It keeps the
+matching line's index, not its name: the model is copied in critical
+sections, and the name is read from the slot on request, as the descriptor
+is.
 
 `eveningstar-ota` replaces `VerifiedImage` with `Signed`:
 
@@ -1039,7 +1099,10 @@ impl Update<'_, '_> {
   switch.
 - Each slot also shows its image information block (board, configuration
   schema range, trust entry) and `switch.refusal`: `not_installed`,
-  `corrupted`, `lower_secure_version`, `checking`.
+  `corrupted`, `no_appended_hash` (an image flashed over USB without one,
+  which the bootloader boots but the image check refuses),
+  `lower_secure_version`, `running_unconfirmed` (a fallback boot or an
+  undefined entry, where no switch can be planned), `checking`.
 - `confirmation` in `GET /firmware`: whether the running image awaits it,
   the rollback deadline, the latest deadline an extension may reach (boot
   plus 24 hours), the required and the advisory self-checks with their
@@ -1080,9 +1143,12 @@ command, so its evidence doesn't depend on the authors.
   the hash, extra spaces, duplicate lines, unlisted file, empty list); wrong
   keynum; small-order, mixed-order and non-canonical keys from Wycheproof
   injected as `.pub` files.
-- Each case runs `signify -C -p key.pub -x SHA256.sig <file>` and the device
-  verifier built for the host (an example of `eveningstar-signify`), and
-  records both verdicts.
+- Each case runs the device verifier built for the host (an example of
+  `eveningstar-signify`) and signify, and records both verdicts. Signature
+  cases (Wycheproof and RFC 8032 messages, which aren't checksum lists) run
+  `signify -V -e -p key.pub -x <sig> -m <out>`, so signify's verdict is the
+  signature's alone; manifest cases run `signify -C -p key.pub -x SHA256.sig
+  <file>`.
 - The rule: the device never accepts what signify refuses. Where signify
   accepts and the device refuses, the device's reason must be one of an
   enumerated list (S >= L; small-order R; a small-order or mixed-order key,
@@ -1111,8 +1177,9 @@ command, so its evidence doesn't depend on the authors.
 
 - A host property test over the otadata planner and `Ota` on the test flash:
   for any sequence of updates, activations, confirmations, switches, boots
-  (the bootloader's selection modelled from `bootloader_utility.c`) and power
-  cuts at any program or erase, no entry of any state names a slot from the
+  (the bootloader's selection modelled from `bootloader_utility.c`, its own
+  otadata writes torn as decision 39 describes) and power cuts at any
+  program or erase, no entry of any state names a slot from the
   first erase of an update until the activation of an image that verified,
   and `installed_other` never accepts that slot in between.
 
@@ -1135,7 +1202,8 @@ command, so its evidence doesn't depend on the authors.
 
 ### compile_fail tests
 
-One doctest per bypass:
+One doctest per bypass, each pinned to its error code (`compile_fail,E0599`
+and so on), so a doctest that fails for another reason doesn't pass:
 
 - building `Signed`, `Verified`, `TrustedKey` or `TrustSet` outside its crate
   (private fields, no constructor);
@@ -1182,10 +1250,14 @@ One doctest per bypass:
   build that halts at a symbol after `finish` (decision 22): with the core
   halted, the script drives the SPI1 flash controller's registers through
   probe-rs (no RAM flash loader, so the firmware's RAM survives), changes one
-  byte of the alternate image, and resumes. The activation must refuse. A
-  second run changes the byte after activation, detaches the debugger and
-  resets through the USB serial: the bootloader must refuse the image and
-  boot the running slot.
+  byte of the alternate image, and resumes. The activation goes ahead, as
+  the slot isn't hashed again (decision 5); the script then detaches the
+  debugger and resets through the USB serial, and the bootloader must refuse
+  the image and boot the running slot. This shows what stands between a
+  physical write and a boot.
+- A trial whose entry is left in an undefined state (written with esptool,
+  as a torn bootloader write would leave it): the confirmation window's
+  rollback must return to the previous image at the deadline.
 
 ## Decisions
 
@@ -1194,8 +1266,9 @@ The numbers stay as first proposed, so earlier references hold.
 ### Decided with the user (2026-11-07 and 2026-11-08)
 
 7. **Downgrade floor.** The ESP descriptor's `secure_version`, set through
-   `ESP_BOOTLOADER_ESP_IDF_CONFIG_SECURE_VERSION` in `.cargo/config.toml`
-   `[env]`, the full `u32` (no eFuse). Lower than the running image's is
+   `ESP_BOOTLOADER_ESP_IDF_CONFIG_SECURE_VERSION`, derived by the build from
+   the release flavour ("Development and release keys"), the full `u32` (no
+   eFuse). Lower than the running image's is
    refused for updates, and for switches once the running image is
    confirmed; nothing is refused during a trial; equal is allowed whatever
    the version string. Warnings at upload and at confirmation, which say
@@ -1242,7 +1315,11 @@ The numbers stay as first proposed, so earlier references hold.
     `secure_version` 0 and releases at least 1, so the floor refuses
     switching to a development build once a release is confirmed. A
     compromised release key is handled the same way, by a fix release that
-    raises `secure_version`.
+    raises `secure_version`. The device enforces it too: an upload signed
+    with the development key must have `secure_version` 0, and one signed
+    with a release key at least 1 (found in review: a development-signed
+    image with a huge `secure_version` would otherwise lock a development
+    board out of every later image once confirmed).
 34. **Release-signed images never trust the development key.** Refused at
     upload by every firmware, refused by the trust set generator, and checked
     in the ceremony.
@@ -1271,10 +1348,11 @@ The numbers stay as first proposed, so earlier references hold.
    default features off, no `hazmat`, no `legacy_compatibility`; `sha2` 0.11
    for its SHA-512. The audit gap above is the cost; the differential tests
    and vectors are the mitigation.
-5. **Re-verify at activation.** Recommended: yes, the full slot check again
-   (as long as the slot check takes now; measured on the board), so the
-   window is the otadata write. This reverses the earlier decision that
-   `activate` doesn't re-hash.
+5. **Re-verify at activation.** Recommended: no, as now: `Signed` holds the
+   slot's writer and activation checks the epoch, which excludes every
+   firmware write; a write from outside is physical access, out of scope.
+   Hashing again would cost another full slot check per update and a new
+   entry point in the slot's module, which keeps one result per epoch.
 6. **Disagreement with signify.** Recommended: the device may be stricter
    than signify only in the enumerated classes. Exact agreement would need a
    port of SUPERCOP's malleable verifier.
@@ -1285,13 +1363,18 @@ The numbers stay as first proposed, so earlier references hold.
     verifies and activates; rebooting stays a separate call. Alternative: a
     separate activate call, which needs the OTA task to keep the `Signed`
     between requests.
-15. **A refused upload.** Recommended: erase the slot's first sector, so the
-    API shows the slot empty.
+15. **A refused or abandoned upload.** Recommended: hold the first word in
+    RAM and program it last, so an unfinished upload never has a loadable
+    header; erase the slot's first sector after a refusal or an abandoned
+    upload, so the API shows the slot empty.
 16. **Bootloader configuration.** Recommended: pin
     `BOOTLOADER_SKIP_VALIDATE_ON_POWER_ON`, `_ALWAYS` and `_IN_DEEP_SLEEP`
     off (the deep sleep fast path boots without selecting, so a trial isn't
     ended), and `BOOTLOADER_APP_ANTI_ROLLBACK` off (it burns eFuses and can
-    leave nothing to boot), in `nix/bootloader`, reserved like `SECURE_*`.
+    leave nothing to boot), and `BOOTLOADER_WDT_ENABLE` on with
+    `BOOTLOADER_WDT_DISABLE_IN_USER_CODE` off (the RTC watchdog covers the
+    start-up until esp-hal takes over), in `nix/bootloader`, reserved like
+    `SECURE_*`.
 17. **The image digest.** Recommended: the SHA accelerator, as now for the
     slot check and as the bootloader uses it; the board test compares it with
     `sha256sum`. Alternative: software `sha2` as well, for two independent
@@ -1306,19 +1389,27 @@ The numbers stay as first proposed, so earlier references hold.
     the dev shell, short CI runs, committed corpora.
 22. **The probe-rs tamper test.** Recommended: a spike first, driving SPI1
     from probe-rs with the core halted. If it can't keep the firmware alive,
-    the fallback tests the window on the host test flash only and the board
-    test covers the bootloader's refusal at boot.
+    the board test covers only the bootloader's refusal at boot.
 25. **OTA readiness gates confirmation.** Recommended: a required self-check
     that the boot tier is reached and OTA is ready.
 26. **An image must trust its signer.** Recommended: refuse an update whose
-    trust entry lacks the key that signed it.
-27. **Configuration on a switch after confirmation.** Recommended: migrate
-    only from a known schema version, otherwise keep the slot's own
-    configuration, and say so in the API before the switch.
+    trust entry lacks the key that signed it. No further check of the entry's
+    `signing` generation: it adds nothing, and a development build, signed
+    with the development key, names 0.
+27. **Configuration on a switch after confirmation.** Recommended: keep the
+    target's own configuration when present; migrate from the alternate one
+    only when the target's is empty and the schema is known; otherwise
+    defaults. The API says so before the switch.
+39. **The firmware's rollback at the trial deadline.** Recommended: mark the
+    running entry `Invalid` before the deadline's reboot when there is a
+    rollback target, so a trial ends even when a torn bootloader write left
+    its entry undefined. The host model of the bootloader tears its writes
+    (any subset of the state word's bits, with the sequence number and CRC
+    whole), and the installed invariant's property test runs with it.
 
 ## Left open
 
-- Reproducible app images (build time and date in the descriptor).
+- Reproducible app images: rustc's output across machines.
 - The stack frame of `verify_strict` on the 32-bit backend under the
   `large_stack_frames` lint, and its time on the ESP32-C6.
 - Code size of ed25519-dalek and curve25519-dalek in the image.
