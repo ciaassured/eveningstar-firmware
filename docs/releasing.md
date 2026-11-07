@@ -1,8 +1,9 @@
 # Releasing firmware
 
 How a firmware release is built, checked, signed and published. A release is
-three files: the app image, its ELF (for symbolized logs), and `SHA256.sig`,
-a signify signature over their SHA-256 digests. Devices install only images
+four files: the app image, its ELF (for symbolized logs), `SHA256`, the list
+of their SHA-256 digests, and `SHA256.sig`, a signify signature over that
+list. Devices install only images
 signed by a release key their firmware trusts, so a mistake here reaches
 every device that installs the release.
 
@@ -28,8 +29,8 @@ every device that installs the release.
 These checks stop the mistakes they name; each runs without being asked.
 
 - The trust set generator (`lint` group) refuses a release trust set that
-  holds the development key, a compromised generation, a gap in the
-  generations, or a missing key file.
+  holds the development key, a gap in the generations, or a missing key
+  file, and skips a generation marked `compromised` or `lost`.
 - The secret key scan (`lint` group, pre-push, and every commit of a pull
   request) refuses any signify secret key in the repository other than the
   development key.
