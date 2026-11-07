@@ -50,6 +50,13 @@ and checks it before selecting it for the next boot:
 
 A refused upload changes nothing that boots, and the page names the reason.
 
+The firmware page shows each slot's SHA-256. After an update it matches the
+image's line in the release's `SHA256` file:
+
+```sh
+sha256sum eveningstar-<version>-esp32c6.bin
+```
+
 The page warns before installing:
 
 - a release that raises the security version: once confirmed, firmware with
@@ -108,6 +115,21 @@ flash-all
 writes the bootloader, the partition table and the app built from the
 checkout, and selects the app for the next boot. `flash-app` writes the app
 only. Both pass the port with `-p PORT` when there is more than one board.
+
+### Provisioning a new board _(planned)_
+
+Once per board, after its first `flash-all`:
+
+```sh
+provision
+```
+
+It reads the eFuses, checks that secure boot, flash encryption, download
+mode and USB Serial/JTAG are as shipped, and then write-protects those
+eFuses. From then on no firmware, whoever signed it, can disable USB
+recovery or enable secure boot or flash encryption. This is permanent, and
+it is what keeps the board recoverable over USB for good. The firmware page
+shows a warning on a board that isn't provisioned.
 
 ### With a release
 
