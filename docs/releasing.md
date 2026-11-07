@@ -40,8 +40,10 @@ These checks stop the mistakes they name; each runs without being asked.
   check (layout, size, chip, project).
 - Every firmware refuses at upload an image signed with a release key that
   trusts the development key, an image whose trust set lacks the key that
-  signed it, an image with a lower `secure_version`, and an image that can't
-  migrate the device's configuration.
+  signed it, an image with a lower `secure_version`, an image signed with
+  the development key whose `secure_version` isn't 0 or one signed with a
+  release key whose `secure_version` is 0, and an image that can't migrate
+  the device's configuration.
 
 They don't catch a wrong decision: a security fix released without raising
 `secure_version`, a `secure_version` raised by mistake (devices can't switch
@@ -51,8 +53,9 @@ notes that omit a stepping-stone release.
 ## Before the release
 
 1. Decide the version (`version` in the root `Cargo.toml`).
-2. Decide `secure_version` (`ESP_BOOTLOADER_ESP_IDF_CONFIG_SECURE_VERSION` in
-   `.cargo/config.toml` `[env]`):
+2. Decide `secure_version` (`secureVersion` in `nix/release.nix`
+   _(planned)_; only the release build reads it, and development builds
+   always have 0):
    - raise it by one when the release fixes a vulnerability that makes
      earlier firmware unsafe to run;
    - otherwise keep it.
@@ -89,7 +92,8 @@ notes that omit a stepping-stone release.
    (`SHA256 (<file>) = <hex>` lines).
 2. Compare the two `SHA256` files byte for byte. They must be identical;
    different digests mean the build isn't reproducible, and nothing is
-   signed.
+   signed. The descriptor's build date comes from `SOURCE_DATE_EPOCH`, which
+   Nix sets, so it doesn't differ between the builds.
 3. Run the checks and read the report:
 
    ```sh

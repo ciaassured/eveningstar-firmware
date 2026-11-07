@@ -796,9 +796,11 @@ on offline media. These checks catch a mistake anyway:
 `docs/releasing.md` and `docs/updating.md` describe the release and update
 procedures in terms of three tools not built yet (decision 43):
 
-- `nix build .#release`: the release flavour of the app (trust set `signing`
-  to `signing + 2`, `secure_version` at least 1), with the image and the ELF
-  named `eveningstar-<version>-esp32c6.{bin,elf}` and a `SHA256` listing
+- `nix build .#release`: the release flavour of the app, built with
+  `EVENINGSTAR_RELEASE` set ("Development and release keys"): trust set
+  `signing` to `signing + 2`, `secure_version` from `nix/release.nix`, at
+  least 1. Its output is the image and the ELF, named
+  `eveningstar-<version>-esp32c6.{bin,elf}`, and a `SHA256` listing
   (`sha256sum --tag` format).
 - `release-check <dir>`: `check-images` on the image, then the release rules:
   no development key in the trust entry, `secure_version` at least 1 and not
