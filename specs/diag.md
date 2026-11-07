@@ -16,6 +16,36 @@ This revisits the LP RAM reset record deferred on 2026-10-17, which was put
 off to avoid `unsafe` `static mut` code while the watchdog supervisor was
 reworked.
 
+## Requirements
+
+Each with the mechanism that holds it and what shows it, other than the
+authors.
+
+1. **A crash, a missed watchdog deadline or the end of a trial is recorded,
+   and survives every reset but a chip reset.**
+   - Held by: the mailbox, written at the moment, in memory TRM 8.1.1 says
+     every reset but a chip reset keeps.
+   - Shown by: the board's retention test across each reset reason, and the
+     fault catalogue's records read back over the API.
+2. **The history survives power loss, and a torn write loses at most the
+   record being written.**
+   - Held by: the log's per-record CRC and its mount rules.
+   - Shown by: the host model of the log with torn and unstable flash, and
+     the USB power-cut rig of `specs/ota-signing.md`.
+3. **Every firmware version reads every other's records.**
+   - Held by: the record encoding's rules.
+   - Shown by: the committed fixtures of every released format and the
+     "future" fixtures, in CI.
+4. **A rollback is recorded once, with its cause.**
+   - Held by: the "activated" record and the inference rules.
+   - Shown by: the host inference tests, and the board's rollback scenarios
+     under the power-cut rig.
+5. **Diagnostics never block a boot, an update or a confirmation, and never
+   hang the board.**
+   - Held by: best-effort writes; the panic handler's re-entry guard.
+   - Shown by: the fault catalogue with the `diag` region filled with
+     garbage, and a panic inside the panic handler.
+
 ## Sources read
 
 - ESP32-C6 Technical Reference Manual v1.2, chapter 8 (reset and clock):
@@ -78,6 +108,11 @@ What they establish:
   `ImmediateReboot`) and the supervisor (`MissedDeadline { task }`) use.
   `GracefulReboot` carries no reason today. MWDT0 and RWDT reset the chip
   without any software hook when the supervisor itself stalls.
+- **Errata (v0.2).** CPU-863: a misaligned load followed by a store across
+  PMP regions can fault; the mailbox's copies use byte or aligned word
+  accesses. The flash datasheet (XM25QH64C, `specs/ota-signing.md`
+  "Hardware facts"): an interrupted program or erase leaves data undefined,
+  and bits can read differently from one read to the next.
 - **Where a watchdog reset hung.** The C6 bootloader enables the debug
   assist's PC recording, which survives a core reset, and the PAC exposes
   it (`ASSIST_DEBUG.rcd_pdebugpc`). To be confirmed on the board.
@@ -222,6 +257,11 @@ checks and for grouping records; it isn't secret.
   then given its header; the oldest records go.
 - A sector whose header doesn't parse is erased only when the ring reaches
   it, so a firmware never wipes history it merely can't read.
+- An interrupted erase or program can leave bits that read differently each
+  time. A record or header is trusted only through its CRC; a sector whose
+  tail isn't cleanly erased is never appended to again; and the mount
+  reads each header twice and takes a sector as the head only when both
+  reads agree.
 - Sequence numbers can't wrap in the device's life: 64 sectors at 100 000
   erases each are 6.4 million sector numbers. Clearing the log restarts
   them.
@@ -342,7 +382,8 @@ migration` failed."
   record whose CRC failed.
 - **Host, log:** a property test on the test flash: for any sequence of
   appends, rotations and clears, with a power cut at any program or erase,
-  torn sector headers and partly erased sectors included, the mount finds
+  torn sector headers and partly erased sectors included, and the affected
+  bits unstable (read 0 or 1 at each read), the mount finds
   every record whose write completed, in order, and nothing torn.
 - **Host, mailbox:** random bytes in the mailbox's place never produce an
   entry; a torn entry is dropped; a duplicate drain writes nothing.
