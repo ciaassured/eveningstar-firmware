@@ -116,21 +116,6 @@ writes the bootloader, the partition table and the app built from the
 checkout, and selects the app for the next boot. `flash-app` writes the app
 only. Both pass the port with `-p PORT` when there is more than one board.
 
-### Provisioning a new board _(planned)_
-
-Once per board, after its first `flash-all`:
-
-```sh
-provision
-```
-
-It reads the eFuses, checks that secure boot, flash encryption, download
-mode and USB Serial/JTAG are as shipped, and then write-protects those
-eFuses. From then on no firmware, whoever signed it, can disable USB
-recovery or enable secure boot or flash encryption. This is permanent, and
-it is what keeps the board recoverable over USB for good. The firmware page
-shows a warning on a board that isn't provisioned.
-
 ### With a release
 
 With `esptool` and the release image, into the first slot, erasing the boot

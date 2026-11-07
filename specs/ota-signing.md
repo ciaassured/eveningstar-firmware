@@ -767,7 +767,7 @@ on offline media. These checks catch a mistake anyway:
 ### Release tooling
 
 `docs/releasing.md` and `docs/updating.md` describe the release and update
-procedures in terms of four tools not built yet (decision 43):
+procedures in terms of three tools not built yet (decision 43):
 
 - `nix build .#release`: the release flavour of the app, built with
   `EVENINGSTAR_RELEASE` set ("Development and release keys"): trust set
@@ -779,10 +779,9 @@ procedures in terms of four tools not built yet (decision 43):
   no development key in the trust entry, `secure_version` at least 1 and not
   below the previous release's, the trusted generations `signing` to
   `signing + 2` of `nix/keys.nix` and the entry's `signing` equal to it, and
-  the `SHA256` listing matching the files. It prints what it read.
-- `provision`: the one-time eFuse write protection of "eFuses", over USB.
-  It refuses a board whose protected fields have left their shipped values,
-  prints `espefuse summary` before and after, and burns nothing else.
+  the `SHA256` listing matching the files, and no reference in the ELF to
+  the eFuse controller or the ROM's eFuse programming functions ("eFuses").
+  It prints what it read.
 - `nix build .#signing-iso`: a live system for the offline machine with
   `signify`, `sha256sum` and `release-check`, built from the tag, so the
   offline machine runs the same checks without a network.
@@ -1713,7 +1712,7 @@ used.
     the shipped code.
 42. **External review.** Recommended: before the first signed release.
 43. **Release tooling.** Recommended: the `release` package,
-    `release-check`, `provision` and the signing live system, as listed under "Release
+    `release-check` and the signing live system, as listed under "Release
     tooling", so every release rule the ceremony relies on is checked by a
     tool, on the networked machine and again offline.
 44. **Reproducibility before the first signed release.** Recommended: the
