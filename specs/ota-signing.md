@@ -47,9 +47,9 @@ shows it, other than the authors. The rest of the spec is the detail.
    - Shown by: stock signify and OpenBSD's own verification code agreeing
      with the verifier on every case (differential tests and fuzzing); the
      trust set constants compared with `nix/keys.nix` by the `lint` group;
-     Wycheproof and RFC 8032 vectors; the model check of the update protocol; mutation
-     testing of the verifier and the policy; board refusals read back with
-     `esptool`.
+     Wycheproof and RFC 8032 vectors; the model check of the update
+     protocol; mutation testing of the verifier and the policy; board
+     refusals read back with `esptool`.
 2. **A trial always ends: confirmed, or rolled back to the image that ran
    before, whatever that image's keys, signature or `secure_version`.**
    - Held by: the bootloader's abort of `PENDING_VERIFY`; the confirmation
@@ -63,8 +63,9 @@ shows it, other than the authors. The rest of the spec is the detail.
      release image trusts only our release keys.
    - Shown by: the link map's cross-reference table holding no reference to
      the ROM's eFuse programming functions; `release-check`'s constant scan
-     of the release ELF against a committed allowlist; bad fixtures each of these refuses;
-     the lints. These guard against mistakes, not hostile code.
+     of the release ELF against a committed allowlist; bad fixtures each of
+     these refuses; the lints. These guard against mistakes, not hostile
+     code.
 4. **A confirmed image can take the next update.**
    - Held by: the OTA readiness self-check; a known-answer self-check of the
      new image's own verifier; an upload refused unless its image trusts the
@@ -1602,9 +1603,10 @@ used.
     release keys.
 
 40. **eFuses.** Nothing is write-protected in advance, so the owner stays
-    free to install a fork that uses secure boot. Recommended guards: the board crate keeping the peripheral and the
-    USB pins, lints, the link map's cross-reference check of the ROM's
-    programming functions, and `release-check`'s allowlisted constant scan.
+    free to install a fork that uses secure boot. Recommended guards: the
+    board crate keeping the peripheral and the USB pins, lints, the link
+    map's cross-reference check of the ROM's programming functions, and
+    `release-check`'s allowlisted constant scan.
 
 ### Open, with a recommendation
 
