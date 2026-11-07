@@ -51,7 +51,8 @@ and checks it before selecting it for the next boot:
 A refused upload changes nothing that boots, and the page names the reason.
 
 The firmware page shows each slot's SHA-256. After an update it matches the
-image's line in the release's `SHA256` file:
+image's line in the release's `SHA256` file, which is also the message
+`SHA256.sig` signs:
 
 ```sh
 sha256sum eveningstar-<version>-esp32c6.bin
@@ -87,12 +88,19 @@ says that the update was rolled back, and why.
 ### Switching back
 
 The firmware that ran before stays in the other slot until the next update.
-The firmware page can switch to it at any time, as a trial again, unless:
+The firmware page can switch to it at any time:
+
+- during a trial, at once: the trial ends and the previous firmware runs
+  again, as after an automatic rollback;
+- after confirmation, as a trial of the other firmware, which rolls back to
+  the current one unless confirmed.
+
+The page names the reason when a switch is refused, for example:
 
 - the running firmware is confirmed and the other one has a lower security
-  version; or
+  version;
 - the other slot holds no complete firmware (an update was refused or
-  interrupted).
+  interrupted), or a corrupted one.
 
 A switch starts the other firmware with its own configuration, as it was
 when it last ran: changes made since are not carried back.
@@ -117,7 +125,7 @@ flash-all
 
 writes the bootloader, the partition table and the app built from the
 checkout, and selects the app for the next boot. `flash-app` writes the app
-only. Both pass the port with `-p PORT` when there is more than one board.
+and clears the boot selection, so the board starts it. Both pass the port with `-p PORT` when there is more than one board.
 
 ### With a release
 
@@ -129,9 +137,9 @@ esptool --chip esp32c6 write-flash 0x10000 eveningstar-<version>-esp32c6.bin
 esptool --chip esp32c6 erase-region 0xa000 0x2000
 ```
 
-Don't pass `--flash-mode`, `--flash-freq` or `--flash-size`: esptool then
-rewrites the header of the image it writes, which changes its digest.
-Writing `SHA256.sig` into the slot's signature sector, so the device reports
+Don't pass `--flash-mode`, `--flash-freq` or `--flash-size` when writing
+the bootloader: esptool then rewrites its header, and the firmware no
+longer recognizes it. Writing `SHA256.sig` into the slot's signature sector, so the device reports
 who signed the image, is _(planned)_.
 
 Flashing over USB keeps the configuration. `esp-wipe` erases the whole flash
