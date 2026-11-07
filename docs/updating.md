@@ -15,7 +15,8 @@ Each release on GitHub has:
 - `eveningstar-<version>-esp32c6.bin`: the app image;
 - `eveningstar-<version>-esp32c6.elf`: the same firmware with symbols, for
   logs;
-- `SHA256.sig`: the signature over both files' digests.
+- `SHA256`: both files' SHA-256 digests;
+- `SHA256.sig`: the signature over that list, with the list embedded.
 
 The device checks the signature itself. Checking it on a computer as well
 confirms the download before anything is sent to the device:
@@ -70,10 +71,12 @@ The page warns before installing:
 1. Reboot the device from the firmware page. The new firmware starts on
    trial.
 2. The firmware page lists the self-checks:
-   - required checks (configuration migration, storage, the API) must pass
-     before the firmware can be confirmed;
-   - advisory checks (MQTT uploads, the charge controller, the network,
-     whether it trusts the development key) are shown for the user to judge.
+   - required checks (for example configuration migration, storage, OTA
+     readiness, the API and the signature verifier's known answers) must
+     pass before the firmware can be confirmed;
+   - advisory checks (for example MQTT uploads, the charge controller, the
+     network, whether it trusts the development key) are shown for the user
+     to judge.
 3. Check what matters for the installation. The trial lasts 10 minutes and
    can be extended in steps, up to 24 hours after the reboot.
    Configuration can be changed during the trial; the changes are discarded
@@ -107,8 +110,9 @@ when it last ran: changes made since are not carried back.
 
 ## Over USB
 
-USB works whatever the firmware on the device, as long as it doesn't take
-over the USB pins (ours never does): it uses the chip's built-in loader. It
+USB works whatever the firmware on the device, as long as that firmware
+neither reconfigures the USB pins nor burns the eFuses that disable the
+loader (ours does neither): it uses the chip's built-in loader. It
 is the way to install firmware for the first time, to recover a device that
 doesn't come up, and to return to a release that the security version rules
 out over the network. When USB doesn't come up at all, the debug header J2
@@ -125,7 +129,8 @@ flash-all
 
 writes the bootloader, the partition table and the app built from the
 checkout, and selects the app for the next boot. `flash-app` writes the app
-and clears the boot selection, so the board starts it. Both pass the port with `-p PORT` when there is more than one board.
+and clears the boot selection, so the board starts it. Both pass the port
+with `-p PORT` when there is more than one board.
 
 ### With a release
 
@@ -139,8 +144,8 @@ esptool --chip esp32c6 erase-region 0xa000 0x2000
 
 Don't pass `--flash-mode`, `--flash-freq` or `--flash-size` when writing
 the bootloader: esptool then rewrites its header, and the firmware no
-longer recognizes it. Writing `SHA256.sig` into the slot's signature sector, so the device reports
-who signed the image, is _(planned)_.
+longer recognizes it. Writing `SHA256.sig` into the slot's signature
+sector, so the device reports who signed the image, is _(planned)_.
 
 Flashing over USB keeps the configuration. `esp-wipe` erases the whole flash
 for a clean start, after which `flash-all` is needed.
