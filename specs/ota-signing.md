@@ -44,8 +44,9 @@ shows it, other than the authors. The rest of the spec is the detail.
 1. **Only a verified image runs from a remote update.**
    - Held by: the held first word and the two verifications ("Byte path");
      `Signed` as the only value that activates; the trust set compiled in.
-   - Shown by: stock signify and a second Ed25519 implementation agreeing
-     with the verifier on every case (differential fuzzing); Wycheproof and
+   - Shown by: stock signify and OpenBSD's own verification code agreeing
+     with the verifier on every case (differential tests and fuzzing); the
+     trust set constants compared with `nix/keys.nix` by the `lint` group; Wycheproof and
      RFC 8032 vectors; the model check of the update protocol; mutation
      testing of the verifier and the policy; board refusals read back with
      `esptool`.
@@ -57,16 +58,19 @@ shows it, other than the authors. The rest of the spec is the detail.
      and unstable flash; the real bootloader on the board, under the
      power-cut rig and the catalogue of broken images.
 3. **Our firmware never takes USB recovery from the owner.**
-   - Held by: no route to eFuse programming in the firmware ("eFuses"); a
+   - Held by: no route to eFuse programming, and no reconfiguration of the
+     USB pins or the USB Serial/JTAG pad, in the firmware ("eFuses"); a
      release image trusts only our release keys.
-   - Shown by: the lints, and `release-check`'s scan of the release ELF for
-     any reference to the eFuse controller's programming registers or the
-     ROM's programming functions; `esptool` recovering a board after each
-     fault case.
+   - Shown by: the link failing on any reference to the ROM's eFuse
+     programming functions; `release-check`'s constant scan of the release
+     ELF against a committed allowlist; bad fixtures each of these refuses;
+     the lints. These guard against mistakes, not hostile code.
 4. **A confirmed image can take the next update.**
-   - Held by: the OTA readiness self-check; an upload refused unless its
-     image trusts the key that signed it.
-   - Shown by: the board scenarios, each confirmed release taking the next.
+   - Held by: the OTA readiness self-check; a known-answer self-check of the
+     new image's own verifier; an upload refused unless its image trusts the
+     key that signed it.
+   - Shown by: the board scenarios, each confirmed release taking the next,
+     and a release whose verifier is broken on purpose failing its trial.
 5. **No downgrade below the floor, except by USB or during a trial.**
    - Held by: the `secure_version` checks at upload and at a switch after
      confirmation; development builds at 0.
@@ -78,9 +82,11 @@ shows it, other than the authors. The rest of the spec is the detail.
      check, the secret key scan.
    - Shown by: those tools refusing generated bad fixtures in CI.
 7. **A release can be checked by anyone.**
-   - Held by: the signify format; reproducible builds; published digests.
-   - Shown by: stock signify on a desktop; an independent rebuild matching
-     the published `SHA256`.
+   - Held by: the signify format; published digests; reproducible builds.
+   - Shown by: stock signify on a desktop over the published `SHA256.sig`;
+     and, from the first signed release on, a second build on another
+     machine matching the published `SHA256`, which that release waits for
+     (decision 44).
 
 ## Sources read
 
@@ -119,6 +125,13 @@ Every claim below about another system comes from these, read for this spec.
   2010, sections 3 and 6.
 - MCUboot design document and `boot/bootutil/src/image_validate.c`,
   `image_ed25519.c` at main.
+- The board's resolved bootloader configuration (`nix build .#sdkconfig`),
+  ESP-IDF's `bootloader_esp32c6.c`, `bootloader_init.c`, `bootloader_flash.c`
+  and `app_update/test_apps/test_app_update/main/test_switch_ota.c`;
+  esp-rom-sys 0.1.5's ROM linker scripts; the hardware repository's
+  schematics (`psu`, `usb`, `mcu`, `flash`); the XM25QH64C datasheet; the
+  ESP32-C6 errata v1.3; and the board itself (`esptool flash-id`,
+  `read-flash-status`, `espefuse summary`).
 
 ## What the sources establish
 
@@ -283,18 +296,40 @@ datasheets. A claim that rests on one of these says so.
   program or erase: "data corruption may happen", with no defined partial
   state. The status register's one-time lock exists only on special order;
   its block protection bits are non-volatile but writable.
+- **Flash status register:** `0x0200` (`esptool read-flash-status`): no
+  block protection, `SRP` 0, `QE` 1. No permanent lock exists on this part
+  (the one-time lock is a special order, the power-supply lock clears at a
+  power cycle, `/WP` is IO2 while `QE` is set), and `esptool` clears block
+  protection. Partial page programs are allowed, which the held first word
+  relies on.
 - **eFuses:** none of the security fuses is burnt: secure boot, flash
   encryption, download mode, USB Serial/JTAG and its download mode are all
   as shipped, and `WR_DIS` is 0, so every one of them is still writable, by
-  the firmware too.
-- **Errata for v0.2** (ESP32-C6 errata v1.3) that touch this design:
-  CPU-863, a misaligned load followed by a store across PMP regions can
-  fault, so byte copies between flash-mapped or ROM data and RAM use
-  aligned or byte accesses; CLK-8588, the internal 32 kHz RC may fail to
-  start, so the RTC watchdog, which counts the slow clock, is a backstop
-  only when the slow clock runs from the board's 32 kHz crystal (to check
-  in the firmware's clock configuration). CPU-206 and SPI-304 are fixed in
-  v0.2.
+  any firmware.
+- **Power:** the board runs only from its 2-pin DC input, through a fuse,
+  a TVS diode and a Schottky diode into a buck converter (LMR38020, with
+  22 µF before and 3 × 47 µF after it); USB VBUS powers nothing. A power cut
+  is a ramp through those capacitors into the brownout reset, which the
+  bootloader arms (`bootloader_esp32c6.c`) and the firmware never disables.
+- **Recovery without USB:** the debug header J2 carries the reset line, the
+  UART and GPIO9 (labels in `mcu.kicad_sch`; to confirm against the
+  netlist). GPIO9 held low at reset enters download boot (TRM table 9.2-2).
+  The user button is GPIO21, not a strapping pin.
+- **Resolved bootloader configuration** (`nix build .#sdkconfig`):
+  `APP_ROLLBACK_ENABLE` on; `APP_ANTI_ROLLBACK`, `SKIP_VALIDATE_*`,
+  `FACTORY_RESET` and `CUSTOM_RESERVE_RTC` off; `WDT_ENABLE` on at 9000 ms;
+  `FLASH_XMC_SUPPORT` on (the start-up sequence for this flash).
+- **Slow clock:** esp-hal defaults the LP slow clock to the internal RC_SLOW
+  (136 kHz), and the firmware never changes it. Errata CLK-8588 (the
+  internal 32 kHz RC may not start) therefore doesn't touch the RTC
+  watchdog, which counts the slow clock. A release never selects the
+  internal 32 kHz RC, and moving to the 32 kHz crystal needs a start-up
+  check with a fallback, as ESP-IDF's `rtc_clk_init` does (advisory
+  AR2024-011 covers changing the slow clock over OTA).
+- **Errata CPU-863** (a misaligned load followed by a store across PMP
+  regions can fault): rustc emits no misaligned accesses for
+  `riscv32imac`, and the ROM's libc isn't linked; only C code linked later
+  could be exposed. CPU-206 and SPI-304 are fixed in v0.2.
 
 ## Threat model
 
@@ -332,7 +367,10 @@ whoever has it can reflash anything, by design.
 - **Leaked or lost release key.** The next release is signed with key N+1,
   which every image signed with N already trusts, and trusts N+1, N+2 and
   N+3 only. Devices that install it stop trusting N. A lost key is replaced
-  the same way.
+  the same way. A future key can't be regenerated (installed images trust
+  its public key), so every generated key gets both offline copies at once;
+  one lost anyway is marked `lost`, and the trust set becomes the next
+  three generations from `signing` that aren't `lost` or `compromised`.
 - **Unsigned untrusted comment.** The device never reads it: it doesn't pick
   the key, isn't stored apart from the signature file, and isn't shown. The
   release instructions always pass `-p`, so the desktop doesn't use it
@@ -517,11 +555,11 @@ from the repository at the release's signed tag and from the release notes.
   it are future. A release trusts `signing` to `signing + 2`; a development
   build trusts the same three and the development key. Rotating is one edit:
   raise `signing` and add the next generation's file.
-- The generator refuses: a gap in the generations; a missing file for
-  `signing` to `signing + 2`; a `compromised` generation inside the trusted
-  range; a duplicate keynum. The README's key table (generation, status,
-  public key line) is generated from the same file and checked by the
-  `lint` group.
+- The generator refuses: a gap in the generations; a missing file for the
+  three usable generations from `signing`; a duplicate keynum. A generation
+  marked `lost` or `compromised` is skipped, never trusted again. The
+  README's key table (generation, status, public key line) is generated
+  from the same file and checked by the `lint` group.
 - A generated, committed module holds the trust sets as constants, checked
   up to date by the `lint` group like `layout.rs`. The type of a trust set
   has no public constructor, so the generated constants are the only trust
@@ -754,26 +792,11 @@ So, on this board, the bootloader's rollback returns to the previous image:
   `ABORTED`. The firmware sees a fallback boot. If that image has no network,
   only USB recovers the board.
 
-For comparison, ESP-IDF's other modes, never used here:
-
-- **Anti-rollback.** The eFuse secure version is raised only when an image
-  becomes `VALID`: by the app's `esp_ota_mark_app_valid_cancel_rollback`, or
-  by the bootloader booting an entry already `VALID`. During a trial the eFuse
-  still holds the old value, so a trial rolls back to an older image with a
-  lower secure version. After confirmation the older image is skipped both in
-  selection and in the fallback loop, so a later load failure of the new
-  image leaves nothing to boot. The Kconfig help says "Rollback is possible
-  only between the apps with the same security versions"; the code allows it
-  during the trial. `esp_ota_set_boot_partition` erases a slot whose secure
-  version is below the eFuse.
-- **Secure boot.** Every load, the fallback included, verifies the
-  signature; an image the bootloader's keys don't verify is never a rollback
-  target.
-- **Firmware-requested rollback.** `esp_ota_mark_app_invalid_rollback` marks
-  the running entry `INVALID` only when `esp_ota_check_rollback_is_possible`
-  finds the other entry valid and its image passing `image_validate` (and,
-  with anti-rollback, a secure version not below the eFuse). It checks no
-  signature without secure boot.
+For comparison, ESP-IDF's other modes, never used here: anti-rollback
+raises an eFuse only when an image becomes `VALID`, so a trial still rolls
+back to a lower secure version, but after confirmation the older image is
+skipped even by the fallback loop; secure boot verifies every load, so an
+image its keys don't verify is never a rollback target.
 
 Watchdogs: the bootloader arms the RTC watchdog (`BOOTLOADER_WDT_ENABLE`, 9 s
 by default). esp-hal's `init` configures the clocks with it still running,
@@ -793,43 +816,52 @@ reflashed over USB.
 This firmware never programs an eFuse. What a fork the owner installs does
 is the owner's business, so nothing is write-protected in advance.
 
-On the ESP32-C6 an eFuse is programmed in two ways only: through the eFuse
-controller's registers (`EFUSE` at `0x600B_0800`: the `PGM_DATA` registers,
-then the `CONF` op code and `CMD`), or through the ROM's
-`ets_efuse_program`, `ets_efuse_write_key` and
-`ets_efuse_clear_program_registers` (`0x4000_0804`–`0x4000_080C`). esp-hal's
-`efuse` module only reads. The firmware closes both:
+On the ESP32-C6 an eFuse is programmed in two ways: through the eFuse
+controller's registers (`EFUSE` at `0x600B_0800`: `PGM_DATA`, then `CONF`
+and `CMD`), or through the ROM's `ets_efuse_program`,
+`ets_efuse_clear_program_registers`, `ets_efuse_write_key` and
+`ets_secure_boot_revoke_public_key_digest` (`0x4000_0804`–`0x4000_080C`,
+`0x4000_0880`). esp-rom-sys defines those ROM symbols for every image;
+esp-hal's `efuse` module only reads, through the same registers. The guards:
 
-- The board crate takes the `EFUSE` peripheral out of the peripherals
-  `esp_hal::init` returns, and keeps it; nothing else receives it. Reads go
-  through esp-hal's read functions.
-- Clippy's `disallowed-types` lists `esp_hal::peripherals::EFUSE` and the
-  PAC's `esp32c6::EFUSE`, with their `steal`, `ptr` and `regs`; the board
-  crate expects the lint where it takes the peripheral. No crate declares the
-  ROM's eFuse functions.
-- `release-check` disassembles the release ELF and fails on any reference to
-  the controller's address range or a call to those ROM addresses, which
-  also catches a route through a dependency or raw pointers the lints can't
-  see.
-- The flash's status register is written only by esp-storage's unlock,
-  which clears protection; the firmware sets no protection bits.
+- **The peripheral.** The board crate takes `EFUSE` out of the peripherals
+  `esp_hal::init` returns and keeps it; nothing else receives it. Clippy's
+  `disallowed-types` lists `esp_hal::peripherals::EFUSE`, `esp32c6::EFUSE`
+  and `esp32c6::efuse::RegisterBlock`, and `disallowed-methods` lists
+  `esp_hal::peripherals::Peripherals::steal`; the board crate expects the
+  lint where it takes the peripheral.
+- **The ROM functions.** The firmware's build script passes
+  `--wrap=<symbol>` for each of the four symbols to the linker and defines
+  no wrapper, so a reference from any object, a dependency or a binary blob
+  included, fails the link. If rust-lld doesn't apply `--wrap` to symbols a
+  linker script defines, `release-check` reads the link map
+  (`--Map --cref`) instead and fails on any object that references them.
+- **The registers.** `release-check` disassembles the release ELF, resolves
+  every address built from `lui` or `auipc` with `addi` (the `0x600B1` with
+  a negative offset form included) and every 32-bit word in `.rodata` and
+  `.data`, and reports each in `0x600B_0800`–`0x600B_0BFF` with its function.
+  The report must equal a committed allowlist of esp-hal's readers. An
+  address carried through memory or an argument isn't resolved, so this
+  catches constants, not every route.
+- **Fixtures** `release-check` must refuse: a PAC `EFUSE::steal().cmd()`
+  write, a raw volatile write to the controller, and an `extern "C"` call of
+  `ets_efuse_program`.
+- **The USB link.** The same lints cover `esp_hal::peripherals::USB_DEVICE`
+  and the GPIO12 and GPIO13 pins; reconfiguring them, or clearing the USB
+  Serial/JTAG pad enable, drops the link before the host can enumerate. The
+  board crate keeps them.
+
+These guard against mistakes in our code and dependencies, not against
+hostile code, which the trust set keeps off the board. When USB is lost
+anyway, J2's reset and GPIO9 lines reach download boot ("Hardware facts").
 
 ### OpenBSD
 
-- No A/B slots, no trial boot and no automatic rollback. `sysupgrade`
-  verifies `SHA256.sig` (the key name taken from the comment must match
-  `openbsd-NN-base.pub`), then boots `bsd.upgrade`; the installer verifies
-  again with `openbsd-$((VERSION + 1))-base.pub` and overwrites the system in
-  place. A system that doesn't boot is repaired by hand from `bsd.rd` or
-  install media.
-- The interactive installer asks "Continue without verification?" after a
-  failed check; an unattended upgrade exits instead.
-- `syspatch` archives the files a patch replaces into a local, unsigned
-  `rollback.tgz` before applying it, rolls back by itself when the install
-  fails, and `syspatch -r` reverts the latest patch at any time from that
-  archive. Neither checks a signature or a version: what is installed is
-  trusted, only what arrives is verified.
-- No secure version and no anti-rollback.
+No A/B slots, no trial and no automatic rollback: an upgrade verifies
+`SHA256.sig` with the next release's key and overwrites the system in place.
+`syspatch` keeps a local, unsigned `rollback.tgz` of what a patch replaces,
+and `syspatch -r` restores it at any time without a signature or version
+check: what is installed is trusted, only what arrives is verified.
 
 ### This design: verify what arrives, trust what is installed
 
@@ -868,9 +900,13 @@ Three operations:
    version or configuration is consulted. The previous `Valid` entry boots.
 2. **Switching to the other slot**, at any time, in either direction, with
    the highest permission tier (decision 29). The other slot must hold an
-   installed image that passes the ESP image check (the slot check's result
-   at the slot's current epoch), the project name, the layout record and
-   the board entry; a corrupted image
+   installed image. During a trial that is all: the previous image ran
+   here, and it may predate the image information block (the first signed
+   update replaces firmware that has none); if it no longer loads, the
+   bootloader falls back anyway. After confirmation the target must also
+   pass the ESP image check (the slot check's result at the slot's current
+   epoch), the project name, the layout record and the board entry, a
+   missing board entry reading as unknown and refused; a corrupted image
    is refused, as the bootloader would refuse it. No signature or trust set
    is checked: the image was verified when it arrived, and its signature
    status is shown. Once the running image is confirmed, a target whose
@@ -961,8 +997,10 @@ N+1, trusts N+1 to N+3, `secure_version` 2.
 - **Required** checks gate confirmation. They cover what the firmware
   itself guarantees and what recovery needs: storage and the configuration
   migration, the boot tier and OTA readiness, the API answering, the
-  watchdog supervisor running. A failed one means the image can't be
-  confirmed and rolls back.
+  watchdog supervisor running, and the verifier's known answers: a built-in
+  signature that must verify, one that must not, and the image's own
+  signature sector against its own trust set. A failed one means the image
+  can't be confirmed and rolls back.
 - **Advisory** checks cover what depends on the environment, and states the
   user should know of: an MQTT upload, the charge controller answering on
   MeterBus, WiFi association, the running image trusting the development
@@ -1022,7 +1060,8 @@ every past schema to the current one.
 - An image flashed over USB is installed under the rule above and switchable
   like any other; it needs no signature.
 - `flash-app` still writes the build's signature sector, so the API reports
-  who signed it.
+  who signed it. A flasher that doesn't (`cargo run`) leaves the previous
+  image's signature file, which the API reports as `stale`, not `invalid`.
 
 ## The check-to-use window
 
@@ -1280,9 +1319,12 @@ command, so its evidence doesn't depend on the authors.
 - Properties: requirements 1 and 2 (no unverified image loadable; every
   trial ends in a confirmation or the previous image; the installed
   invariant), and that every reachable state boots some image.
-- Kani proofs of the parsers (signature file, manifest, image information
-  block) and of the otadata planner: no panic for any input, and an
-  accepted input is canonical.
+- The bootloader's rules in the model are a transcription. The real
+  bootloader decides the same cases on the board: each torn otadata state
+  the model reaches is written with `esptool` and booted, and the cases of
+  ESP-IDF's own `test_switch_ota.c` run as board scenarios.
+- The unstable-bit model is bounded: one interrupted operation outstanding,
+  its bits resolved at their first read after it.
 
 ### Mutation testing
 
@@ -1350,21 +1392,16 @@ command, so its evidence doesn't depend on the authors.
   first erase of an update until the activation of an image that verified,
   and `installed_other` never accepts that slot in between.
 
-### Continuous differential fuzzing
-
-- A fuzz target that links OpenBSD's own verification code (signify's
-  parsing and SUPERCOP `ref`, built from the vendored C sources with `cc` in
-  a test-only crate) and a second Ed25519 implementation (libsodium, from
-  Nix), and checks the device verifier against both on every input, with
-  the rule of the differential tests. It runs in CI for a fixed time from a
-  committed corpus, and longer by hand.
-
 ### Fuzzing
 
-- `cargo-fuzz` targets for the signature file parser, the manifest parser, the
-  `.pub` parser used by the generator, the image information block parser,
-  and `verify` end to end. Property: no panic; an accepted input's
+- `cargo-fuzz` targets for the signature file parser, the manifest parser,
+  the `.pub` parser used by the generator, the image information block
+  parser, and `verify` end to end. Property: no panic; an accepted input's
   message verifies with `verify_strict` and has exactly one matching line.
+- The end-to-end target also links OpenBSD's own verification code
+  (signify's parsing and SUPERCOP `ref`, built with `cc` in a test-only
+  crate from the vendored C sources) and applies the rule of the
+  differential tests to every input.
 - CI runs each target briefly from a committed corpus; long runs are manual
   and their corpus additions committed (decision 21).
 
@@ -1396,11 +1433,13 @@ and so on), so a doctest that fails for another reason doesn't pass:
 
 ### The power-cut rig and broken images
 
-- The board powered only from USB through a hub with per-port power switching,
-  cut with `uhubctl` at random offsets during upload, finish, activation,
-  the bootloader's otadata writes, confirmation and switches, for thousands
-  of cycles; after each, the board must come up running an image the rules
-  allow, and reachable over the network unless the case says otherwise.
+- The board's DC input switched by the host (a programmable supply, or a
+  relay a second board drives), cut at random offsets during upload, finish,
+  activation, the bootloader's otadata writes, confirmation and switches,
+  for thousands of cycles. A cut is a ramp into the brownout reset through
+  the board's capacitors, not a stop; the rig also tests a slow ramp. After
+  each cut the board must come up running an image the rules allow, and
+  reachable over the network unless the case says otherwise.
 - A catalogue of broken test images, each a build flag: panics at boot,
   hangs before the supervisor starts, no network, a panic after 30 minutes,
   a panic only after confirmation, a failing required self-check, a broken
@@ -1454,15 +1493,6 @@ and so on), so a doctest that fails for another reason doesn't pass:
   power cut during an upload, after an automatic rollback (the slot is
   `ABORTED`), to a slot whose image was corrupted, and, after a release is
   confirmed, to a development build in the other slot.
-- A probe-rs flash write between verification and activation, in a test
-  build that halts at a symbol after `finish` (decision 22): with the core
-  halted, the script drives the SPI1 flash controller's registers through
-  probe-rs (no RAM flash loader, so the firmware's RAM survives), changes one
-  byte of the alternate image, and resumes. The activation goes ahead, as
-  the slot isn't hashed again (decision 5); the script then detaches the
-  debugger and resets through the USB serial, and the bootloader must refuse
-  the image and boot the running slot. This shows what stands between a
-  physical write and a boot.
 - A trial whose entry is left in an undefined state (written with esptool,
   as a torn bootloader write would leave it): the confirmation window's
   rollback must return to the previous image at the deadline.
@@ -1586,8 +1616,11 @@ The numbers stay as first proposed, so earlier references hold.
     `BOOTLOADER_CUSTOM_RESERVE_RTC` off (with `_IN_DEEP_SLEEP`, they are what
     selects `BOOTLOADER_RESERVE_RTC_MEM`, whose retained struct sits at the
     top of LP RAM, where `specs/diag.md` puts its mailbox), in
+    `BOOTLOADER_FLASH_XMC_SUPPORT` on (this board's flash), in
     `nix/bootloader`, reserved like `SECURE_*` and checked by
-    `_check-sdkconfig.py`.
+    `_check-sdkconfig.py`, which also fails when
+    `BOOTLOADER_RESERVE_RTC_MEM` is set. All are at these values today by
+    default.
 17. **The image digest.** Recommended: the SHA accelerator, as now for the
     slot check and as the bootloader uses it; the board test compares it with
     `sha256sum`. Alternative: software `sha2` as well, for two independent
@@ -1600,9 +1633,8 @@ The numbers stay as first proposed, so earlier references hold.
     reproducible build compared before signing.
 21. **Fuzzing toolchain.** Recommended: `cargo-fuzz` with a pinned nightly in
     the dev shell, short CI runs, committed corpora.
-22. **The probe-rs tamper test.** Recommended: a spike first, driving SPI1
-    from probe-rs with the core halted. If it can't keep the firmware alive,
-    the board test covers only the bootloader's refusal at boot.
+22. **The probe-rs tamper test.** Dropped: physical access is out of scope,
+    and the corrupted-slot scenario already shows the bootloader's check.
 25. **OTA readiness gates confirmation.** Recommended: a required self-check
     that the boot tier is reached and OTA is ready.
 26. **An image must trust its signer.** Recommended: refuse an update whose
@@ -1622,16 +1654,25 @@ The numbers stay as first proposed, so earlier references hold.
 
 40. **eFuses.** Decided (2026-11-08): nothing is write-protected in
     advance, so the owner stays free to install a fork that uses secure
-    boot; our firmware has no route to programming them, enforced by the
-    board crate keeping the peripheral, lints, and `release-check`'s scan.
+    boot. Recommended guards: the board crate keeping the peripheral and the
+    USB pins, lints, the link-time `--wrap` of the ROM's programming
+    functions, and `release-check`'s allowlisted constant scan.
 41. **The model checker.** Recommended: a small explicit-state checker over
     the real host code (or `stateright`), not TLA+, so the checked model is
     the shipped code.
 42. **External review.** Recommended: before the first signed release.
+44. **Reproducibility before the first signed release.** Recommended: the
+    first signed release waits until a second machine's build matches its
+    `SHA256`; until then requirement 7 rests on signify alone.
+45. **Known-answer self-check.** Recommended: required before confirmation,
+    so a release whose own verifier is broken rolls back instead of being
+    confirmed into a state where it can't take the fix.
 
 ## Left open
 
-- Reproducible app images: rustc's output across machines.
+- Reproducible app images: rustc's output across machines (decision 44).
+- `release-check` and the other release tools are defined in "Release
+  tooling", added with the release documentation (PR #99).
 - The stack frame of `verify_strict` on the 32-bit backend under the
   `large_stack_frames` lint, and its time on the ESP32-C6.
 - Code size of ed25519-dalek and curve25519-dalek in the image.
