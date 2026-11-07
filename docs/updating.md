@@ -99,10 +99,13 @@ when it last ran: changes made since are not carried back.
 
 ## Over USB
 
-USB always works, whatever the firmware on the device: it uses the chip's
-built-in loader. It is the way to install firmware for the first time, to
-recover a device that doesn't come up, and to return to a release that the
-security version rules out over the network.
+USB works whatever the firmware on the device, as long as it doesn't take
+over the USB pins (ours never does): it uses the chip's built-in loader. It
+is the way to install firmware for the first time, to recover a device that
+doesn't come up, and to return to a release that the security version rules
+out over the network. When USB doesn't come up at all, the debug header J2
+reaches the same loader: hold GPIO9 low while resetting the chip
+_(pinout to be confirmed)_.
 
 ### With the repository
 
