@@ -1,8 +1,8 @@
 # Diagnostics: messages across reboots and firmware versions
 
-Status: proposed 2026-11-08, revised the same day after review; for the
-user's review, to be refined. No code is written until the user approves it.
-Builds on `specs/storage-v2.md` (the `diag` region and its store) and
+Status: proposed 2026-11-08, revised twice the same day after review; for
+the user's review. No code is written until the user approves it. Builds on
+`specs/storage-v2.md` (the `diag` region and its store) and
 `specs/ota-signing.md` (the trial, its self-checks, rollback, and the image
 information block's encoding).
 
@@ -21,120 +21,138 @@ reworked.
 Each with the mechanism that holds it and what shows it, other than the
 authors.
 
-1. **A crash, a missed watchdog deadline or the end of a trial is recorded,
-   and survives every reset but a chip reset.**
+1. **A crash, a hang, a missed watchdog deadline or the end of a trial is
+   recorded, and survives every reset but a chip reset.**
    - Held by: the mailbox, written at the moment, in memory TRM 8.1.1 says
-     every reset but a chip reset keeps.
-   - Shown by: the board's retention test across each reset reason, and the
-     fault catalogue's records read back over the API.
-2. **The history survives power loss, and a torn write loses at most the
+     every reset but a chip reset keeps; the main watchdog's interrupt stage
+     for a hang.
+   - Shown by: the board's retention matrix across every reset reason
+     (brownout included), and the fault catalogue's records read back over
+     the API.
+2. **The history survives power loss, and a cut write loses at most the
    record being written.**
-   - Held by: the log's per-record CRC and its mount rules.
+   - Held by: the log's per-record CRC, the mount rules, words programmed
+     once.
    - Shown by: the host model of the log with torn and unstable flash, and
-     the USB power-cut rig of `specs/ota-signing.md`.
+     board power cuts during a drain and during a rotation (the USB power-cut
+     rig of `specs/ota-signing.md`).
 3. **Every firmware version reads every other's records.**
    - Held by: the record encoding's rules.
    - Shown by: the committed fixtures of every released format and the
-     "future" fixtures, in CI.
+     "future" fixtures; a committed registry of every type's minimum length
+     and field offsets, which CI compares with the crate, so a release can't
+     raise a minimum or move a field; the board rollback scenarios, where the
+     old image reads the new one's mailbox.
 4. **A rollback is recorded once, with its cause.**
-   - Held by: the "activated" record and the inference rules.
-   - Shown by: the host inference tests, and the board's rollback scenarios
-     under the power-cut rig.
+   - Held by: the "activated" record and the inference rules, run before
+     anything can change the otadata.
+   - Shown by: the host inference tests (bootloader abort, the firmware's own
+     rollback, fallback, power cut, a switch during a trial, an update begun
+     straight after a rollback, `flash-all` between runs, the "activated"
+     record rotated out), and the board's rollback scenarios.
 5. **Diagnostics never block a boot, an update or a confirmation, and never
    hang the board.**
-   - Held by: best-effort writes; the panic handler's re-entry guard.
-   - Shown by: the fault catalogue with the `diag` region filled with
-     garbage, and a panic inside the panic handler.
+   - Held by: best-effort writes; the panic handler's re-entry guard; the
+     watchdogs.
+   - Shown by: the fault catalogue with the `diag` region full of garbage,
+     a full head sector at boot (one 40–400 ms erase in start-up), and a
+     panic inside the panic handler.
 
 ## Sources read
 
-- ESP32-C6 Technical Reference Manual v1.2, chapter 8 (reset and clock):
-  section 8.1.1 and table 8.1-1.
-- esp-hal 1.2.2 (`ld/esp32c6/memory.x`, `ld/esp32c6/linkall.x`, `build.rs`,
-  `src/rtc_cntl/rtc/esp32c6.rs`, `src/system.rs`, `src/soc/mod.rs`,
-  `src/soc/esp32c6/lp_core.rs`), esp-riscv-rt 0.15.0 (`__pre_init`),
-  esp-hal-procmacros 0.23.0 (`#[ram(persistent)]`), esp-rtos 0.4.0 and
-  esp-sync 0.3.0, and the esp32c6 PAC 0.24.0 (`ASSIST_DEBUG`).
+- ESP32-C6 Technical Reference Manual v1.2: chapter 8 (reset: 8.1.1 and table
+  8.1-1), 12.4.4 (brownout), 18.4.2 (the debug assist's PC recording).
+- ESP32-C6 errata v1.3; the XM25QH64C datasheet (7.2.14 Page Program, reset
+  and power-up), as in `specs/ota-signing.md` "Hardware facts".
+- esp-hal 1.2.2 (`ld/esp32c6/memory.x`, `linkall.x`, `rtc_fast.x`,
+  `build.rs`, `src/rtc_cntl/rtc/esp32c6.rs`, `src/system.rs`,
+  `src/soc/esp32c6/lp_core.rs`, `src/timer/timg.rs`), esp-riscv-rt 0.15.0
+  (`__pre_init`), esp-rtos 0.4.0, esp-sync 0.3.0, esp-storage 0.10.0, and the
+  esp32c6 PAC 0.24.0.
 - ESP-IDF 5.5.2: `bootloader/Kconfig.projbuild`,
-  `bootloader_support/src/bootloader_common_loader.c` and
-  `bootloader_utility.c` (the retained RTC struct),
-  `soc/esp32c6/include/soc/soc.h` and `reset_reasons.h`,
-  `esp_hw_support/port/esp32c6/cpu_region_protect.c`, the bootloader's and
-  the ROM's linker scripts, and `bootloader_esp32c6.c`.
-- This repository: the panic handler and `main` (`crates/eveningstar/src/
-  main.rs`), the software reset (`reset.rs`), `ResetCause`, the reboot
-  service and the supervisor (`crates/eveningstar-system`), the reboot
-  reasons (`services/reboot.rs`), the confirmation window
-  (`storage/confirmation.rs`), the self-checks (`eveningstar-ota`
-  `checks.rs`), the `Diag` role (`eveningstar-storage` `roles.rs`), and the
-  diag store's notes in `specs/storage-v2.md`.
+  `bootloader_support/src/bootloader_common_loader.c` (the retained RTC
+  struct), `bootloader_esp32c6.c`, `bootloader_mem.c`,
+  `esp_hw_support/port/esp32c6/cpu_region_protect.c`,
+  `esp_system/port/soc/esp32c6/reset_reason.c` (the reset reason hint),
+  `espcoredump/src/core_dump_flash.c`, and the bootloader's and ROM's linker
+  scripts.
+- Flash logs elsewhere: littlefs's design notes, Zephyr's NVS and FCB, and
+  ESP-IDF's NVS.
+- This repository: `main.rs`, `reset.rs`, `watchdog.rs`, `ResetCause` and
+  the reboot service (`eveningstar-system`), `services/reboot.rs`,
+  `storage/confirmation.rs`, `eveningstar-ota`, the otadata planner, the
+  `Diag` role, and `Session::program`.
 
 What they establish:
 
 - **Retention.** The ESP32-C6 has four resets: CPU, core, system and chip.
   "All reset types mentioned above (except Chip Reset) preserve the data
-  stored in internal memory" (TRM 8.1.1). A chip reset is power-on, or a
-  brownout when the brownout detector is set to reset the chip (code 0x01);
-  a brownout set to reset the system is 0x0F and keeps memory. Software
-  reset (0x03), the MWDT and RWDT core resets, USB Serial/JTAG resets and
-  the RWDT and super watchdog system resets (0x10, 0x12) all keep it.
-  `esp_hal::system::reset_reason()` returns `None` for a code it doesn't
-  know, and esp-hal's own persistent statics treat `None` as power-on; so
-  does this design.
+  stored in internal memory" (TRM 8.1.1). A chip reset is power-on (0x01).
+  The bootloader enables the brownout detector's system reset
+  (`bootloader_esp32c6.c`), which keeps memory (0x0F); esp-hal leaves it.
+  Software reset (0x03), the MWDT and RWDT core resets, USB Serial/JTAG
+  resets and the RWDT and super watchdog system resets (0x10, 0x12) keep it
+  too. Every code in table 8.1-1 is in esp-hal's `SocResetReason`.
 - **Nothing else writes the top of LP RAM.** LP RAM is 16 KiB at
   `0x5000_0000`. The bootloader's and the ROM's linker scripts place nothing
-  there. esp-hal, esp-rtos, esp-storage, rtt-target and embassy reference
-  it nowhere, except esp-hal's LP core loader, which zero-fills all 16 KiB;
-  the firmware doesn't use the LP core. esp-riscv-rt zeroes
-  `.rtc_fast.bss` at every boot and `.rtc_fast.persistent` at power-on, and
-  touches nothing else. probe-rs's ESP32-C6 target maps no memory there, so
-  a `cargo run` reflash doesn't clobber it.
-- **The bootloader's reservation.** With `BOOTLOADER_RESERVE_RTC_MEM` on,
-  the ESP-IDF bootloader keeps a struct at the top of LP RAM and clears it.
-  The option is selected by `BOOTLOADER_FACTORY_RESET`,
+  there. esp-hal, esp-rtos, esp-storage, rtt-target and embassy reference it
+  nowhere, except esp-hal's LP core loader, which zero-fills all 16 KiB; the
+  firmware doesn't use the LP core. esp-riscv-rt zeroes `.rtc_fast.bss` at
+  every boot and `.rtc_fast.persistent` at reset code 0x01, and touches
+  nothing else. probe-rs's ESP32-C6 target maps no memory there.
+- **The bootloader's reservation.** With `BOOTLOADER_RESERVE_RTC_MEM` on, the
+  ESP-IDF bootloader keeps a CRC-checked struct at the top of LP RAM, where
+  the mailbox goes. The option is selected by `BOOTLOADER_FACTORY_RESET`,
   `BOOTLOADER_SKIP_VALIDATE_IN_DEEP_SLEEP` and
   `BOOTLOADER_CUSTOM_RESERVE_RTC`, all off by default and not pinned today.
-  `specs/ota-signing.md` decision 16 pins them off.
+  Pinning them off (`specs/ota-signing.md` decision 16) is a precondition of
+  the mailbox.
 - **LP RAM is writable in any panic.** The bootloader's PMP leaves
-  `0x5000_0000`–`0x5000_4000` readable, writable and executable, and
-  esp-hal adds only its own regions. Stores to it are plain data-bus stores.
-- **esp-hal's linker setup.** `memory.x` comes from esp-hal, copied to its
-  `OUT_DIR` and included by `linkall.x`; nothing in this repository can
-  shrink `RTC_FAST` itself. A fragment of the firmware's own, passed with
-  `-T` from its build script (which already passes `-Tdefmt.x`), can place
-  an output section at a fixed address inside it.
+  `0x5000_0000`–`0x5000_4000` readable, writable and executable; esp-hal
+  adds only its own regions. Stores to it are plain data-bus stores.
+- **Errata (v0.2).** CPU-863: a misaligned load followed by a store across
+  PMP regions with different permissions (flash and LP RAM differ) can
+  fault; the mailbox's copies use byte or aligned word accesses. CPU-206
+  (late commits of stores to LP RAM) is fixed in v0.2; a `fence` before a
+  reset keeps the intent in the code anyway.
+- **The flash.** Page Program programs "previously erased (FFh)" locations;
+  nothing in the datasheet allows programming a location twice, so the log
+  programs each word once after an erase. An interrupted program or erase
+  leaves data undefined, and bits that may read differently each time.
+- **esp-hal's linker setup.** `memory.x` comes from esp-hal; nothing in this
+  repository can shrink `RTC_FAST` itself. A fragment of the firmware's own,
+  passed with `-T` from its build script (which already passes
+  `-Tdefmt.x`), can place a `NOLOAD` output section at a fixed address
+  inside it.
 - **Where the firmware resets.** In the panic handler, and through
   `SoftwareReset`, which the reboot service (`GracefulReboot`,
   `ImmediateReboot`) and the supervisor (`MissedDeadline { task }`) use.
-  `GracefulReboot` carries no reason today. MWDT0 and RWDT reset the chip
-  without any software hook when the supervisor itself stalls.
-- **Errata (v0.2).** CPU-863: a misaligned load followed by a store across
-  PMP regions can fault; the mailbox's copies use byte or aligned word
-  accesses. The flash datasheet (XM25QH64C, `specs/ota-signing.md`
-  "Hardware facts"): an interrupted program or erase leaves data undefined,
-  and bits can read differently from one read to the next.
-- **Where a watchdog reset hung.** The C6 bootloader enables the debug
-  assist's PC recording, which survives a core reset, and the PAC exposes
-  it (`ASSIST_DEBUG.rcd_pdebugpc`). To be confirmed on the board.
+  `GracefulReboot` carries no reason today, though the service has it at the
+  reset. MWDT0 resets the system without a software hook when the supervisor
+  itself stalls; esp-hal can give its stage 0 an interrupt
+  (`MwdtStageAction::Interrupt`).
+- **The debug assist's recorded PC is gone by `main`.** TRM 18.4.2: it keeps
+  the PC across a CPU reset, but the bootloader enables recording again at
+  every boot, so by the time the firmware runs it holds a current PC.
+- **A flash write from a panic is possible** (ESP-IDF's core dump erases and
+  programs from its panic handler, with the cache off), and is avoided here
+  for the reasons under "Two layers".
 - **`diag`** is 256 KiB (64 sectors), shared by both slots, `Sensitive` (no
   reader, no snapshot), with a writer in the layout and boot tiers, never
-  published raw. Today the firmware drops that writer.
+  published raw. Today the firmware drops that writer. `Session::program`
+  takes whole words only.
 
 ## Two layers
 
-- **The mailbox, in LP RAM.** Written at the moment something goes wrong,
-  when writing flash is the riskiest thing to do: a panic, a missed watchdog
-  deadline, the reboot that ends a trial. A flash erase takes tens of
-  milliseconds, the fault may be in the flash path itself, and a crash loop
-  would spend erase cycles on every reset. Every memory survives all but a
+- **The mailbox, in LP RAM.** Written at the moment something goes wrong: a
+  panic, a hang, a missed watchdog deadline, the reboot that ends a trial.
+  The log isn't written then: a flash erase takes up to 400 ms, the fault
+  may be in the flash path itself, and a crash loop would spend erase cycles
+  on every reset. LP RAM costs a few stores. Every memory survives all but a
   chip reset; LP RAM is chosen because nothing else writes its top.
 - **The log, in `diag`.** Durable history: early in each boot the firmware
-  moves the mailbox's entries into the log, and events outside a crash (an
-  update activated, confirmed or refused, a switch, self-check results) are
-  written to the log directly.
-
-Neither alone is enough: the log can't be written safely from a panic, and
-the mailbox is lost at a chip reset and holds no history.
+  moves the mailbox's entries into the log, and writes a `Boot` record and
+  the OTA events directly.
 
 ## The record encoding
 
@@ -147,7 +165,7 @@ rollback), and newer reads older (after an update).
 - A **container** starts with a magic (`u32`) and a total length, and holds
   entries up to that length. The container header never changes.
 - An **entry** is a type (`u16`), a length (`u16`) and that many bytes of
-  value.
+  value, zero-padded to a multiple of 4; the length counts the padding.
 - **Unknown types are skipped**, and reported as unknown with their type and
   length.
 - **Values grow at the end only.** Fields are fixed-size and at fixed
@@ -158,12 +176,15 @@ rollback), and newer reads older (after an update).
 - **A field never changes meaning.** A new meaning is a new type. Codes are
   enumerations that only gain values; a reader shows a value it doesn't
   know as its number.
-- **Integrity** is the container's: the image information block is covered by
-  the image's digest; mailbox entries and log records carry a CRC-32 each,
-  since a reset or a power cut can tear them.
+- **Fixed for good:** little-endian throughout; the CRC is the otadata's
+  CRC-32 (`esp_rom_crc32_le` with an initial value of `0xFFFF_FFFF`, as
+  `eveningstar-esp-formats` implements it); the magics: `0x424D_5345`
+  ("ESMB") for the mailbox and `0x4C44_5345` ("ESDL") for a log sector.
+- **The registry.** The crate exports every type's number, minimum length
+  and field offsets; a committed copy is compared in CI.
 - **Stable codes.** Every code a record carries is a number fixed for good:
-  reboot reasons, self-checks (each check gets a permanent ID, in an
-  enumeration that only grows), refusal reasons, trial end reasons.
+  reboot reasons, self-checks (each check gets a permanent ID), refusal
+  reasons, trial end reasons, reset causes.
 
 ## The mailbox
 
@@ -172,66 +193,80 @@ rollback), and newer reads older (after an update).
 - The last 1 KiB of LP RAM, `0x5000_3C00` to `0x5000_4000`: a `NOLOAD`
   output section placed there by a linker fragment of the firmware's own,
   with an `ASSERT` that esp-hal's `.rtc_fast.*` sections end below it. The
-  address and the header are a permanent contract between every firmware
+  address and the format are a permanent contract between every firmware
   version, like the partition layout.
-- The bootloader options that reserve the top of LP RAM are pinned off
-  (`specs/ota-signing.md` decision 16). Using the LP core needs the mailbox
-  moved first.
+- The bootloader options that reserve the top of LP RAM are pinned off, and
+  `_check-sdkconfig.py` fails when `BOOTLOADER_RESERVE_RTC_MEM` is set.
+  Using the LP core needs the mailbox moved first.
 - The fixed-address access is the only `unsafe` here: one small module in the
   firmware crate's glue (as `storage.rs` holds `FlashStorage::new`), with
-  volatile copies in and out. Everything else works on bytes through
-  `eveningstar-records` and is tested on the host.
+  volatile byte or aligned word copies in and out. Everything else works on
+  bytes through `eveningstar-records` and is tested on the host.
 
 ### Format
 
-- Header: magic, total length, a write counter (`u32`), the head index, and
-  the repeat count of the latest crash ("Wear").
-- A ring of 4 entries. Each: length, CRC-32 (over length, boot ID, sequence
-  number and record), the boot ID of the boot that wrote it, a sequence
-  number from the write counter, and one record.
-- A writer stores the entry's bytes and CRC first, and then the head index,
-  one aligned `u32` store. An interrupted write tears at most that entry,
-  which its CRC then rejects.
-- **Clearing** empties the entries and keeps the write counter and the
-  repeat count. A chip reset, a header that doesn't parse, or a reset reason
-  of `None` starts the mailbox afresh.
+- A header written once and never changed: magic, total length, CRC-32 over
+  both.
+- A ring of 4 entries. Each: length, a sequence number (`u32`), the boot ID
+  of the boot that wrote it (0 when written before the boot ID exists), a
+  repeat count, one record, and a CRC-32 over all of it.
+- **Validity** is the header's magic and CRC, and each entry's CRC; nothing
+  else. The reset reason is recorded, never used to discard: random bytes
+  after a power-on don't pass a CRC-32.
+- **The head** is the valid entry with the highest sequence number, as with
+  the otadata. A writer writes the next slot, the entry's CRC last, so an
+  interrupted write tears at most that entry. There is no index to update.
 
 ### The boot ID
 
-A random `u64`, drawn from the RNG right after `esp_hal::init` and before
-anything else in `main`, kept in a static, and stamped into every mailbox
-entry and log record of the boot. It is the boot's identity for duplicate
-checks and for grouping records; it isn't secret.
+A random `u64`, drawn from the RNG right after `Board::new`, kept in a static,
+and stamped into every mailbox entry and log record of the boot. It groups a
+boot's records and identifies a mailbox entry in the log; it isn't secret.
+Entries written before it (a panic in the first statements of `main`) carry
+0.
 
 ### Writers
 
-- **Every boot**, right after drawing the boot ID: a `Boot` record with what
-  is known at once (running slot from the MMU, version and ELF SHA-256 from
-  its own descriptor, the hardware reset reason, the recorded PC). The
-  storage glue completes it (boot state, tier) once it has read the otadata.
-- **The panic handler**, first, before the defmt log: a `Panic` record and a
-  `Reset` record (cause: panic). It formats the message through a
-  truncating `fmt::Write` that can't panic, and an atomic guard resets at
-  once if the handler is entered again, since a panic before the supervisor
-  starts would otherwise hang a board with no reset button.
+Each entry carries the boot's hardware reset reason, running slot, version
+and uptime, so a crash loop that never reaches the storage split is still
+described.
+
+- **The panic handler**, first, before the defmt log: a `Panic` record. It
+  formats the message through a truncating `fmt::Write` that can't panic,
+  and an atomic guard resets at once if the handler is entered again, since
+  a panic before the supervisor starts would otherwise hang a board with no
+  reset button.
+- **The main watchdog's interrupt stage.** MWDT0's stage 0 becomes an
+  interrupt whose handler writes a `Hang` record with the interrupted PC
+  (`mepc`); its stage 1 resets a second later, and RWDT stays the backstop.
+  This is the only record of a hang the supervisor itself didn't see. Its
+  limits, as the panic handler's: nothing is recorded while interrupts are
+  off, or while the flash cache is off inside a program or erase, which
+  only the next boot's reset reason shows.
 - **`SoftwareReset::reset`**: a `Reset` record with its `ResetCause`.
   `ResetCause::GracefulReboot` gains the reason's permanent code, through a
-  trait the firmware's reboot reasons implement, so the record names the
-  reason.
+  trait the firmware's reboot reasons implement.
 - **The confirmation window**, when it ends a trial: a `TrialEnd` record with
-  the reason, at the request. The graceful reboot that follows can end in a
-  different reset (a watchdog, a power cut); the records then show both.
-- Writers outside the panic handler write inside a critical section, which
-  esp-sync's re-entrant implementation allows from anywhere.
+  the reason. The graceful reboot that follows can end in a different reset
+  (a watchdog, a power cut); the records then show both.
+- **Coalescing:** a writer whose record equals the head's (same type, cause
+  and location) writes it again in the next slot with the repeat count plus
+  one, instead of a new entry with a count of 1.
+- Writers outside the panic handler and the watchdog interrupt write inside
+  a critical section, which esp-sync's re-entrant implementation allows
+  from anywhere; a `fence` precedes a reset.
 
 ### Reading
 
 - Early in `main`, before anything can write it, the firmware copies the
   mailbox's valid entries into RAM.
-- The diag store moves them into the log once it has the writer, then
-  clears the mailbox. A log record keeps the entry's boot ID and sequence
-  number; an entry whose pair is already in the log isn't written again, so
-  a reset between the log write and the clear duplicates nothing.
+- Once it has the writer, the diag store moves them into the log and then
+  clears the entries up to the highest sequence number it moved, keeping
+  any written since.
+- A log record keeps the entry's boot ID and sequence number. An entry whose
+  pair is in the head sector (or the sector before it, after a rotation) isn't
+  written again, so a reset between the log write and the clear duplicates
+  nothing.
 - In the unverified tier there is no writer of `diag`: the entries stay in
   the mailbox, and the API serves them from RAM. A board flashed with
   `cargo run` is in that tier, and relies on this.
@@ -240,31 +275,28 @@ checks and for grouping records; it isn't secret.
 
 ### Format
 
-- 64 sectors used as a ring. Each sector starts with a header: a magic that
-  never changes, a sector sequence number (`u32`), and a CRC-32 over both. A
-  torn header fails its CRC; such a sector doesn't parse.
-- Records follow back to back: length, type, value, CRC-32 over length, type
-  and value. Each value carries a record sequence number (`u32`), the boot
-  ID, and the uptime in milliseconds; a wall-clock time is added as a field
-  once the firmware knows the time. A length of `0xFFFF` ends a sector's
-  data, and `0xFFFF_FFFF` is never used as a sequence number.
+- 64 sectors used as a ring. Each sector starts with a header: the magic, a
+  sector sequence number (`u32`), and a CRC-32 over both. A header is read
+  back after it is programmed, before the sector takes a record.
+- Records follow, each a container entry whose value starts with a record
+  sequence number (`u32`), the boot ID and the uptime in milliseconds, and
+  ends with a CRC-32 over the whole entry. A length of `0xFFFF` ends a
+  sector's data, and `0xFFFF_FFFF` is never used as a sequence number.
+- Every word is programmed once after its sector's erase; nothing is
+  programmed twice.
+- **Every read verifies the CRC:** the mount, the duplicate check, each API
+  page. A record or header that fails it doesn't exist.
 - **Mount:** among the sectors whose header verifies, the one with the
-  highest sequence number is the head. The append point is the first byte
-  after its last record whose CRC matches. When the bytes from there on
-  aren't all `0xFF` (a torn record), the sector counts as full and appending
-  continues in the next one.
+  highest sequence number is the head. The append point is the first word
+  after its last record whose CRC matches. When the words from there on
+  aren't all `0xFFFF_FFFF` (a torn record), the sector counts as full and
+  appending continues in the next one.
 - **Rotation:** a full head moves on to the next sector, which is erased and
   then given its header; the oldest records go.
-- A sector whose header doesn't parse is erased only when the ring reaches
+- A sector whose header doesn't verify is erased only when the ring reaches
   it, so a firmware never wipes history it merely can't read.
-- An interrupted erase or program can leave bits that read differently each
-  time. A record or header is trusted only through its CRC; a sector whose
-  tail isn't cleanly erased is never appended to again; and the mount
-  reads each header twice and takes a sector as the head only when both
-  reads agree.
-- Sequence numbers can't wrap in the device's life: 64 sectors at 100 000
-  erases each are 6.4 million sector numbers. Clearing the log restarts
-  them.
+- 64 sectors at 100 000 erases never reach `2^32` sequence numbers. Clearing
+  the log restarts them.
 
 ### Owner and failures
 
@@ -278,78 +310,81 @@ checks and for grouping records; it isn't secret.
 
 ### Wear
 
-- A crash loop: a `Panic` or `Reset` record equal to the latest crash in the
-  log (same type, cause and location) isn't written again, and neither are
-  the `Boot` records of those boots. The mailbox header counts the repeats;
-  a `Repeat` record (type, count of crashes and boots) is written when the
-  count reaches a power of two and when the loop ends.
+- A crash loop is coalesced in the mailbox. The drain writes the loop's
+  record with its count when the count reaches a power of two and when the
+  loop ends, and skips the `Boot` records of the boots in between.
 - A record is 40 to 200 bytes. Without the rule, a loop of one boot per
-  second writes about three records per boot and cycles the ring once or
-  twice an hour, which the flash's endurance (about 100 000 erases per
-  sector) bears for years; the rule keeps the history readable.
+  second, at two records per boot, would cycle the ring several times an
+  hour, which the flash's endurance (100 000 erases per sector) still bears
+  for years; the rule keeps the history readable.
 
 ## Records
 
 The first types. Every code is permanent.
 
-- **`Boot`**: boot ID, hardware reset reason (the raw code), the PC the
-  debug assist recorded (after a watchdog reset), running slot, version,
-  the app descriptor's ELF SHA-256 (first 8 bytes), storage tier, and boot
-  state (`Valid`, `PendingVerify`, fallback).
+- **`Boot`**, written to the log by the diag store: hardware reset reason,
+  running slot, version, the app descriptor's ELF SHA-256 (first 8 bytes;
+  zero in images built without it), storage tier, and boot state (`Valid`,
+  `PendingVerify`, fallback).
+- **`Panic`**: the file (its last 48 bytes; release builds remap the build
+  path with `--remap-path-prefix`), line and column, and the message (at
+  most 96 bytes).
+- **`Hang`**: the interrupted PC.
 - **`Reset`**: the firmware's cause (`GracefulReboot` with the reason's code,
   `ImmediateReboot`, `MissedDeadline` with the task's name, at most 16
-  bytes, `Panic`), uptime, version.
-- **`Panic`**: the file (its last 48 bytes, as registry paths begin with
-  nothing useful), line and column, and the message (at most 96 bytes).
+  bytes).
 - **`TrialEnd`**: why the trial ended (a required self-check failed, with its
   ID; the deadline passed), the trial image's version, and the otadata
   sequence number of its entry.
-- **`Ota`**, written directly: update refused (the refusal code), activated
-  (versions from and to, the otadata sequence number), confirmed, switched,
-  trial extended.
-- **`SelfCheck`**, written directly during a trial: the check's ID and its
-  result.
+- **`Ota`**, written to the log directly: update refused (the refusal code),
+  activated (versions from and to, the otadata sequence number), confirmed,
+  switched.
 - **`Rollback`**: see below.
-- **`Repeat`**: the repeated record's type and the counts.
 
 ## Rollback reasons, end to end
 
 The old image writes its `Ota` "activated" record, with the new entry's
-otadata sequence number, before it writes that entry. A rollback is then
-recognised at any later boot by the latest "activated" record in the log
-that has no later "confirmed" or `Rollback` record, when the otadata entry
-with that sequence number is `Aborted`:
+otadata sequence number, before it writes that entry; "confirmed" and
+"switched" records name the sequence number they end. Right after the
+storage split, before the boot writers go to `Ota` (where an update would
+replace the evidence), the diag store drains the mailbox and then looks at
+the latest "activated" record with no later "confirmed", "switched" or
+`Rollback` record for its sequence number. When the otadata entry with that
+sequence number exists and is `Aborted` or `Invalid`, the trial was rolled
+back:
 
-- the running slot is the other one: the bootloader rolled back;
+- `Aborted`, and the running slot is the other one: the bootloader ended
+  the trial;
+- `Invalid`: the firmware ended the trial (the confirmation window's
+  rollback at the deadline);
 - the running slot is the trial's own: the previous image didn't load, and
   the bootloader fell back to the trial image (`specs/ota-signing.md`,
   "Rollback and recovery").
 
+A switch during a trial also leaves `Invalid`, but its "switched" record
+ends the activation first. An activation whose entry was never written (a
+power cut between the record and the entry) has no entry with that
+sequence number, and counts as nothing.
+
 The firmware then writes one `Rollback` record: the sequence number, both
 versions (the trial's from its `TrialEnd` record or, failing that, the
-alternate slot's descriptor), which of the two cases, and the cause, in this
+alternate slot's descriptor), which of the cases, and the cause, in this
 order:
 
-1. a `TrialEnd` record of the trial's boots (from the mailbox, or already in
-   the log): its reason;
-2. a `Panic` or `Reset` record of the trial's boots: the panic or the missed
-   deadline;
-3. a `Boot` record of the next boot with a chip reset reason: power lost
-   during the trial;
+1. a `TrialEnd` record of the trial's boots: its reason;
+2. a `Panic`, `Hang` or `Reset` record of the trial's boots: that;
+3. a chip reset reason at this boot: power lost during the trial;
 4. otherwise: a reset with no message, with the reset reason.
 
-Keying on the "activated" record, not on the sequence number alone, keeps it
-to one record per rollback: a `flash-all` restarts the otadata's sequence
-numbers, but a later activation writes a newer "activated" record. When the
-"activated" record has rotated out of the log, nothing is written, rather
-than a wrong record. The web UI shows the latest `Rollback` record, for
-example: "Update to 1.5.0 rolled back: required self-check `config
-migration` failed."
+A `flash-all` restarts the otadata's sequence numbers, but a later
+activation writes a newer "activated" record, so an old record never
+matches a new rollback. When the "activated" record has rotated out of the
+log, nothing is written, rather than a wrong record.
 
 ## Across firmware versions
 
 - The encoding's rules cover both directions.
-- The mailbox's address and header, the log's sector header, and the record
+- The mailbox's address and format, the log's sector header, and the record
   encoding are permanent once boards ship; changing them needs the user's
   approval, like the layout.
 - Committed fixtures: a mailbox and a log sector of every released format,
@@ -359,52 +394,49 @@ migration` failed."
 
 ## API (sketch)
 
-- `GET /api/v1/diag`: records, newest first, paged by record sequence number.
-  Each request copies one bounded page of records into a RAM buffer under
-  the store's lock, and the answer is formatted from that copy, as picoserve
-  formats a body twice and needs the same bytes both times. Each record has
-  its sequence number, boot ID, uptime, type and fields; an unknown type
-  shows its type and length only.
+- `GET /api/v1/diag`: records, newest first, paged by record sequence number,
+  each page copied into RAM under the store's lock. Each record has its
+  sequence number, boot ID, uptime, type and fields; an unknown type shows
+  its type and length only. Mailbox entries not yet moved to the log
+  (unverified tier) appear marked as such.
 - The latest `Rollback` and `Reset` records also appear in `GET /firmware`
-  and `GET /system`, for the web UI's banners.
-- Mailbox entries not yet moved to the log (unverified tier) appear in
-  `GET /diag` marked as such.
+  and `GET /system`.
 - `DELETE /api/v1/diag` erases the log, with the highest permission tier: 64
   sector erases, with its own watchdog handle fed per erase and a yield
-  between them. It erases the head last, so a cut clear leaves a log that
-  mounts at its old head with fewer records.
+  between them, the head last, so a cut clear leaves a log that mounts at
+  its old head with fewer records.
 
 ## Verification
 
 - **Host, encoding:** fuzz targets for the container parser, the mailbox
-  parser and the log mount; the fixtures above; every truncation and every
-  bit flip of a mailbox and of a sector reads without a panic and yields no
-  record whose CRC failed.
+  parser and the log mount; the fixtures; the registry comparison; every
+  truncation and every bit flip of a mailbox and of a sector reads without
+  a panic and yields no record whose CRC failed.
 - **Host, log:** a property test on the test flash: for any sequence of
-  appends, rotations and clears, with a power cut at any program or erase,
-  torn sector headers and partly erased sectors included, and the affected
-  bits unstable (read 0 or 1 at each read), the mount finds
-  every record whose write completed, in order, and nothing torn.
+  appends, rotations, drains and clears, with a power cut at any program or
+  erase, torn sector headers and partly erased sectors included, and the
+  affected bits unstable (read 0 or 1 at each read), the mount finds every
+  record whose write completed, in order, and nothing torn.
 - **Host, mailbox:** random bytes in the mailbox's place never produce an
-  entry; a torn entry is dropped; a duplicate drain writes nothing.
-- **Host, rollback inference:** for each case above (rollback, fallback,
-  power cut, `flash-all` between runs, the "activated" record rotated out),
-  exactly the expected `Rollback` records.
-- **Board, retention:** a confirmation of TRM 8.1.1 with a test build: the
-  mailbox survives a software reset, a panic, MWDT0, the RWDT system reset,
-  a reset through USB Serial/JTAG (probe-rs, esptool), and not a power
-  cycle; a brownout if one can be provoked safely. Also, whether the
-  recorded PC after a watchdog reset points at the hang.
+  entry; a torn entry is dropped; coalescing counts; a drain that is cut and
+  repeated writes nothing twice; entries written during a drain survive its
+  clear.
+- **Host, rollback inference:** the cases listed under requirement 4, each
+  producing exactly the expected `Rollback` records.
+- **Board, retention:** with a test build, the mailbox across a software
+  reset, a panic, MWDT0, the RWDT system reset, a reset through USB
+  Serial/JTAG (probe-rs, esptool), a brownout (code 0x0F expected, mailbox
+  kept) if one can be provoked safely, and a power cycle (lost).
 - **Board, end to end:** a panic and a missed deadline appear in `GET /diag`
-  after the reboot; a panic before `esp_rtos::start`, inside a critical
-  section and inside an interrupt handler, and a panic inside the panic
-  handler, each reset the board and leave their record; a crash loop that
-  never reaches the storage split is recorded by the first boot that does,
-  with `Repeat` records; a trial that fails a required self-check, one that
-  reaches its deadline, one cut by a power cycle, and one whose previous
-  image doesn't load, each produce one `Rollback` record with the right
-  cause, also after a `flash-all` between runs; a power cut during
-  `DELETE /diag` leaves a log that mounts.
+  after the reboot; a hang with interrupts on gives a `Hang` record with a
+  PC inside the hanging function; a panic before `esp_rtos::start`, inside a
+  critical section and inside an interrupt handler, and a panic inside the
+  panic handler, each reset the board and leave their record; a crash loop
+  that never reaches the storage split is recorded by the first boot that
+  does, coalesced; each rollback case of requirement 4 produces one
+  `Rollback` record with the right cause, also after a `flash-all` between
+  runs; power cuts during a drain, a rotation and `DELETE /diag` leave a log
+  that mounts with every completed record.
 
 ## Decisions for the user
 
@@ -412,23 +444,22 @@ Each with a recommendation.
 
 1. **Two layers.** Recommended: the mailbox in LP RAM and the log in `diag`.
 2. **Mailbox size and place.** Recommended: the last 1 KiB of LP RAM, fixed
-   for good, by a linker fragment of the firmware's own. Alternative for a
-   minimal start: an LP_AON store register (as ESP-IDF's reset reason hint
-   uses), which holds one 32-bit word and needs no linker work.
-3. **Mailbox entries.** Recommended: a ring of 4.
+   for good, by a linker fragment of the firmware's own.
+3. **Mailbox entries.** Recommended: a ring of 4, the head found by sequence
+   number.
 4. **Log format.** Recommended: a ring of sectors with CRC-checked headers,
-   records with a CRC-32 each, a torn tail ending the sector.
-5. **Crash loops.** Recommended: repeated crashes and their boots coalesced,
-   with `Repeat` records at powers of two.
+   padded records with a CRC-32 each, every word programmed once, a torn
+   tail ending the sector.
+5. **Crash loops.** Recommended: coalesced in the mailbox, written to the log
+   at powers of two.
 6. **The panic message.** It formats values the code chose, so it may one
    day hold something sensitive. Recommended: kept, at most 96 bytes, and
    served only with the highest permission tier; the other fields with the
    read tier.
 7. **The shared encoding.** Recommended: one crate for the image information
-   block, the mailbox and the log, so the compatibility rules are written
-   and tested once.
-8. **A `Boot` record at every boot.** Recommended: yes, except during a crash
-   loop.
+   block, the mailbox and the log, with a committed registry.
+8. **Hangs.** Recommended: MWDT0's stage 0 as an interrupt that records the
+   PC, stage 1 resetting a second later.
 9. **Where the `unsafe` lives.** Recommended: one module in the firmware
    crate's glue, volatile copies only, all parsing safe and on the host.
 10. **Clearing the log.** Recommended: `DELETE /diag` with the highest
@@ -441,10 +472,8 @@ Each with a recommendation.
 
 ## Left open
 
-- Backtraces: the panic record holds the location and the message; a stack
-  walk is later work.
+- Backtraces: the panic and hang records hold a location; a stack walk is
+  later work.
 - Wall-clock time in records, once the firmware has a time source.
-- Priorities in the log (crash records kept longer than routine events), if
-  64 sectors prove too few.
 - How the diagnosis and status tree reads the log and the advisory
   self-checks.
