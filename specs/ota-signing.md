@@ -9,7 +9,10 @@ Builds on `specs/storage-v2.md` ("OTA") and on `eveningstar-ota` as merged
 ## Fixed by the user
 
 - No secure boot and no flash encryption, ever. The board belongs to its
-  owner, who can reflash it over USB at any time. Nothing here burns an eFuse.
+  owner, who can reflash it over USB at any time. The firmware never writes
+  an eFuse; provisioning may burn the write protection that keeps secure
+  boot, flash encryption and the disabling of USB recovery out of anyone's
+  reach (decision 40).
 - Every image that arrives remotely is verified for integrity and source. No
   code path skips that verification: nothing reaches a slot remotely except
   through an update, an update's image becomes loadable only once it
@@ -33,6 +36,51 @@ Builds on `specs/storage-v2.md` ("OTA") and on `eveningstar-ota` as merged
 - Accepted for now: the device has no API authentication and sits on an
   isolated network. Anyone who reaches the API can upload, confirm and
   switch slots.
+
+## Requirements
+
+What the design has to hold, each with the mechanism that holds it and what
+shows it, other than the authors. The rest of the spec is the detail.
+
+1. **Only a verified image runs from a remote update.**
+   - Held by: the held first word and the two verifications ("Byte path");
+     `Signed` as the only value that activates; the trust set compiled in.
+   - Shown by: stock signify and a second Ed25519 implementation agreeing
+     with the verifier on every case (differential fuzzing); Wycheproof and
+     RFC 8032 vectors; the model check of the update protocol; mutation
+     testing of the verifier and the policy; board refusals read back with
+     `esptool`.
+2. **A trial always ends: confirmed, or rolled back to the image that ran
+   before, whatever that image's keys, signature or `secure_version`.**
+   - Held by: the bootloader's abort of `PENDING_VERIFY`; the confirmation
+     window's own rollback at the deadline; the supervisor.
+   - Shown by: the model check, with the real bootloader's rules and torn
+     and unstable flash; the real bootloader on the board, under the
+     power-cut rig and the catalogue of broken images.
+3. **The owner can always reflash over USB.**
+   - Held by: no eFuse writes in the firmware; the provisioning's write
+     protection of the eFuses that could disable it ("eFuses"); the flash's
+     status register never written by the firmware.
+   - Shown by: `espefuse summary` at provisioning and the firmware's report
+     of the protection; `esptool` recovering a board after each fault case.
+4. **A confirmed image can take the next update.**
+   - Held by: the OTA readiness self-check; an upload refused unless its
+     image trusts the key that signed it.
+   - Shown by: the board scenarios, each confirmed release taking the next.
+5. **No downgrade below the floor, except by USB or during a trial.**
+   - Held by: the `secure_version` checks at upload and at a switch after
+     confirmation; development builds at 0.
+   - Shown by: unit tests over every combination, mutation testing, board
+     scenarios.
+6. **A release can't trust the development key, and its secret key can't be
+   in the repository.**
+   - Held by: the trust set generator, `release-check`, the device's upload
+     check, the secret key scan.
+   - Shown by: those tools refusing generated bad fixtures in CI.
+7. **A release can be checked by anyone.**
+   - Held by: the signify format; reproducible builds; published digests.
+   - Shown by: stock signify on a desktop; an independent rebuild matching
+     the published `SHA256`.
 
 ## Sources read
 
@@ -221,6 +269,33 @@ Every claim below about another system comes from these, read for this spec.
   and trusted component". `MCUBOOT_VALIDATE_PRIMARY_SLOT_ONCE` is documented
   as weaker because flash changed after validation would run unverified.
 
+## Hardware facts
+
+Read from the development board (2026-11-08, `esptool` and `espefuse`), its
+schematic (the hardware repository's `pcb/mcu.kicad_sch`), and the
+datasheets. A claim that rests on one of these says so.
+
+- **Chip:** ESP32-C6 (QFN40), revision v0.2, in an ESP32-C6-WROOM-1-N8
+  module; USB Serial/JTAG on the USB-C port.
+- **Flash:** XMC XM25QH64C (JEDEC ID `20 40 17`), 8 MiB, inside the module.
+  Its datasheet: more than 100 000 program/erase cycles, more than 20 years'
+  retention, page program 0.5–3 ms, sector erase 40–400 ms. An interrupted
+  program or erase: "data corruption may happen", with no defined partial
+  state. The status register's one-time lock exists only on special order;
+  its block protection bits are non-volatile but writable.
+- **eFuses:** none of the security fuses is burnt: secure boot, flash
+  encryption, download mode, USB Serial/JTAG and its download mode are all
+  as shipped, and `WR_DIS` is 0, so every one of them is still writable, by
+  the firmware too.
+- **Errata for v0.2** (ESP32-C6 errata v1.3) that touch this design:
+  CPU-863, a misaligned load followed by a store across PMP regions can
+  fault, so byte copies between flash-mapped or ROM data and RAM use
+  aligned or byte accesses; CLK-8588, the internal 32 kHz RC may fail to
+  start, so the RTC watchdog, which counts the slow clock, is a backstop
+  only when the slow clock runs from the board's 32 kHz crystal (to check
+  in the firmware's clock configuration). CPU-206 and SPI-304 are fixed in
+  v0.2.
+
 ## Threat model
 
 The attacker reaches the API over the network. The device has no API
@@ -262,6 +337,13 @@ whoever has it can reflash anything, by design.
   the key, isn't stored apart from the signature file, and isn't shown. The
   release instructions always pass `-p`, so the desktop doesn't use it
   either.
+- **Taking the board from its owner.** Firmware that runs with any trusted
+  key, the public development key included, can burn eFuses: enable secure
+  boot with its own key, enable flash encryption, or disable download mode
+  or USB Serial/JTAG. Each is permanent, and leaves the owner unable to
+  reflash the board. Provisioning burns the `WR_DIS` bits that freeze those
+  fields as shipped ("eFuses", decision 40); until then the risk is accepted
+  and the firmware reports it.
 - **Leftovers of a refused upload.** A refused image may be a well-formed
   ESP image with a correct appended SHA-256, or an upload may be cut by a
   power loss before verification. Neither is installed: `begin_update`
@@ -700,8 +782,44 @@ line code with no waits, in which a panic resets through the panic handler.
 From there the executor has the supervisor's main timeout to start it.
 
 The floor of recovery: USB Serial/JTAG and the ROM download mode are in the
-chip's ROM, and nothing here burns the eFuses that disable them. A board
-whose firmware is broken in every slot is still reflashed over USB.
+chip's ROM, and the firmware never burns the eFuses that disable them. A
+board whose firmware is broken in every slot is still reflashed over USB, as
+long as no firmware has burnt them ("eFuses").
+
+### eFuses
+
+Any code that runs on the chip can program its eFuses; the ROM refuses only
+fields whose `WR_DIS` bit is set. The fields that could take the board from
+its owner, and the `WR_DIS` bit that freezes each group (TRM table 6.3-1):
+
+- bit 2: `DIS_USB_SERIAL_JTAG`, `DIS_FORCE_DOWNLOAD`, `DIS_USB_JTAG`,
+  `DIS_PAD_JTAG` and others;
+- bit 4: `SPI_BOOT_CRYPT_CNT` (flash encryption);
+- bit 16: `SECURE_BOOT_EN`;
+- bit 17: `SPI_DOWNLOAD_MSPI_DIS` (the flash controller in download mode);
+- bit 18: `DIS_DOWNLOAD_MODE`, `DIS_USB_SERIAL_JTAG_DOWNLOAD_MODE`,
+  `ENABLE_SECURITY_DOWNLOAD`, `SECURE_VERSION` and others;
+- bit 30: `USB_EXCHG_PINS` (swaps D+ and D-) and `VDD_SPI_AS_GPIO`;
+- bit 31: `SOFT_DIS_JTAG` (probe-rs's path).
+
+Provisioning (`provision`, over USB, once per board) burns these seven bits
+with `espefuse write-protect-efuse`, after `espefuse summary` shows the
+fields as shipped. That is itself permanent, and it is what makes "secure
+boot and flash encryption never" and "USB always recovers" hold against
+firmware the owner didn't write. The key blocks and their purposes stay
+writable, for a later device secret; without `SECURE_BOOT_EN` and
+`SPI_BOOT_CRYPT_CNT` a key purpose enables nothing.
+
+The firmware:
+
+- never writes an eFuse or the flash's status register: esp-hal's eFuse
+  write functions and the status register commands are disallowed methods
+  outside a module that has none;
+- reads the `WR_DIS` bits and the seven fields at boot, and reports them in
+  the API; an unprotected board is an advisory self-check, as the
+  development key is.
+
+
 
 ### OpenBSD
 
@@ -1134,6 +1252,12 @@ impl Update<'_, '_> {
   results, and whether confirming raises the floor above the other slot's
   image. `POST /firmware/confirm/extend` moves the deadline.
 - Each slot's `secure_version` and whether a switch to it would be refused.
+- Each slot's file SHA-256, as `sha256sum` prints it, so the owner can
+  compare the image the device runs with the release's published `SHA256`
+  (requirement 7).
+- `recovery`: the eFuse protection's state ("eFuses"): protected, or which
+  of the seven `WR_DIS` bits are unset, and whether any protected field has
+  left its shipped value.
 - Security release warning, at upload once the image verified and on the
   confirm control, when the image raises `secure_version` above the other
   slot's: "This release fixes a security vulnerability. Once it is
@@ -1152,6 +1276,30 @@ impl Update<'_, '_> {
 
 Every check below runs from Nix (`nix run .#checks`) or is recorded with its
 command, so its evidence doesn't depend on the authors.
+
+### The model check
+
+- An exhaustive state-space check of the update protocol, run in the `test`
+  group: the otadata planner's real code, `Ota`'s operations, the
+  bootloader's selection, abort and fallback rules written from
+  `bootloader_utility.c`, power cuts at every program and erase, and the
+  flash's undefined states: an interrupted program or erase leaves each
+  affected bit 0, 1, or unstable, read differently at each read. Built on
+  the existing host test flash, with a small explicit-state checker (or
+  `stateright`), so the code checked is the code shipped.
+- Properties: requirements 1 and 2 (no unverified image loadable; every
+  trial ends in a confirmation or the previous image; the installed
+  invariant), and that every reachable state boots some image.
+- Kani proofs of the parsers (signature file, manifest, image information
+  block) and of the otadata planner: no panic for any input, and an
+  accepted input is canonical.
+
+### Mutation testing
+
+- `cargo-mutants` over the verifier, the policy checks, the otadata planner
+  and the `Ota` operations. Every surviving mutant is either killed by a new
+  test or recorded with the reason it can't change behaviour. CI fails on a
+  new survivor.
 
 ### Differential tests against signify
 
@@ -1212,6 +1360,15 @@ command, so its evidence doesn't depend on the authors.
   first erase of an update until the activation of an image that verified,
   and `installed_other` never accepts that slot in between.
 
+### Continuous differential fuzzing
+
+- A fuzz target that links OpenBSD's own verification code (signify's
+  parsing and SUPERCOP `ref`, built from the vendored C sources with `cc` in
+  a test-only crate) and a second Ed25519 implementation (libsodium, from
+  Nix), and checks the device verifier against both on every input, with
+  the rule of the differential tests. It runs in CI for a fixed time from a
+  committed corpus, and longer by hand.
+
 ### Fuzzing
 
 - `cargo-fuzz` targets for the signature file parser, the manifest parser, the
@@ -1246,6 +1403,35 @@ and so on), so a doctest that fails for another reason doesn't pass:
 - calling an activation on `Ota` without a `Signed`, or a switch without an
   `Installed`, neither of which exists;
 - opening a session on the alternate slot's writer while a `Signed` holds it.
+
+### The power-cut rig and broken images
+
+- The board powered only from USB through a hub with per-port power switching,
+  cut with `uhubctl` at random offsets during upload, finish, activation,
+  the bootloader's otadata writes, confirmation and switches, for thousands
+  of cycles; after each, the board must come up running an image the rules
+  allow, and reachable over the network unless the case says otherwise.
+- A catalogue of broken test images, each a build flag: panics at boot,
+  hangs before the supervisor starts, no network, a panic after 30 minutes,
+  a panic only after confirmation, a failing required self-check, a broken
+  configuration migration. Each must end as requirement 2 says.
+
+### Cross-checks with Espressif's tools
+
+- ESP-IDF's `otatool.py` reads the otadata after every write in the board
+  scenarios and must agree with the firmware's report; `esptool image-info`
+  must accept every image the firmware accepts.
+
+### Supply chain and reproducibility
+
+- `cargo-vet`, with the published audits of other projects imported, and
+  local audits for what they don't cover, at least for ed25519-dalek,
+  curve25519-dalek, sha2 and base64; `cargo-deny` for advisories, sources and
+  licences. An upgrade of a crypto crate is reviewed as a diff.
+- Every release is rebuilt on a second machine and compared with
+  `diffoscope`; the release notes say who rebuilt it.
+- Before the first signed release, an external security review of this spec
+  and the implementation.
 
 ### On the board
 
@@ -1443,6 +1629,16 @@ The numbers stay as first proposed, so earlier references hold.
     its entry undefined. The host model of the bootloader tears its writes
     (any subset of the state word's bits, with the sequence number and CRC
     whole), and the installed invariant's property test runs with it.
+
+40. **Protecting the eFuses.** Recommended: provisioning burns `WR_DIS` bits
+    2, 4, 16, 17, 18, 30 and 31, once per board, after checking the fields
+    are as shipped. Irreversible; it is what keeps the board its owner's
+    against firmware with a trusted key. Alternative: accept the risk and
+    only report it.
+41. **The model checker.** Recommended: a small explicit-state checker over
+    the real host code (or `stateright`), not TLA+, so the checked model is
+    the shipped code.
+42. **External review.** Recommended: before the first signed release.
 
 ## Left open
 
