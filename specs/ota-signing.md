@@ -764,6 +764,32 @@ on offline media. These checks catch a mistake anyway:
   was the signing generation, and with the current one when it was a
   future generation, which is then skipped.
 
+### Release tooling
+
+`docs/releasing.md` and `docs/updating.md` describe the release and update
+procedures in terms of three tools not built yet (decision 43):
+
+- `nix build .#release`: the release flavour of the app, built with
+  `EVENINGSTAR_RELEASE` set ("Development and release keys"): trust set
+  `signing` to `signing + 2`, `secure_version` from `nix/release.nix`, at
+  least 1. Its output is the image and the ELF, named
+  `eveningstar-<version>-esp32c6.{bin,elf}`, the link map with its
+  cross-reference table, and a `SHA256` listing (`sha256sum --tag`
+  format).
+- `release-check <dir> [--expect <digest>]`: `check-images` on the image,
+  then the release rules: no development key in the trust entry,
+  `secure_version` at least 1 and not below the previous release's (from
+  `nix/release.nix`), the trusted generations those `nix/keys.nix` yields
+  and the entry's `signing` equal to its `signing`, the `SHA256` listing
+  matching the files and, with `--expect`, the image's digest equal to the
+  one given (read off CI by hand, so the offline machine doesn't rely on
+  the networked one alone), and the eFuse constant scan and the link map
+  of "eFuses" within their allowlist. It prints what it read. Bad fixtures
+  for every rule run in the `build` group.
+- `nix build .#signing-iso`: a live system for the offline machine with
+  `signify`, `sha256sum` and `release-check`, built from the tag, so the
+  offline machine runs the same checks without a network.
+
 ## Rollback and recovery
 
 ### The ESP-IDF bootloader, as configured here
@@ -1689,6 +1715,10 @@ used.
     the real host code (or `stateright`), not TLA+, so the checked model is
     the shipped code.
 42. **External review.** Recommended: before the first signed release.
+43. **Release tooling.** Recommended: the `release` package,
+    `release-check` and the signing live system, as listed under "Release
+    tooling", so every release rule the ceremony relies on is checked by a
+    tool, on the networked machine and again offline.
 44. **Reproducibility before the first signed release.** Recommended: the
     first signed release waits until a second machine's build matches its
     `SHA256`; until then requirement 7 rests on signify alone.
