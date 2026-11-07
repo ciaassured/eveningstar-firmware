@@ -36,8 +36,9 @@ These checks stop the mistakes they name; each runs without being asked.
 - `release-check` _(planned)_ refuses an image that trusts the development
   key, has `secure_version` 0 or lower than the previous release's, trusts
   generations other than `signing` to `signing + 2`, names a different
-  `signing` generation than `nix/keys.nix`, or fails any `check-images`
-  check (layout, size, chip, project).
+  `signing` generation than `nix/keys.nix`, refers to the eFuse controller
+  or the ROM's eFuse programming functions, or fails any `check-images` check
+  (layout, size, chip, project).
 - Every firmware refuses at upload an image signed with a release key that
   trusts the development key, an image whose trust set lacks the key that
   signed it, an image with a lower `secure_version`, an image signed with
