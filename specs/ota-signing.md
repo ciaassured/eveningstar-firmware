@@ -542,19 +542,22 @@ from the repository at the release's signed tag and from the release notes.
   eveningstar.keys = {
     dev = ../keys/eveningstar-dev-fw.pub;
     generations = {
-      "1" = { file = ../keys/eveningstar-1-fw.pub; compromised = false; };
-      "2" = { file = ../keys/eveningstar-2-fw.pub; compromised = false; };
-      "3" = { file = ../keys/eveningstar-3-fw.pub; compromised = false; };
-      "4" = { file = ../keys/eveningstar-4-fw.pub; compromised = false; };
+      "1" = { file = ../keys/eveningstar-1-fw.pub; };
+      "2" = { file = ../keys/eveningstar-2-fw.pub; };
+      "3" = { file = ../keys/eveningstar-3-fw.pub; lost = true; };
+      "4" = { file = ../keys/eveningstar-4-fw.pub; };
+      "5" = { file = ../keys/eveningstar-5-fw.pub; };
     };
     signing = 2; # the generation releases are signed with now
   };
   ```
 
-  A generation below `signing` is past, `signing` is current, the two above
-  it are future. A release trusts `signing` to `signing + 2`; a development
-  build trusts the same three and the development key. Rotating is one edit:
-  raise `signing` and add the next generation's file.
+  A generation below `signing` is past, `signing` is current, the next two
+  usable ones are future; a generation may be marked `compromised = true`
+  or `lost = true`, and is then skipped (here 3, so the example trusts 2, 4
+  and 5). A release trusts `signing` and the next two usable generations; a
+  development build trusts the same three and the development key. Rotating
+  is one edit: raise `signing` and add the next generation's file.
 - The generator refuses: a gap in the generations; a missing file for the
   three usable generations from `signing`; a duplicate keynum. A generation
   marked `lost` or `compromised` is skipped, never trusted again. The
