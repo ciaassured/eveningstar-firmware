@@ -12,8 +12,9 @@ Builds on `specs/storage-v2.md` ("OTA") and on `eveningstar-ota` as merged
   owner, who can reflash it over USB at any time. Nothing here burns an eFuse.
 - Every image that arrives remotely is verified for integrity and source. No
   code path skips that verification: nothing reaches a slot remotely except
-  through an update, and an update's slot becomes selectable only once its
-  image verified. Images already installed are trusted (decision 28).
+  through an update, an update's image becomes loadable only once it
+  verified, and its slot selectable only after it verified again. Images
+  already installed are trusted (decision 28).
 - The format is OpenBSD signify's: any release is checked on a desktop with
   stock `signify`.
 - The primitives come from existing, reviewed code. Nothing here invents
@@ -269,13 +270,13 @@ whoever has it can reflash anything, by design.
   refuses the slot ("Rollback and recovery"). Not installed isn't the same
   as not bootable: the bootloader's fallback loop boots any image that
   loads, without consulting the otadata, when the selected one fails to
-  load. So the upload's first word, which holds the image's magic, is held
-  in RAM and programmed last, in `finish`; an upload abandoned or cut before
-  then never has a loadable header. A refused or abandoned upload then
-  erases the slot's first sector (decision 15). What remains is the window
-  from `finish` to that erase, during which the slot holds a complete
-  unverified image; it matters only if the running slot fails to load in
-  that window, which no network request causes.
+  load. So the image's first word, which holds its magic (`0xE9`), stays in
+  RAM until the image has verified, and the slot's first word stays erased
+  until then. The bootloader checks the magic on every load, a debugger
+  attached or not (with validation skipping pinned off, decision 16), so an
+  unverified image is never loadable: not while it is written, not after a
+  refusal, an abandoned upload or a power cut. Erasing the slot's first
+  sector after a refusal is then only for the API's sake (decision 15).
 
 ### Accepted
 
@@ -936,34 +937,53 @@ every past schema to the current one.
    sector, and wipes the alternate configuration. `Update::write` programs the
    body as it arrives, each sector erased before its first bytes, refusing
    bytes past the signature sector.
-3. `Update::finish` programs the last word, then the held first word (the
-   image's magic), then the held signature file into the signature sector,
-   and ends the write session at epoch E.
-4. The slot's check reads the slot at E through a snapshot: header, segments,
+   `Update` holds the image's first word in RAM and leaves the slot's first
+   word erased.
+3. `Update::finish` programs the last word and the held signature file into
+   the signature sector, and ends the write session at epoch E. The slot
+   now holds the whole image but its first word, so it doesn't load.
+4. **First verification.** The slot is read at E through a snapshot, with
+   the held first word laid over its first 4 bytes: header, segments,
    checksum, appended SHA-256, the file SHA-256 (accelerator), the
-   descriptor, the layout record and the image information block; then
-   the signature sector, which it parses and verifies under the running trust
-   set; then compares the matching manifest line's digest with the file
-   SHA-256. Every byte verified is read back from the flash at E. Nothing
-   from the HTTP body is trusted.
-5. `Update::finish` checks on that model the length written, the project, the
-   layout, the board and configuration compatibility, the downgrade floor,
-   that the signing key is in the new image's trust entry, that a
-   release-signed image doesn't trust the development key, and that the
-   signing key's kind matches `secure_version` (0 for the development key,
-   at least 1 for a release key); then it returns a `Signed` image.
-6. `Signed::activate` checks the slot is still at E and writes the otadata
-   entry that selects the slot with state `New`. It doesn't hash the slot
-   again (decision 5).
-7. At the next boot the bootloader checks the image's SHA-256 (no debugger
+   descriptor, the layout record and the image information block; then the
+   signature sector, parsed and verified under the running trust set; then
+   the matching manifest line's digest compared with the file SHA-256. Every
+   byte verified is read back from the flash at E, except those 4, which are
+   the exact bytes programmed next. Nothing else from the HTTP body is
+   trusted. The slot's own check, which also sees epoch E, finds no image
+   there; the update's result isn't kept as the slot's verdict.
+5. **Policy.** On that result `finish` checks the length written, the
+   project, the layout, the board and configuration compatibility, the
+   downgrade floor, that the signing key is in the new image's trust entry,
+   that a release-signed image doesn't trust the development key, and that
+   the signing key's kind matches `secure_version` (0 for the development
+   key, at least 1 for a release key).
+6. **Commit.** `finish` programs the held first word in a session of its
+   own, which ends at epoch E'. Only from here can the image load.
+7. **Second verification.** `finish` waits for the slot's own check at E',
+   which runs on every new epoch anyway, with nothing laid over: the image
+   must verify, and its file SHA-256 and verified signature line must equal
+   the first verification's. Then it returns a `Signed` image at E'.
+8. `Signed::activate` checks the slot is still at E' and writes the otadata
+   entry that selects the slot with state `New`. It doesn't hash the slot a
+   third time (decision 5).
+9. At the next boot the bootloader checks the image's SHA-256 (no debugger
    attached) and starts it as `PendingVerify`; the confirmation window
    applies as now.
 
 The signature is checked against the signature file and the file SHA-256 as
 read from the flash, at the epoch the activation also requires. A refusal at
-step 4 or 5, or an upload abandoned before `finish` (a dropped connection, a
-client timeout), erases the first sector (decision 15); the request handler
-does it, as `Update`'s `Drop` can't wait for an erase.
+step 4, 5 or 7, or an upload abandoned before `finish` (a dropped
+connection, a client timeout), leaves the slot's first word erased, so
+nothing in the slot loads. The first sector is then erased so the API shows
+the slot empty (decision 15); the request handler does it, as `Update`'s
+`Drop` can't wait for an erase. A power cut between steps 6 and 7 leaves an
+image that loads and passed the first verification but isn't installed.
+
+The update's verification over the overlaid snapshot is a new entry point of
+the slot's content module, beside its check: same code, a source that
+substitutes the first word, and a result returned to the caller instead of
+kept for the epoch.
 
 ### Types
 
@@ -1000,13 +1020,14 @@ is.
 
 ```rust
 /// An image in the alternate slot whose signature verified under the
-/// running trust set, at the slot's epoch E. It holds the alternate slot's
+/// running trust set, twice: before its first word was programmed and after,
+/// at the slot's epoch E'. It holds the alternate slot's
 /// writer, ended at E, and the otadata writer, both borrowed from the `Ota`
 /// for its whole life, so nothing writes the slot or the otadata until it
 /// is activated or dropped.
 #[must_use]
 pub struct Signed<'o, 'f> {
-    slot: Ended<'o, AlternateApp>, // &'o mut Writer, stable at E
+    slot: Ended<'o, AlternateApp>, // &'o mut Writer, stable at E'
     otadata: &'o mut Writer<'f, Otadata>,
     // module, digest, key, versions: private
 }
@@ -1172,6 +1193,10 @@ command, so its evidence doesn't depend on the authors.
   signed image, of the signature sector and of the manifest flipped in turn
   after `finish` programs them, and between `finish` and `activate`; each must
   end in a refusal and no otadata write.
+- The held first word: until the first verification passes, the slot's first
+  word reads `0xFFFFFFFF` after every write, refusal, abandonment and power
+  cut; a first word flipped between steps 6 and 7 fails the second
+  verification.
 
 ### The installed invariant
 
@@ -1227,6 +1252,9 @@ and so on), so a doctest that fails for another reason doesn't pass:
   development-signed image to a release build; a lower `secure_version`;
   another layout; another project; an image too large; a truncated upload; a
   signature file over 4 KiB.
+- After each refusal above, and after an upload cut by closing the
+  connection or by a power cycle, `esptool read-flash` of the slot's first
+  4 bytes gives `ff ff ff ff`.
 - Refused at upload, likewise: an image whose trust entry lacks the key that
   signed it; a release-signed image whose trust entry holds the development
   key; an image whose oldest migratable schema is newer than the device's.
@@ -1286,6 +1314,11 @@ The numbers stay as first proposed, so earlier references hold.
     whatever key signed it; rotation decides only what can be installed.
 13. **USB-flashed slots.** Installed under the same rule and switchable;
     `flash-app` writes the signature sector for reporting only.
+15. **Unverified images never load.** The image's first word stays in RAM
+    through the first verification and is programmed only once the image
+    verified, then the image is verified again from the flash. Recommended:
+    erase the slot's first sector after a refusal or an abandoned upload, for
+    the API's sake only.
 23. **Trust what is installed.** A switch, in either direction, checks the
     target's integrity, never its signature (shown), and after confirmation
     its `secure_version`. "Installed" is an otadata entry naming the slot,
@@ -1363,10 +1396,6 @@ The numbers stay as first proposed, so earlier references hold.
     verifies and activates; rebooting stays a separate call. Alternative: a
     separate activate call, which needs the OTA task to keep the `Signed`
     between requests.
-15. **A refused or abandoned upload.** Recommended: hold the first word in
-    RAM and program it last, so an unfinished upload never has a loadable
-    header; erase the slot's first sector after a refusal or an abandoned
-    upload, so the API shows the slot empty.
 16. **Bootloader configuration.** Recommended: pin
     `BOOTLOADER_SKIP_VALIDATE_ON_POWER_ON`, `_ALWAYS` and `_IN_DEEP_SLEEP`
     off (the deep sleep fast path boots without selecting, so a trial isn't
