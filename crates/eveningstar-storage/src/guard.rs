@@ -73,8 +73,8 @@ const fn first_offset(partitions: &[Entry]) -> u32 {
 const _: () = assert!(layout::TABLE_OFFSET < BOOT_END);
 
 /// Whether `start..end`, absolute, overlaps a protected span while the app
-/// runs from `running`: below the first partition, `factory`, `reserved`
-/// and the running slot.
+/// runs from `running`: below the first partition, `factory`, `reserved`,
+/// the running slot and its signature region.
 pub(crate) fn is_protected(start: u32, end: u32, running: Slot) -> bool {
     let overlaps = |from: u32, to: u32| start < to && from < end;
     let entry = |entry: Entry| overlaps(entry.offset, entry.end());
@@ -82,6 +82,7 @@ pub(crate) fn is_protected(start: u32, end: u32, running: Slot) -> bool {
         || entry(layout::FACTORY)
         || entry(layout::RESERVED)
         || entry(running.partition())
+        || entry(running.signature())
 }
 
 #[cfg(test)]

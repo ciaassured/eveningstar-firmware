@@ -5,13 +5,14 @@ use crate::SECTOR_SIZE;
 use crate::layout::{CONFIG_0, CONFIG_1, DIAG, FACTORY, OTADATA, RESERVED};
 
 /// Every protected range, absolute, when running from `running`.
-fn protected(running: Slot) -> [(u32, u32); 4] {
+fn protected(running: Slot) -> [(u32, u32); 5] {
     let span = |entry: Entry| (entry.offset, entry.end());
     [
         (0, BOOT_END),
         span(FACTORY),
         span(RESERVED),
         span(running.partition()),
+        span(running.signature()),
     ]
 }
 
@@ -38,14 +39,15 @@ fn the_guard_covers_exactly_the_protected_ranges() {
             // Empty ranges touch nothing.
             assert!(!is_protected(start, start, running));
         }
-        // What the writers write: the configurations, diag, the otadata and
-        // the slot that didn't boot.
+        // What the writers write: the configurations, diag, the otadata, and
+        // the slot that didn't boot and its signature region.
         let writable = [
             CONFIG_0,
             CONFIG_1,
             DIAG,
             OTADATA,
             running.other().partition(),
+            running.other().signature(),
         ];
         for entry in writable {
             assert!(
