@@ -18,6 +18,7 @@ The workspace's crates live flat under `crates/`.
 | `eveningstar-ota`         | The OTA mechanism: updates, activation, confirmation and rollback    |
 | `eveningstar-system`      | Reboots, reboot holds and the task watchdog supervisor               |
 | `eveningstar-records`     | The record encoding firmware versions share, and its type registry   |
+| `eveningstar-signify`     | signify's signed manifests, verified under compiled trust sets       |
 | `eveningstar`             | The firmware: services, transports, drivers and watchdogs            |
 
 `eveningstar-board` and `eveningstar` build for the ESP32-C6 only; the others
