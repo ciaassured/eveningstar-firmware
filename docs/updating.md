@@ -140,13 +140,15 @@ selection so the device starts that slot:
 
 ```sh
 esptool --chip esp32c6 write-flash 0x10000 eveningstar-<version>-esp32c6.bin
+esptool --chip esp32c6 write-flash 0xc000 SHA256.sig
 esptool --chip esp32c6 erase-region 0xa000 0x2000
 ```
 
-Don't pass `--flash-mode`, `--flash-freq` or `--flash-size` when writing
-the bootloader: esptool then rewrites its header, and the firmware no
-longer recognizes it. Writing `SHA256.sig` into the slot's signature
-sector, so the device reports who signed the image, is _(planned)_.
+The second command writes the signature into the first slot's signature
+region (`sig_0`, _(planned)_), so the device reports who signed the image;
+the image runs without it. Don't pass `--flash-mode`, `--flash-freq` or
+`--flash-size` when writing the bootloader: esptool then rewrites its
+header, and the firmware no longer recognizes it.
 
 Flashing over USB keeps the configuration. `esp-wipe` erases the whole flash
 for a clean start, after which `flash-all` is needed.
