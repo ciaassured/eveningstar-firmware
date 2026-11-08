@@ -16,6 +16,7 @@ eveningstar-board       = { path = "crates/eveningstar-board" }
 eveningstar-boot        = { path = "crates/eveningstar-boot" }
 eveningstar-esp-formats = { path = "crates/eveningstar-esp-formats" }
 eveningstar-ota         = { path = "crates/eveningstar-ota" }
+eveningstar-records     = { path = "crates/eveningstar-records" }
 eveningstar-storage     = { path = "crates/eveningstar-storage" }
 eveningstar-system      = { path = "crates/eveningstar-system" }
 

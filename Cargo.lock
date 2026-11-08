@@ -1157,6 +1157,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "eveningstar-records"
+version = "0.1.0"
+
+[[package]]
 name = "eveningstar-storage"
 version = "0.1.0"
 dependencies = [

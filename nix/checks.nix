@@ -145,7 +145,7 @@ in
           # The crates that also build on the host, and the host's target.
           # Their features stay out of the firmware's lint, as `--all-features`
           # would otherwise enable them in the firmware's dependency on them.
-          host_crates=(eveningstar-api eveningstar-boot eveningstar-esp-formats eveningstar-ota eveningstar-storage eveningstar-system)
+          host_crates=(eveningstar-api eveningstar-boot eveningstar-esp-formats eveningstar-ota eveningstar-records eveningstar-storage eveningstar-system)
           host_target="$(rustc --print host-tuple)"
 
           expanded=()

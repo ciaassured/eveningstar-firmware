@@ -17,6 +17,7 @@ The workspace's crates live flat under `crates/`.
 | `eveningstar-boot`        | The content modules of the boot regions: parsed models and views     |
 | `eveningstar-ota`         | The OTA mechanism: updates, activation, confirmation and rollback    |
 | `eveningstar-system`      | Reboots, reboot holds and the task watchdog supervisor               |
+| `eveningstar-records`     | The record encoding firmware versions share, and its type registry   |
 | `eveningstar`             | The firmware: services, transports, drivers and watchdogs            |
 
 `eveningstar-board` and `eveningstar` build for the ESP32-C6 only; the others
