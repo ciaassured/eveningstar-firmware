@@ -9,6 +9,11 @@ lefthook-local.yml
 debug/
 target/
 
+# Signify secret keys. Only the development key's is committed; release keys
+# stay on the offline media of the key ceremony.
+*.sec
+!keys/eveningstar-dev-fw.sec
+
 # Fuzzing builds and findings; the corpora in fuzz/corpus are committed
 fuzz/artifacts/
 fuzz/coverage/

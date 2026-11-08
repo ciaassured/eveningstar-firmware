@@ -91,6 +91,45 @@ in
       };
     };
 
+    keys = {
+      dev = mkOption {
+        type = types.path;
+        description = "The development key's signify public key file.";
+      };
+
+      generations = mkOption {
+        type = types.attrsOf (types.submodule {
+          options = {
+            file = mkOption {
+              type = types.path;
+              description = "The generation's signify public key file.";
+            };
+            lost = mkOption {
+              type = types.bool;
+              default = false;
+              description = "The secret key is lost; the generation is never trusted again.";
+            };
+            compromised = mkOption {
+              type = types.bool;
+              default = false;
+              description = "The secret key was exposed; the generation is never trusted again.";
+            };
+          };
+        });
+        default = { };
+        description = "Release key generations, by number from 1.";
+      };
+
+      signing = mkOption {
+        type = types.nullOr types.ints.positive;
+        default = null;
+        description = ''
+          The generation releases are signed with now, or null before the first
+          key ceremony, when there is no release trust set.
+        '';
+      };
+    };
+
     bootloader.sdkconfig = mkOption {
       type = types.attrsOf (types.oneOf [ types.bool types.int types.str ]);
       default = { };

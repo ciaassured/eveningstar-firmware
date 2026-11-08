@@ -56,6 +56,23 @@ Checks (formatting, Clippy and a release build), the same ones CI runs:
 nix run .#checks
 ```
 
+## Signing keys
+
+Firmware updates are signed with
+[signify](https://man.openbsd.org/signify.1). The public keys are in `keys/`,
+listed in `nix/keys.nix`:
+
+<!-- trust-sets:begin -->
+
+| Key         | Status                        | Public key                                                 |
+| ----------- | ----------------------------- | ---------------------------------------------------------- |
+| development | trusted by development builds | `RWQsNO9nsI2c2zDwvFkPDO370wGG5b4uIOYaaxhA4M4MdtQEmQWBU33S` |
+
+<!-- trust-sets:end -->
+
+The development key's secret key is committed, so anyone can sign with it: a
+development build accepts updates from anyone.
+
 ## Design
 
 [docs/architecture.md](docs/architecture.md) describes how the firmware is

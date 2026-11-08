@@ -21,7 +21,8 @@
 //! [`Verified`] file then gives the [`Line`] whose digest is an image's.
 //!
 //! [`TrustSet`]s and their [`TrustedKey`]s have no public constructor: only
-//! this crate makes them, and, with the `test-support` feature, tests.
+//! this crate makes them, and, with the `test-support` feature, tests. The
+//! firmware's are in [`trust`].
 //! [`public_key`] reads a signify `.pub` file, and [`check_key`] refuses a key
 //! no trust set may hold.
 //!
@@ -33,6 +34,7 @@
 mod file;
 mod key;
 mod manifest;
+pub mod trust;
 
 pub use file::{FILE_MAX, MESSAGE_MAX, SigError, verify};
 pub use key::{Generation, KeyError, Keynum, Purpose, TrustSet, TrustedKey, check_key, public_key};

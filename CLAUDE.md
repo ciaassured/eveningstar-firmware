@@ -50,10 +50,10 @@ and update it when a design decision changes.
     `gdb`, `lefthook`, ESP-IDF (`idf.py`, `IDF_TARGET=esp32c6`), and the flake's
     own commands: `eveningstar-checks`, `flash-boot`, `flash-app`, `flash-all`,
     `esp-wipe`, `bootloader-menuconfig`, `storage-layout`, `storage-testdata`,
-    `fuzz` (the targets in `fuzz/`, with a pinned nightly toolchain, from
-    copies of their committed corpora; `--merge` adds what a run found to
-    them), and for the web UI `web-dev`,
-    `web-npm`, `web-types` and the pinned Node.
+    `trust-sets`, `fuzz` (the targets in `fuzz/`, with a pinned nightly
+    toolchain, from copies of their committed corpora; `--merge` adds what a
+    run found to them), and for the web UI `web-dev`, `web-npm`, `web-types`
+    and the pinned Node.
   - The Rust toolchain comes from `rust-toolchain.toml` (rustup), so `cargo`
     works with or without the dev shell.
 - Checks: `nix run .#checks` runs everything; `nix run .#checks -- lint`
@@ -161,6 +161,24 @@ design and what is left.
 - A known bootloader is recognized by its exact digest: flash commands must not
   make esptool rewrite the bootloader's header (flash mode, frequency or size
   options that differ from the image's).
+
+## Signing keys
+
+`specs/ota-signing.md` records the design: signed manifests, trust sets,
+generations and the key ceremony.
+
+- The firmware signing keys are listed once, in `nix/keys.nix`, with their
+  public key files in `keys/`. `trust-sets` writes the trust sets
+  (`crates/eveningstar-signify/src/trust.rs`, committed) and the README's key
+  table from it, refusing keys and lists the spec rules out; the `lint` group
+  fails when either is out of date. Changing which keys are trusted needs the
+  user's approval.
+- Trust sets have no constructor outside the signify crate, and nothing at run
+  time adds a key; don't add a route that does.
+- Only the development key's secret key (`keys/eveningstar-dev-fw.sec`) is
+  committed. Release secret keys never come near the repository.
+- Until the first key ceremony there are no release generations: development
+  builds trust the development key alone, and there is no release trust set.
 
 ## Plain-text formatting
 
