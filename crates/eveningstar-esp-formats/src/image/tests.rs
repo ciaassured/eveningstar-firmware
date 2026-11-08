@@ -10,9 +10,10 @@ use crate::pace::{Pace, Yield};
 
 use super::*;
 use crate::test_support::{
-    APP, BOOTLOADER, ESPFLASH_BOOTLOADER, FLASH_SIZE, ImageBuilder, LAYOUT_RECORD_AT, PARTITIONS,
-    Rng, TABLE, TABLE_OFFSET, app_descriptor_bytes, app_image, app_image_with_layout, block_on,
-    board_layout_record, bootloader_image, data, layout_record_bytes, run, segment_at, with_layout,
+    APP, BOOTLOADER, ESPFLASH_BOOTLOADER, FLASH_SIZE, ImageBuilder, LAYOUT_RECORD_AT, OTA_1_INDEX,
+    PARTITIONS, Rng, TABLE, TABLE_OFFSET, app_descriptor_bytes, app_image, app_image_with_layout,
+    block_on, board_layout_record, bootloader_image, data, layout_record_bytes, run, segment_at,
+    with_layout,
 };
 
 fn hex(bytes: &[u8]) -> String {
@@ -920,7 +921,7 @@ type Change = fn(&mut Vec<Entry>) -> (u32, u32);
 fn a_record_of_another_layout_reads_but_doesnt_match() {
     let changes: [Change; 6] = [
         |entries| {
-            entries[3].size -= 0x1000;
+            entries[OTA_1_INDEX].size -= 0x1_0000;
             (TABLE_OFFSET, FLASH_SIZE)
         },
         |entries| {

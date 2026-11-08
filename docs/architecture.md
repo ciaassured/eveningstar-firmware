@@ -656,8 +656,8 @@ most 4 KiB per call, yielding after each.
 
 Every erase and program checks its absolute range against the protected spans
 before it reaches the device: everything below the first partition (the
-bootloader and the table's sector), `factory`, `reserved` and the current slot,
-from the compiled layout. A range that touches one is refused whole, so a
+bootloader and the table's sector), `factory`, `reserved`, the current slot and
+its signature region, from the compiled layout. A range that touches one is refused whole, so a
 mistake in a caller's arithmetic still can't reach them.
 
 ### Write state and snapshots
@@ -992,9 +992,9 @@ image with no rollback.
   holds for its whole life, so no snapshot of the slot can be taken while an
   image is written; dropping the `Update` abandons it and ends the session.
   It erases the slot's first sector, so the slot holds no image that verifies,
-  and then wipes the alternate slot's configuration (`Writer<AlternateConfig>`,
-  which `Ota::new` takes) and signature region (a boot writer): they belong to
-  the image being replaced. Nothing verifies in the slot before
+  and then wipes the alternate slot's signature region (a boot writer) and
+  configuration (`Writer<AlternateConfig>`, which `Ota::new` takes): they
+  belong to the image being replaced. Nothing verifies in the slot before
   `Update::finish`, so an image that verifies there after an update had both
   wiped during that update. A wipe cut short leaves a slot that doesn't
   verify, and the next update wipes again. Wiped first instead, a cut between

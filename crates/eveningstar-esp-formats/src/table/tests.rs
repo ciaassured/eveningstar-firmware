@@ -972,7 +972,7 @@ fn tables_without_the_booted_app_are_skipped() {
     }]);
     // With the app, but malformed after it.
     let mut malformed = table_with_md5(&PARTITIONS);
-    malformed[3 * 32] = 0;
+    malformed[(OTA_1_INDEX + 1) * 32] = 0;
     // With the app, but no end within the table's length.
     let unterminated = table_of(&[entry_bytes(&PARTITIONS[OTA_0_INDEX]); MAX_ENTRIES]);
     let flash = flash_with(

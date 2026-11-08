@@ -398,8 +398,8 @@ known point:
   device, and `R::SIZE` is a constant a store can assert on.
 - The protected spans keep their guard: every erase and program checks its
   absolute range against the bootloader's span, the table's sector,
-  `factory`, `reserved` and the current slot, from the compiled layout, before
-  it reaches the device.
+  `factory`, `reserved`, the current slot and its signature region, from the
+  compiled layout, before it reaches the device.
 
 ## Write state and snapshots
 
