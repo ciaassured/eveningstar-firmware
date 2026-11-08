@@ -9,7 +9,9 @@ use eveningstar_esp_formats::otadata::{self, BootState, Write};
 use eveningstar_esp_formats::{Slot, Text};
 use eveningstar_storage::chain::BootWriters;
 use eveningstar_storage::nor::{SECTOR_SIZE, Writer};
-use eveningstar_storage::roles::{self, AlternateApp, AlternateConfig, CurrentApp};
+use eveningstar_storage::roles::{
+    self, AlternateApp, AlternateConfig, AlternateSignature, CurrentApp,
+};
 use eveningstar_storage::{AccessError, WriteState};
 
 use crate::checks::{CheckState, ConfirmGate};
@@ -62,6 +64,8 @@ pub struct Ota<'f> {
     otadata: Writer<'f, roles::Otadata>,
     /// The alternate slot's configuration, which an update wipes.
     alternate_config: Writer<'f, AlternateConfig>,
+    /// The alternate slot's signature region, which an update wipes.
+    alternate_signature: Writer<'f, AlternateSignature>,
     /// The alternate slot's module, whose check verifies it.
     slot: &'f AppSlot<'f, AlternateApp>,
     /// The otadata's module, which gives the boot state.
@@ -85,7 +89,7 @@ impl<'f> Ota<'f> {
     /// image verified and its descriptor reads. [`confirm`](Self::confirm)
     /// writes only once every self-check of `gate` has passed, and
     /// [`begin_update`](Self::begin_update) wipes `alternate_config`, the
-    /// alternate slot's configuration.
+    /// alternate slot's configuration, and the alternate signature region.
     pub async fn new(
         writers: BootWriters<'f>,
         alternate_config: Writer<'f, AlternateConfig>,
@@ -99,12 +103,14 @@ impl<'f> Ota<'f> {
         let BootWriters {
             alternate_app,
             otadata: otadata_writer,
+            alternate_signature,
             ..
         } = writers;
         Self {
             alternate: alternate_app,
             otadata: otadata_writer,
             alternate_config,
+            alternate_signature,
             slot: alternate,
             boot: otadata,
             running,
@@ -158,12 +164,13 @@ impl<'f> Ota<'f> {
     /// bootloader never selects the slot while it is rewritten, whatever is cut
     /// short. Then a write session opens on the slot, which the [`Update`]
     /// holds, and the slot's first sector is erased, so the slot holds no
-    /// image that verifies. Then the alternate slot's configuration is wiped
-    /// whole: it belongs to the image the update replaces. Nothing verifies
+    /// image that verifies. Then the alternate slot's configuration and
+    /// signature region are wiped whole: they belong to the image the update
+    /// replaces. Nothing verifies
     /// in the slot before [`Update::finish`], so an image that verifies there
-    /// after an update had the configuration wiped during that update; a wipe
-    /// cut short leaves a slot that doesn't verify, and the next update wipes
-    /// the configuration again. Every [`VerifiedImage`] made before goes
+    /// after an update had both wiped during that update; a wipe cut short
+    /// leaves a slot that doesn't verify, and the next update wipes both
+    /// again. Every [`VerifiedImage`] made before goes
     /// stale, whether or not this succeeds once OTA is ready.
     ///
     /// # Errors
@@ -186,6 +193,7 @@ impl<'f> Ota<'f> {
         let mut session = self.alternate.begin();
         session.erase(0, SECTOR_SIZE).await?;
         self.alternate_config.begin().wipe().await?;
+        self.alternate_signature.begin().wipe().await?;
         Ok(Update::new(
             session,
             self.slot,
@@ -364,6 +372,7 @@ impl fmt::Debug for Ota<'_> {
             .field("alternate", &self.alternate)
             .field("otadata", &self.otadata)
             .field("alternate_config", &self.alternate_config)
+            .field("alternate_signature", &self.alternate_signature)
             .field("running", &self.running)
             .field("project", &self.project)
             .field("generation", &self.generation)

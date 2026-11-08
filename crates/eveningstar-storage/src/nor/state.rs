@@ -154,14 +154,14 @@ mod tests {
         assert_eq!(indices(Span::new(0, 1)), [0]);
         assert_eq!(indices(Span::new(0, 0x9000)), [0, 1]);
         assert_eq!(indices(Span::new(0x7FFF, 2)), [0, 1]);
-        assert_eq!(indices(Span::from(layout::OTA_1)), [5]);
+        assert_eq!(indices(Span::from(layout::OTA_1)), [7]);
         assert_eq!(
             indices(Span::new(0, layout::FLASH_SIZE)),
             (0..SPANS).collect::<Vec<_>>()
         );
-        // The gap between the otadata and the first slot has no span.
-        assert_eq!(indices(Span::new(0xC000, 0x4000)), [] as [usize; 0]);
-        assert_eq!(indices(Span::new(0xB000, 0x6000)), [3, 4]);
+        // The gap between `sig_1` and the first slot has no span.
+        assert_eq!(indices(Span::new(0xE000, 0x2000)), [] as [usize; 0]);
+        assert_eq!(indices(Span::new(0xB000, 0x6000)), [3, 4, 5, 6]);
         // Nor has anything past the layout.
         assert_eq!(
             indices(Span::new(layout::FLASH_SIZE, 0x1000)),
@@ -174,7 +174,7 @@ mod tests {
         assert!(State::inside_one(Span::from(layout::DIAG)));
         assert!(State::inside_one(Span::new(layout::DIAG.offset, 0x1000)));
         assert!(!State::inside_one(Span::new(0x8000, 0x2000)));
-        assert!(!State::inside_one(Span::new(0xC000, 0x1000)));
+        assert!(!State::inside_one(Span::new(0xE000, 0x1000)));
     }
 
     /// A table placed in a `static`, as a device's owner places it.

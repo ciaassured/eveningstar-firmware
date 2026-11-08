@@ -829,7 +829,7 @@ fn a_failing_read_is_reported() {
 // The layout record.
 
 /// The record of the board whose table is the fixture's.
-fn board_record() -> LayoutRecord<8> {
+fn board_record() -> LayoutRecord<{ PARTITIONS.len() }> {
     LayoutRecord::new(TABLE_OFFSET, FLASH_SIZE, &PARTITIONS).unwrap()
 }
 
@@ -894,11 +894,11 @@ fn a_layout_record_round_trips_through_an_image() {
         assert!(matches);
         assert_eq!(layout.table_offset(), TABLE_OFFSET);
         assert_eq!(layout.flash_size(), FLASH_SIZE);
-        assert_eq!(layout.entry_count(), 8);
+        assert_eq!(layout.entry_count(), PARTITIONS.len() as u32);
         for (index, entry) in (0..).zip(record.entries()) {
             assert_eq!(layout.entry(&image[..], index), Ok(Some(*entry)));
         }
-        assert_eq!(layout.entry(&image[..], 8), Ok(None));
+        assert_eq!(layout.entry(&image[..], PARTITIONS.len() as u32), Ok(None));
         assert_eq!(layout.entry(&image[..], u32::MAX), Ok(None));
     }
 }
@@ -990,7 +990,15 @@ fn a_malformed_record_is_no_record() {
 fn a_record_past_the_first_segment_is_no_record() {
     let record = board_layout_record();
     let len_of = |entries: usize| 256 + 32 + 32 * entries;
-    for first_len in [256, 256 + 28, 256 + 32, len_of(7), len_of(8) - 4, len_of(8)] {
+    let n = PARTITIONS.len();
+    for first_len in [
+        256,
+        256 + 28,
+        256 + 32,
+        len_of(n - 1),
+        len_of(n) - 4,
+        len_of(n),
+    ] {
         let mut builder = app_image();
         let first = &mut builder.segments[0].1;
         first.truncate(256);
@@ -999,7 +1007,7 @@ fn a_record_past_the_first_segment_is_no_record() {
         let image = builder.build();
         assert!(app(&image).is_ok(), "{first_len}");
         let found = layout_of(&image);
-        assert_eq!(found.is_some(), first_len == len_of(8), "{first_len}");
+        assert_eq!(found.is_some(), first_len == len_of(n), "{first_len}");
     }
 }
 
