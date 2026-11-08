@@ -116,6 +116,28 @@
         printf 'refs/heads/feature %s refs/heads/feature %040d\n' "$feature" 0 > "$TMPDIR/push"
         refuses "a key on a pushed branch that isn't checked out" notes.txt --pre-push < "$TMPDIR/push"
 
+        # Pushes to a remote that has main, which holds the key added and
+        # removed again: an existing ref sends only what the remote lacks.
+        git init -q --bare "$TMPDIR/origin.git"
+        git init -q --bare "$TMPDIR/other.git"
+        git remote add origin "$TMPDIR/origin.git"
+        git remote add other "$TMPDIR/other.git"
+        git push -q origin main
+        main=$(git rev-parse main)
+        printf 'refs/heads/feature %s refs/heads/feature %s\n' "$feature" "$main" > "$TMPDIR/push"
+        refuses "a key on a branch pushed over an existing one" notes.txt \
+          --pre-push origin < "$TMPDIR/push"
+        printf 'refs/heads/main %s refs/heads/main %s\n' "$main" "$main" > "$TMPDIR/push"
+        passes --pre-push origin < "$TMPDIR/push"
+        printf 'refs/heads/gone %040d refs/heads/gone %s\n' 0 "$main" > "$TMPDIR/push"
+        passes --pre-push origin < "$TMPDIR/push"
+        # A branch another remote already has is still new to this one.
+        git push -q other feature
+        printf 'refs/heads/feature %s refs/heads/feature %040d' "$feature" 0 > "$TMPDIR/push"
+        refuses "a key another remote has, on a last line without a newline" notes.txt \
+          --pre-push origin < "$TMPDIR/push"
+        (cd keys && passes --index)
+
         # Git errors fail the scan, rather than passing with nothing scanned.
         status=0
         secret-key-scan --commits nosuchref 2>/dev/null || status=$?
