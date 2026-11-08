@@ -1,0 +1,24 @@
+[package]
+name = "eveningstar-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+# Not part of the firmware's workspace: the fuzz targets build with a nightly
+# toolchain and libFuzzer, for the host only.
+[workspace]
+members = ["."]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+eveningstar-records = { path = "../crates/eveningstar-records" }
+
+[[bin]]
+name = "records"
+path = "fuzz_targets/records.rs"
+test = false
+doc = false
+bench = false

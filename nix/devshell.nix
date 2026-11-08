@@ -20,6 +20,7 @@
         config.packages.flash-all
         config.packages.storage-layout-write
         config.packages.storage-testdata-write
+        config.packages.fuzz
       ];
 
       # Default target for idf.py when a project has no sdkconfig yet.
