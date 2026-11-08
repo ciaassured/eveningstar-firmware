@@ -32,6 +32,9 @@ Builds on `specs/storage-v2.md` ("OTA") and on `eveningstar-ota` as merged
   image some time after confirmation is a different operation.
 - The other decisions taken with the user are listed under "Decisions",
   "Decided with the user".
+- Anyone can take the source at a release's tag, audit it, build it, and
+  get the signed image byte for byte, so nobody has to trust our build
+  process (user, 2026-11-08).
 - Accepted for now: the device has no API authentication and sits on an
   isolated network. Anyone who reaches the API can upload, confirm and
   switch slots.
@@ -82,12 +85,29 @@ shows it, other than the authors. The rest of the spec is the detail.
    - Held by: the trust set generator, `release-check`, the device's upload
      check, the secret key scan.
    - Shown by: those tools refusing generated bad fixtures in CI.
-7. **A release can be checked by anyone.**
-   - Held by: the signify format; published digests; reproducible builds.
-   - Shown by: stock signify on a desktop over the published `SHA256.sig`;
-     and, from the first signed release on, a second build on another
-     machine matching the published `SHA256`, which that release waits for
-     (decision 44).
+7. **Anyone can rebuild a release from its source and get the signed
+   image, byte for byte.**
+   - Held by: a release is a function of its tag alone. `nix build
+     .#release` takes nothing else: `flake.lock` pins nixpkgs and
+     rust-overlay, `rust-toolchain.toml` the compiler, `Cargo.lock` and the
+     npm lockfiles every dependency (the web UI bundle is part of the
+     image); the build has no network, no secret and no host state; the
+     descriptor's date comes from `SOURCE_DATE_EPOCH`, and the vendor,
+     toolchain and source paths are remapped (`nix/app.nix`). Signing
+     changes no byte of the image: the signature lives in `SHA256.sig` and,
+     on the device, in the slot's signature sector, both outside the image.
+   - Shown by: anyone's own build from the tag, checked against the
+     published, signed listing with stock signify:
+
+     ```
+     nix build github:ciaassured/eveningstar-firmware/v<version>#release
+     signify -C -p eveningstar-<N>-fw.pub -x SHA256.sig \
+       result/eveningstar-<version>-esp32c6.bin
+     ```
+
+     and, before a release is signed, a second build on another machine and
+     a `nix build --rebuild` in CI, each matching byte for byte; no release
+     is signed until they do (decision 44).
 
 ## Sources read
 
@@ -731,10 +751,15 @@ parses to the same result as without the additions.
   image digest read off CI's page as an independent input, then
   `signify -S -e -s eveningstar-N-fw.sec -m SHA256 -x SHA256.sig`. Only
   `SHA256.sig` leaves it. `docs/releasing.md` is the procedure.
-- Reproducible builds are a precondition. The descriptor's build time and
-  date already are: `esp-bootloader-esp-idf`'s build script takes them from
-  `SOURCE_DATE_EPOCH`, which Nix sets. What remains open is rustc's own
-  output (paths, codegen unit partitioning), checked by the two builds.
+- Reproducible builds are a requirement (requirement 7), not a convenience.
+  What would vary is already fixed: the descriptor's build time and date
+  come from `SOURCE_DATE_EPOCH`, which Nix sets; `nix/app.nix` remaps the
+  vendor, toolchain and source paths, so neither the image nor the ELF
+  names the build machine. The rest is rustc's and the linker's own output
+  for the same inputs, which the `build` group checks with
+  `nix build --rebuild` of the release, and a second machine checks before
+  signing. A difference is a bug to fix before the release, found with
+  `diffoscope`.
 
 ### Secret keys and the repository
 
@@ -1482,8 +1507,10 @@ and so on), so a doctest that fails for another reason doesn't pass:
   local audits for what they don't cover, at least for ed25519-dalek,
   curve25519-dalek, sha2 and base64; `cargo-deny` for advisories, sources and
   licences. An upgrade of a crypto crate is reviewed as a diff.
-- Every release is rebuilt on a second machine and compared with
-  `diffoscope`; the release notes say who rebuilt it.
+- The `build` group rebuilds the release flavour with `nix build --rebuild`
+  and fails on any byte of difference. Every release is also rebuilt on a
+  second machine, by someone other than CI, before it is signed; the
+  release notes say who rebuilt it and how anyone repeats it.
 - Before the first signed release, an external security review of this spec
   and the implementation.
 
@@ -1607,6 +1634,10 @@ used.
     board crate keeping the peripheral and the USB pins, lints, the link
     map's cross-reference check of the ROM's programming functions, and
     `release-check`'s allowlisted constant scan.
+44. **Reproducible releases.** Every signed release is reproducible from
+    its tag (user, 2026-11-08): `release-check` and the ceremony sign only
+    an image that a second, independent build and CI's rebuild both match
+    byte for byte, and the first signed release waits until they do.
 
 ### Open, with a recommendation
 
@@ -1689,9 +1720,6 @@ used.
     the real host code (or `stateright`), not TLA+, so the checked model is
     the shipped code.
 42. **External review.** Recommended: before the first signed release.
-44. **Reproducibility before the first signed release.** Recommended: the
-    first signed release waits until a second machine's build matches its
-    `SHA256`; until then requirement 7 rests on signify alone.
 45. **Known-answer self-check.** Recommended: built-in positive and negative
     vectors required before confirmation, so a release whose own verifier is
     broken rolls back instead of being confirmed into a state where it can't
@@ -1699,7 +1727,9 @@ used.
 
 ## Left open
 
-- Reproducible app images: rustc's output across machines (decision 44).
+- Whether builds on different host architectures (x86_64 and aarch64
+  Linux) give the same bytes; until shown, the release notes name the host
+  platform the release reproduces on.
 - The stack frame of `verify_strict` on the 32-bit backend under the
   `large_stack_frames` lint, and its time on the ESP32-C6.
 - Code size of ed25519-dalek and curve25519-dalek in the image.
