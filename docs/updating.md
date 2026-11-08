@@ -61,9 +61,10 @@ sha256sum eveningstar-<version>-esp32c6.bin
 
 The page warns before installing:
 
-- a release that raises the security version: once confirmed, firmware with
-  a lower security version can't be started through updates or slot
-  switches; flashing over USB still restores any firmware;
+- a release that raises the security version: confirming it erases the
+  firmware with a lower security version from the other slot, with its
+  configuration, and such firmware can't be installed over the network
+  again; flashing over USB still restores any firmware;
 - an image that trusts the development signing key.
 
 ### Trial and confirmation
@@ -90,7 +91,8 @@ says that the update was rolled back, and why.
 
 ### Switching back
 
-The firmware that ran before stays in the other slot until the next update.
+The firmware that ran before stays in the other slot until the next update,
+unless the confirmed firmware raised the security version, which erases it.
 The firmware page can switch to it at any time:
 
 - during a trial, at once: the trial ends and the previous firmware runs
@@ -100,10 +102,9 @@ The firmware page can switch to it at any time:
 
 The page names the reason when a switch is refused, for example:
 
-- the running firmware is confirmed and the other one has a lower security
-  version;
-- the other slot holds no complete firmware (an update was refused or
-  interrupted), or a corrupted one.
+- the other slot holds no complete firmware: an update was refused or
+  interrupted, the image was corrupted, or it was erased for its lower
+  security version.
 
 A switch starts the other firmware with its own configuration, as it was
 when it last ran: changes made since are not carried back.
