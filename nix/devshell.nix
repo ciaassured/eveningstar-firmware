@@ -20,6 +20,7 @@
         config.packages.flash-all
         config.packages.storage-layout-write
         config.packages.storage-testdata-write
+        config.packages.trust-sets
         config.packages.fuzz
       ];
 

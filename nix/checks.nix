@@ -38,7 +38,7 @@ in
       # it is not among the default groups.
       packages.checks = pkgs.writeShellApplication {
         name = "eveningstar-checks";
-        runtimeInputs = [ toolchain pkgs.stdenv.cc pkgs.diffutils pkgs.espflash pkgs.jq pkgs.signify ];
+        runtimeInputs = [ toolchain pkgs.stdenv.cc pkgs.diffutils pkgs.espflash pkgs.jq pkgs.signify config.packages.trust-sets ];
         text = ''
           status=0
 
@@ -163,6 +163,7 @@ in
               rust-lint)
                 run_check "rustfmt" cargo fmt --all -- --check
                 run_check "storage layout" check_storage_layout
+                run_check "trust sets" trust-sets --check
                 run_check "clippy" cargo clippy --all-features --workspace \
                   "''${host_crates[@]/#/--exclude=}" -- -D warnings
                 run_check "clippy (host crates, chip target)" cargo clippy --all-features \

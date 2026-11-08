@@ -582,6 +582,11 @@ from the repository at the release's signed tag and from the release notes.
   and 5). A release trusts `signing` and the next two usable generations; a
   development build trusts the same three and the development key. Rotating
   is one edit: raise `signing` and add the next generation's file.
+- Before the first key ceremony `generations` is empty and `signing` is
+  null: development builds trust the development key alone, and there is no
+  release trust set, so a release build doesn't compile. After the
+  ceremony, a development build that also trusts the new generations is
+  the update that carries boards to them.
 - The generator refuses: a gap in the generations; a missing file for the
   three usable generations from `signing`; a duplicate keynum. A generation
   marked `lost` or `compromised` is skipped, never trusted again. The
