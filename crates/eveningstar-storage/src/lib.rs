@@ -72,6 +72,9 @@ pub trait SlotPartitions {
 
     /// The configuration partition paired with the slot.
     fn config(self) -> Entry;
+
+    /// The signature region paired with the slot.
+    fn signature(self) -> Entry;
 }
 
 impl SlotPartitions for Slot {
@@ -86,6 +89,13 @@ impl SlotPartitions for Slot {
         match self {
             Self::Ota0 => layout::CONFIG_0,
             Self::Ota1 => layout::CONFIG_1,
+        }
+    }
+
+    fn signature(self) -> Entry {
+        match self {
+            Self::Ota0 => layout::SIG_0,
+            Self::Ota1 => layout::SIG_1,
         }
     }
 }

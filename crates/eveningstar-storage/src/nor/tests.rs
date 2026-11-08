@@ -71,9 +71,10 @@ fn a_writer_lies_inside_one_physical_span() {
     let writer = |span| Writer::<Diag>::new(device, &state, span, Slot::Ota0);
     assert!(writer(Span::from(layout::DIAG)).is_some());
     assert!(writer(Span::new(layout::DIAG.offset + SECTOR, SECTOR)).is_some());
-    // Across two partitions, in the gap after the otadata, past the layout.
+    // Across two partitions, in the gap before the first slot, past the
+    // layout.
     assert!(writer(Span::new(layout::OTADATA.offset, 3 * SECTOR)).is_none());
-    assert!(writer(Span::new(0xC000, SECTOR)).is_none());
+    assert!(writer(Span::new(0xE000, SECTOR)).is_none());
     assert!(writer(Span::new(FLASH_SIZE, SECTOR)).is_none());
     // Inside the layout but past a smaller device.
     let small = TestFlash::new(RamNor::erased(0x10_0000));

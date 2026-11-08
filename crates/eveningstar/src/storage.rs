@@ -331,6 +331,12 @@ impl OtaParts {
     ///
     /// If called more than once, which the one [`OtaParts`] of a boot
     /// prevents.
+    #[expect(
+        clippy::large_stack_frames,
+        reason = "the lint adds every local without overlap: `Ota` counts as the result of \
+                  `Ota::new`, inside that call's future, and as the value moved into its \
+                  `static`, though only one is live at a time"
+    )]
     pub(crate) async fn start(self) -> &'static mut Ota<'static> {
         static OTA: StaticCell<Ota<'static>> = StaticCell::new();
 

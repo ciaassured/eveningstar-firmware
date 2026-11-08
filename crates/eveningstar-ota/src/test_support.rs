@@ -147,7 +147,7 @@ pub(crate) fn ota_on_spans(
     otadata: Span,
 ) -> (Ota<'static>, Checks<'static>) {
     ota_of(
-        flash.boot_writers(alternate, otadata, Slot::Ota0),
+        flash.boot_writers(alternate, otadata, Span::from(layout::SIG_1), Slot::Ota0),
         flash.writer(Span::from(layout::CONFIG_1), Slot::Ota0),
         flash.reader(Span::from(layout::OTA_0)),
         flash.reader(Span::from(layout::OTA_1)),

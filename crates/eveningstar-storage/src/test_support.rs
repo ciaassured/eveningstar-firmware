@@ -44,7 +44,7 @@ pub use eveningstar_esp_formats::test_support::{Run, Tear, block_on, run};
 
 use crate::chain::BootWriters;
 use crate::nor::{self, NorDevice, SECTOR_SIZE, WORD_SIZE};
-use crate::roles::{AlternateApp, Internal, Otadata, Role, Writable};
+use crate::roles::{AlternateApp, AlternateSignature, Internal, Otadata, Role, Writable};
 use crate::{DeviceError, Slot, SlotPartitions as _, Span, layout};
 
 #[cfg(test)]
@@ -482,17 +482,20 @@ impl TestFlash {
     }
 
     /// Boot writers for the app running from `running`, of any spans:
-    /// `alternate`, absolute, as the alternate slot, and `otadata` as the
-    /// otadata. Panics as [`writer`](Self::writer) does.
+    /// `alternate`, absolute, as the alternate slot, `otadata` as the
+    /// otadata, and `signature` as the alternate signature region. Panics as
+    /// [`writer`](Self::writer) does.
     pub fn boot_writers(
         &self,
         alternate: Span,
         otadata: Span,
+        signature: Span,
         running: Slot,
     ) -> BootWriters<'static> {
         BootWriters::new(
             self.writer::<AlternateApp>(alternate, running),
             self.writer::<Otadata>(otadata, running),
+            self.writer::<AlternateSignature>(signature, running),
             running,
         )
     }

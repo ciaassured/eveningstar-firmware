@@ -52,9 +52,11 @@ const fn partition(
 /// The partitions of the table in [`TABLE`], in order. The fixture's tests
 /// check that the table holds them.
 #[rustfmt::skip]
-pub const PARTITIONS: [Entry; 8] = [
+pub const PARTITIONS: [Entry; 10] = [
     partition("factory",  0x01, 0x06, 0x0000_9000, 0x0000_1000, 0x2),
     partition("otadata",  0x01, 0x00, 0x0000_a000, 0x0000_2000, 0),
+    partition("sig_0",    0x01, 0x06, 0x0000_c000, 0x0000_1000, 0),
+    partition("sig_1",    0x01, 0x06, 0x0000_d000, 0x0000_1000, 0),
     partition("ota_0",    0x00, 0x10, 0x0001_0000, 0x0030_0000, 0),
     partition("ota_1",    0x00, 0x11, 0x0031_0000, 0x0030_0000, 0),
     partition("config_0", 0x01, 0x06, 0x0061_0000, 0x0002_0000, 0),
@@ -62,6 +64,12 @@ pub const PARTITIONS: [Entry; 8] = [
     partition("diag",     0x01, 0x06, 0x0065_0000, 0x0004_0000, 0),
     partition("reserved", 0x01, 0x06, 0x0069_0000, 0x0017_0000, 0),
 ];
+
+/// Indices of `ota_0` and `ota_1` in [`PARTITIONS`].
+pub const OTA_0_INDEX: usize = 4;
+pub const OTA_1_INDEX: usize = 5;
+const _: () =
+    assert!(PARTITIONS[OTA_0_INDEX].subtype == 0x10 && PARTITIONS[OTA_1_INDEX].subtype == 0x11);
 
 /// The table Nix builds from `nix/board.nix`.
 pub const TABLE: &[u8] = include_bytes!("../testdata/partition-table.bin");

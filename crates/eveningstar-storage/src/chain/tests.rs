@@ -155,6 +155,10 @@ fn consistent(storage: &Storage<'_>) {
                 Span::of(&slot.other().partition())
             );
             assert_eq!(writers.otadata.span(), Span::of(&OTADATA));
+            assert_eq!(
+                writers.alternate_signature.span(),
+                Span::of(&slot.other().signature())
+            );
         }
     }
 }
@@ -171,6 +175,10 @@ fn layout_consistent(handles: &LayoutHandles<'_>, slot: Slot) {
     assert_eq!(
         handles.alternate_config.span(),
         Span::of(&slot.other().config())
+    );
+    assert_eq!(
+        handles.current_signature.span(),
+        Span::of(&slot.signature())
     );
     assert_eq!(handles.diag.span(), Span::of(&DIAG));
 }
@@ -282,6 +290,8 @@ fn a_board_running_from_ota_1_hands_out_the_other_slot_s_regions() {
     assert_eq!(handles.current_config.span(), Span::of(&layout::CONFIG_1));
     assert_eq!(handles.alternate_config.span(), Span::of(&CONFIG_0));
     assert_eq!(writers.alternate_app.span(), Span::of(&OTA_0));
+    assert_eq!(handles.current_signature.span(), Span::of(&layout::SIG_1));
+    assert_eq!(writers.alternate_signature.span(), Span::of(&layout::SIG_0));
     assert_eq!(writers.slot(), Slot::Ota1);
 }
 
@@ -619,7 +629,7 @@ fn a_partition_past_the_header_s_flash_size_is_invalid_inside_a_larger_chip() {
     assert_eq!(
         report.table.verdict,
         Some(Err(TableError::PastChip {
-            index: 3,
+            index: 5,
             offset: OTA_1.offset,
             size: OTA_1.size
         }))

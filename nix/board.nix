@@ -14,11 +14,14 @@
     # into crates/eveningstar-storage/src/layout.rs, and generating it fails for
     # a layout whose data partitions aren't 4 KiB aligned, whose app partitions
     # aren't 64 KiB aligned, that overlaps, or that doesn't fit the flash.
-    # `factory` and `reserved` hold space that is claimed later, and the
-    # 0xC000-0x10000 gap keeps the first app slot 64 KiB aligned.
+    # `factory` and `reserved` hold space that is claimed later. `sig_0` and
+    # `sig_1` hold each slot's signature file, in the space before the first
+    # app slot, whose 64 KiB alignment leaves the 0xE000-0x10000 gap.
     partitions = [
       { name = "factory"; type = "data"; subtype = "undefined"; offset = "0x9000"; size = "0x1000"; flags = [ "readonly" ]; }
       { name = "otadata"; type = "data"; subtype = "ota"; offset = "0xA000"; size = "0x2000"; }
+      { name = "sig_0"; type = "data"; subtype = "undefined"; offset = "0xC000"; size = "0x1000"; }
+      { name = "sig_1"; type = "data"; subtype = "undefined"; offset = "0xD000"; size = "0x1000"; }
       { name = "ota_0"; type = "app"; subtype = "ota_0"; offset = "0x10000"; size = "0x300000"; }
       { name = "ota_1"; type = "app"; subtype = "ota_1"; offset = "0x310000"; size = "0x300000"; }
       { name = "config_0"; type = "data"; subtype = "undefined"; offset = "0x610000"; size = "0x20000"; }

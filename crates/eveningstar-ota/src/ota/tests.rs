@@ -23,7 +23,7 @@ use eveningstar_esp_formats::test_support::{
     layout_record_bytes, restamp, segment_at, with_layout,
 };
 use eveningstar_storage::layout::{
-    CONFIG_0, CONFIG_1, FLASH_SIZE, OTA_0, OTA_1, OTADATA, TABLE_OFFSET,
+    CONFIG_0, CONFIG_1, FLASH_SIZE, OTA_0, OTA_1, OTADATA, SIG_0, SIG_1, TABLE_OFFSET,
 };
 use eveningstar_storage::nor::{NorDevice, Reader};
 use eveningstar_storage::roles::{AlternateApp, Otadata as OtadataRole};
@@ -204,13 +204,20 @@ fn config_sectors() -> usize {
     (CONFIG_1.size / SECTOR_SIZE) as usize
 }
 
+/// Sectors of the alternate signature region.
+fn signature_sectors() -> usize {
+    (SIG_1.size / SECTOR_SIZE) as usize
+}
+
 /// The erases `begin_update` ends with on a board running from `ota_0`: the
-/// slot's first sector, then each of `config_1`'s.
+/// slot's first sector, then each of `config_1`'s, then each of `sig_1`'s.
 fn begin_erases() -> Vec<Call> {
     let mut erases = vec![Call::Erase(OTA_1.offset)];
-    erases.extend(
-        (0..CONFIG_1.size / SECTOR_SIZE).map(|n| Call::Erase(CONFIG_1.offset + n * SECTOR_SIZE)),
-    );
+    for region in [CONFIG_1, SIG_1] {
+        erases.extend(
+            (0..region.size / SECTOR_SIZE).map(|n| Call::Erase(region.offset + n * SECTOR_SIZE)),
+        );
+    }
     erases
 }
 
@@ -303,14 +310,23 @@ fn alternate_config(running: Slot) -> Entry {
     }
 }
 
+/// The signature region of the slot that isn't `running`.
+fn alternate_signature(running: Slot) -> Entry {
+    match running {
+        Ota0 => SIG_1,
+        Ota1 => SIG_0,
+    }
+}
+
 /// Every erase and program `flash` logged from the `from`th on lies in the
-/// otadata, in the slot that isn't `running` or in that slot's
-/// configuration, which only erases reach.
+/// otadata, in the slot that isn't `running`, or in that slot's
+/// configuration or signature region, which only erases reach.
 fn confined(flash: &RamNor, from: usize, running: Slot) {
     for op in &flash.writes()[from..] {
         let (start, end) = op_span(*op);
         let inside = |entry: Entry| entry.offset <= start && end <= entry.end();
-        let wipe = matches!(op, Call::Erase(_)) && inside(alternate_config(running));
+        let wipe = matches!(op, Call::Erase(_))
+            && (inside(alternate_config(running)) || inside(alternate_signature(running)));
         assert!(
             inside(OTADATA) || inside(running.other().partition()) || wipe,
             "{op:?} while running from {running:?}"
@@ -475,12 +491,13 @@ fn each_sector_is_erased_just_before_the_first_bytes_programmed_into_it() {
         .run(async {
             let mut update = ota.begin_update().await?;
             let begun = flash.writes().len();
-            // The slot's first sector, then the configuration wiped.
+            // The slot's first sector, then the configuration and the
+            // signature region wiped.
             assert_eq!(
-                flash.writes()[begun - 1 - config_sectors()..begun],
+                flash.writes()[begun - begin_erases().len()..begun],
                 begin_erases()
             );
-            let begun = begun - config_sectors();
+            let begun = begun - (begin_erases().len() - 1);
             for part in parts(&new, &mut rng, 10_000) {
                 update.write(part).await?;
                 // Up to the sector the last whole word programmed lies in.
@@ -761,14 +778,14 @@ fn the_project_is_the_running_app_s() {
 /// and another table offset or flash size.
 fn other_layouts() -> Vec<Vec<u8>> {
     let changes: [fn(&mut Vec<Entry>); 8] = [
-        |entries| entries[3].size -= 0x1_0000,
-        |entries| entries[4].offset += 0x1000,
+        |entries| entries[5].size -= 0x1_0000,
+        |entries| entries[6].offset += 0x1000,
         |entries| entries[0].label = "factorx",
-        |entries| entries[6].kind = 0x40,
-        |entries| entries[6].subtype = 0x81,
+        |entries| entries[8].kind = 0x40,
+        |entries| entries[8].subtype = 0x81,
         |entries| entries[1].flags = 1,
         |entries| entries.truncate(entries.len() - 1),
-        |entries| entries.push(entries[7]),
+        |entries| entries.push(entries[9]),
     ];
     let mut records: Vec<Vec<u8>> = changes
         .into_iter()
@@ -2181,9 +2198,10 @@ fn long_operations_yield_to_the_executor() {
     let image = checks
         .run(async {
             // One otadata write, an erase and three programs, the slot's
-            // first sector, and each sector of the configuration wiped.
+            // first sector, and each sector of the configuration and the
+            // signature region wiped.
             let begin = block_on(ota.begin_update());
-            assert_eq!(begin.wakes, 5 + config_sectors());
+            assert_eq!(begin.wakes, 5 + config_sectors() + signature_sectors());
             let mut update = begin.output.unwrap();
             // 16 sectors: 15 erased, as the first is, and 16 programmed.
             assert_eq!(block_on(update.write(&new[..0x1_0000])).wakes, 31);

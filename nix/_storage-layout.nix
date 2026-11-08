@@ -53,6 +53,7 @@ let
   pairs = [
     [ "config_0" "config_1" ]
     [ "ota_0" "ota_1" ]
+    [ "sig_0" "sig_1" ]
   ];
 
   # Names of the generated items that a partition's constant can't take.
