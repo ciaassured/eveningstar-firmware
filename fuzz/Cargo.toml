@@ -15,10 +15,20 @@ members = ["."]
 [dependencies]
 libfuzzer-sys = "0.4"
 eveningstar-records = { path = "../crates/eveningstar-records" }
+eveningstar-signify = { path = "../crates/eveningstar-signify", features = ["test-support"] }
+ed25519-dalek = { version = "3.0.0", default-features = false }
+base64 = "0.23"
 
 [[bin]]
 name = "records"
 path = "fuzz_targets/records.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "signify"
+path = "fuzz_targets/signify.rs"
 test = false
 doc = false
 bench = false
