@@ -4,30 +4,33 @@
 # A signify secret key's second line is the base64 of 104 bytes beginning `Ed`
 # `BK`: 140 characters beginning `RWRCS`. Its first line is an untrusted
 # comment ending in `secret key`. Either one, anywhere in any file, is a
-# finding; the key line matches from `RWRCS` and 40 more base64 characters, so
-# a wrapped key is found too. The one exception is
+# finding; the key line matches from `RWRCSw` (any rounds below 2^24) and 40
+# more base64 characters, so a key wrapped at 46 columns or more is found too.
+# The one exception is
 # keys/eveningstar-dev-fw.sec when that file is exactly a comment line and a
 # key line whose keynum is keys/eveningstar-dev-fw.pub's and whose KDF rounds
 # are 0, as `signify -G -n` writes them.
 #
 # A Git command that fails fails the scan (exit 2): nothing passes unscanned.
 #
-# Usage: secret-key-scan [--index | --commits REV... | --unpushed | --pre-push]
+# Usage: secret-key-scan [--index | --commits REV... | --unpushed | --pre-push [REMOTE]]
 #   --index        the files staged for the next commit (the default)
 #   --commits REV  every commit `git rev-list REV...` lists
 #   --unpushed     every commit on HEAD that no remote branch has
-#   --pre-push     every commit of the refs a push sends, read from a pre-push
-#                  hook's standard input
+#   --pre-push     every commit of the refs a push to REMOTE sends, read from
+#                  a pre-push hook's standard input; a new ref's commits that
+#                  REMOTE's tracking branches (every remote's, without REMOTE)
+#                  don't have
 
 dev_sec=keys/eveningstar-dev-fw.sec
 dev_pub=keys/eveningstar-dev-fw.pub
 
 # The two lines, assembled so this file doesn't match them.
-key_line='RWRC''S[A-Za-z0-9+/]{40,}'
+key_line='RWRC''Sw[A-Za-z0-9+/]{40,}'
 comment_line='^untrusted comment''[:] .*secret key[[:space:]]*$'
 
 usage() {
-  echo "usage: secret-key-scan [--index | --commits REV... | --unpushed | --pre-push]" >&2
+  echo "usage: secret-key-scan [--index | --commits REV... | --unpushed | --pre-push [REMOTE]]" >&2
   exit 2
 }
 
@@ -118,16 +121,23 @@ case "$mode" in
     scan_commits HEAD --not --remotes
     ;;
   --pre-push)
-    (( $# == 1 )) || usage
-    while read -r _local_ref local_sha _remote_ref remote_sha; do
+    (( $# <= 2 )) || usage
+    # Only the tracking branches of the remote pushed to count as published.
+    # A remote given as a URL matches none, so everything is scanned.
+    published=--remotes
+    if (( $# == 2 )); then
+      published="--remotes=$2"
+    fi
+    # A last line without a newline is read too.
+    while read -r _local_ref local_sha _remote_ref remote_sha || [[ -n ${local_sha:-} ]]; do
       # A deleted ref sends nothing.
       if [[ $local_sha =~ ^0+$ ]]; then
         continue
       fi
       if [[ $remote_sha =~ ^0+$ ]] || ! git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
-        # A new ref, or one whose remote commit isn't here: everything no
-        # remote branch has.
-        scan_commits "$local_sha" --not --remotes
+        # A new ref, or one whose remote commit isn't here: everything the
+        # remote's tracking branches don't have.
+        scan_commits "$local_sha" --not "$published"
       else
         scan_commits "$remote_sha..$local_sha"
       fi

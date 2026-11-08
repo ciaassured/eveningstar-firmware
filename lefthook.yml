@@ -8,7 +8,8 @@ pre-push:
     build-test:
       run: nix run .#checks -- build test
     # A hook can be skipped, and a push publishes: every commit of the refs
-    # the push sends, which Git gives the hook on standard input.
+    # the push sends, which Git gives the hook on standard input, to the remote
+    # it names first.
     secret-keys:
-      run: nix run .#secret-key-scan -- --pre-push
+      run: nix run .#secret-key-scan -- --pre-push {1}
       use_stdin: true

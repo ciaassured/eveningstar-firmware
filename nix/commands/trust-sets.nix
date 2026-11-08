@@ -42,7 +42,7 @@
           awk -v table="$work/table.md" '
             /^<!-- trust-sets:end -->$/ { while ((getline line < table) > 0) print line; skip = 0 }
             !skip { print }
-            /^<!-- trust-sets:begin -->$/ { skip = 1; found = 1 }
+            /^<!-- trust-sets:begin -->$/ { if (skip) twice = 1; skip = 1; found = 1 }
             /^<!-- trust-sets:begin -->$/ && done { twice = 1 }
             /^<!-- trust-sets:end -->$/ { if (done || !found) twice = 1; done = found }
             END { if (!done || skip || twice) exit 1 }
