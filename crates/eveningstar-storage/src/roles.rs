@@ -21,6 +21,10 @@
 //!   [`LayoutSize`]; the writer erases and programs.
 //! - [`AlternateConfig`]: the alternate slot's configuration. Sensitive;
 //!   [`LayoutSize`]; the writer only wipes the whole region.
+//! - [`CurrentSignature`]: the current slot's signature region. Publishable;
+//!   [`LayoutSize`].
+//! - [`AlternateSignature`]: the alternate slot's signature region.
+//!   Publishable; [`LayoutSize`]; the writer erases and programs.
 //! - [`Diag`]: `diag`. Sensitive; [`LayoutSize`], [`Placed`]; the writer
 //!   erases and programs.
 //! - [`Factory`]: `factory`. Sensitive; [`LayoutSize`], [`Placed`].
@@ -152,6 +156,14 @@ pub enum CurrentConfig {}
 #[derive(Debug)]
 pub enum AlternateConfig {}
 
+/// The signature region paired with the slot that booted.
+#[derive(Debug)]
+pub enum CurrentSignature {}
+
+/// The signature region paired with the slot that didn't boot.
+#[derive(Debug)]
+pub enum AlternateSignature {}
+
 /// The `diag` partition of the compiled layout.
 #[derive(Debug)]
 pub enum Diag {}
@@ -181,6 +193,7 @@ pub enum FoundOtadata {}
 
 const _: () = assert!(layout::OTA_0.size == layout::OTA_1.size);
 const _: () = assert!(layout::CONFIG_0.size == layout::CONFIG_1.size);
+const _: () = assert!(layout::SIG_0.size == layout::SIG_1.size);
 
 /// The spans the compiled layout gives to sensitive data: `factory`, both
 /// configurations and `diag`.
@@ -217,6 +230,8 @@ roles! {
     AlternateApp = "alternate app";
     CurrentConfig = "current config";
     AlternateConfig = "alternate config";
+    CurrentSignature = "current signature";
+    AlternateSignature = "alternate signature";
     Diag = "diag";
     Factory = "factory";
     Chip = "chip";
@@ -244,6 +259,8 @@ layout_size! {
     AlternateApp = layout::OTA_0.size;
     CurrentConfig = layout::CONFIG_0.size;
     AlternateConfig = layout::CONFIG_0.size;
+    CurrentSignature = layout::SIG_0.size;
+    AlternateSignature = layout::SIG_0.size;
     Diag = layout::DIAG.size, at layout::DIAG.offset;
     Factory = layout::FACTORY.size, at layout::FACTORY.offset;
 }
@@ -254,9 +271,9 @@ macro_rules! mark {
     )*};
 }
 
-mark!(Publishable: Bootloader, PartitionTable, Otadata, CurrentApp, AlternateApp, FoundTable, FoundApp);
-mark!(Writable: Otadata, AlternateApp, CurrentConfig, AlternateConfig, Diag);
-mark!(Programmable: Otadata, AlternateApp, CurrentConfig, Diag);
+mark!(Publishable: Bootloader, PartitionTable, Otadata, CurrentApp, AlternateApp, CurrentSignature, AlternateSignature, FoundTable, FoundApp);
+mark!(Writable: Otadata, AlternateApp, CurrentConfig, AlternateConfig, AlternateSignature, Diag);
+mark!(Programmable: Otadata, AlternateApp, CurrentConfig, AlternateSignature, Diag);
 
 #[cfg(test)]
 mod tests {
@@ -296,6 +313,8 @@ mod tests {
         assert_eq!(AlternateApp::SIZE, layout::OTA_1.size);
         assert_eq!(CurrentConfig::SIZE, layout::CONFIG_1.size);
         assert_eq!(AlternateConfig::SIZE, layout::CONFIG_1.size);
+        assert_eq!(CurrentSignature::SIZE, layout::SIG_1.size);
+        assert_eq!(AlternateSignature::SIZE, layout::SIG_1.size);
     }
 
     #[test]

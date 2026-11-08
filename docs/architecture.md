@@ -499,9 +499,10 @@ Nothing in these crates reboots.
 The layout can't change over OTA, as the partition table and bootloader aren't
 updated from the firmware, so nothing is left for `gen_esp32part` to place. The
 partitions are `factory` (4 KiB, read-only, reserved for durable factory data),
-`otadata`, the app slots `ota_0` and `ota_1` (3 MiB each), a configuration
-partition per slot (`config_0` and `config_1`, 128 KiB each), `diag` (256 KiB)
-and `reserved`. A slot is sized for about twice the firmware expected once
+`otadata`, a signature region per slot (`sig_0` and `sig_1`, 4 KiB each, in the
+space before the first slot that its 64 KiB alignment leaves), the app slots
+`ota_0` and `ota_1` (3 MiB each), a configuration partition per slot
+(`config_0` and `config_1`, 128 KiB each), `diag` (256 KiB) and `reserved`. A slot is sized for about twice the firmware expected once
 WiFi and TLS are in, as slots can't grow later.
 
 - Configuration is per slot, so after a rollback the old firmware finds its
@@ -615,6 +616,10 @@ Each role below gives its span, its class and its handles.
   layout and boot tiers.
 - `AlternateConfig`: the alternate slot's configuration. Sensitive.
   Writer that only wipes the whole region, in the layout and boot tiers.
+- `CurrentSignature`: the current slot's signature region. Publishable. Reader
+  in the layout and boot tiers.
+- `AlternateSignature`: the alternate slot's signature region. Publishable.
+  Writer in the boot tier.
 - `Diag`: `diag`. Sensitive. Writer in the layout and boot tiers.
 - `Factory`: `factory`. Sensitive. No handle.
 - `Chip`: the whole flash. Sensitive. No handle.
@@ -651,8 +656,8 @@ most 4 KiB per call, yielding after each.
 
 Every erase and program checks its absolute range against the protected spans
 before it reaches the device: everything below the first partition (the
-bootloader and the table's sector), `factory`, `reserved` and the current slot,
-from the compiled layout. A range that touches one is refused whole, so a
+bootloader and the table's sector), `factory`, `reserved`, the current slot and
+its signature region, from the compiled layout. A range that touches one is refused whole, so a
 mistake in a caller's arithmetic still can't reach them.
 
 ### Write state and snapshots
@@ -913,8 +918,8 @@ below the boot tier.
 - `Boot`
   - Reached when: steps 2 to 6 pass, with the table located by a known
     bootloader that supports rollback.
-  - Handles: the layout tier's, and the boot writers: the alternate slot's and
-    the otadata's.
+  - Handles: the layout tier's, and the boot writers: the alternate slot's,
+    the otadata's and the alternate signature region's.
 
 - Matching the bootloader's judgement adds no failure from bit rot: a flipped
   bit the bootloader would reject stops the board before the firmware runs, and
@@ -987,13 +992,13 @@ image with no rollback.
   holds for its whole life, so no snapshot of the slot can be taken while an
   image is written; dropping the `Update` abandons it and ends the session.
   It erases the slot's first sector, so the slot holds no image that verifies,
-  and then wipes the alternate slot's configuration (`Writer<AlternateConfig>`,
-  which `Ota::new` takes): it belongs to the image being replaced. Nothing
-  verifies in the slot before `Update::finish`, so an image that verifies
-  there after an update had its configuration wiped during that update. A
-  wipe cut short leaves a slot that doesn't verify, and the next update wipes
-  again. Wiped first instead, a cut between the two erases would leave a
-  rollback target without its configuration. `Update::write` takes the image
+  and then wipes the alternate slot's signature region (a boot writer) and
+  configuration (`Writer<AlternateConfig>`, which `Ota::new` takes): they
+  belong to the image being replaced. Nothing verifies in the slot before
+  `Update::finish`, so an image that verifies there after an update had both
+  wiped during that update. A wipe cut short leaves a slot that doesn't
+  verify, and the next update wipes again. Wiped first instead, a cut between
+  the two erases would leave a rollback target without its configuration. `Update::write` takes the image
   in parts of any size and erases each sector just before its first bytes are
   programmed.
 - `Update::finish` programs the last word, ends the session at a new epoch of

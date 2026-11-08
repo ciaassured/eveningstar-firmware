@@ -29,6 +29,26 @@ pub const OTADATA: Entry = Entry {
     flags: 0x0000_0000,
 };
 
+/// The `sig_0` partition, of type `data` and subtype `undefined`.
+pub const SIG_0: Entry = Entry {
+    label: "sig_0",
+    kind: 0x01,
+    subtype: 0x06,
+    offset: 0x0000_c000,
+    size: 0x0000_1000,
+    flags: 0x0000_0000,
+};
+
+/// The `sig_1` partition, of type `data` and subtype `undefined`.
+pub const SIG_1: Entry = Entry {
+    label: "sig_1",
+    kind: 0x01,
+    subtype: 0x06,
+    offset: 0x0000_d000,
+    size: 0x0000_1000,
+    flags: 0x0000_0000,
+};
+
 /// The `ota_0` partition, of type `app` and subtype `ota_0`.
 pub const OTA_0: Entry = Entry {
     label: "ota_0",
@@ -92,9 +112,11 @@ pub const RESERVED: Entry = Entry {
 /// Every partition, in table order.
 // One partition per line, whatever the lengths of the names.
 #[rustfmt::skip]
-pub const PARTITIONS: [Entry; 8] = [
+pub const PARTITIONS: [Entry; 10] = [
     FACTORY,
     OTADATA,
+    SIG_0,
+    SIG_1,
     OTA_0,
     OTA_1,
     CONFIG_0,

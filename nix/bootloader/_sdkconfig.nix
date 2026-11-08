@@ -1,5 +1,5 @@
 # Resolve the requested settings into a full sdkconfig and check every value took.
-{ lib, writeText, callPackage, esp-idf, project, target, settings }:
+{ lib, writeText, callPackage, esp-idf, project, target, settings, forbidden ? [ ] }:
 
 let
   render = key: value:
@@ -13,6 +13,7 @@ let
     (lib.concatStringsSep "\n" (lib.mapAttrsToList render settings) + "\n");
 
   requested = writeText "sdkconfig-requested.json" (builtins.toJSON settings);
+  unset = writeText "sdkconfig-forbidden.json" (builtins.toJSON forbidden);
 
   idfBuild = callPackage ./_idf-build.nix { inherit esp-idf; };
 in
@@ -23,7 +24,7 @@ idfBuild {
   idfArgs = "reconfigure";
 
   installPhase = ''
-    python3 ${./_check-sdkconfig.py} ${requested} build/config/sdkconfig.json
+    python3 ${./_check-sdkconfig.py} ${requested} build/config/sdkconfig.json ${unset}
 
     mkdir -p $out
     cp sdkconfig $out/sdkconfig

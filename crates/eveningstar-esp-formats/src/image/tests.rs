@@ -10,9 +10,10 @@ use crate::pace::{Pace, Yield};
 
 use super::*;
 use crate::test_support::{
-    APP, BOOTLOADER, ESPFLASH_BOOTLOADER, FLASH_SIZE, ImageBuilder, LAYOUT_RECORD_AT, PARTITIONS,
-    Rng, TABLE, TABLE_OFFSET, app_descriptor_bytes, app_image, app_image_with_layout, block_on,
-    board_layout_record, bootloader_image, data, layout_record_bytes, run, segment_at, with_layout,
+    APP, BOOTLOADER, ESPFLASH_BOOTLOADER, FLASH_SIZE, ImageBuilder, LAYOUT_RECORD_AT, OTA_1_INDEX,
+    PARTITIONS, Rng, TABLE, TABLE_OFFSET, app_descriptor_bytes, app_image, app_image_with_layout,
+    block_on, board_layout_record, bootloader_image, data, layout_record_bytes, run, segment_at,
+    with_layout,
 };
 
 fn hex(bytes: &[u8]) -> String {
@@ -829,7 +830,7 @@ fn a_failing_read_is_reported() {
 // The layout record.
 
 /// The record of the board whose table is the fixture's.
-fn board_record() -> LayoutRecord<8> {
+fn board_record() -> LayoutRecord<{ PARTITIONS.len() }> {
     LayoutRecord::new(TABLE_OFFSET, FLASH_SIZE, &PARTITIONS).unwrap()
 }
 
@@ -894,11 +895,11 @@ fn a_layout_record_round_trips_through_an_image() {
         assert!(matches);
         assert_eq!(layout.table_offset(), TABLE_OFFSET);
         assert_eq!(layout.flash_size(), FLASH_SIZE);
-        assert_eq!(layout.entry_count(), 8);
+        assert_eq!(layout.entry_count(), PARTITIONS.len() as u32);
         for (index, entry) in (0..).zip(record.entries()) {
             assert_eq!(layout.entry(&image[..], index), Ok(Some(*entry)));
         }
-        assert_eq!(layout.entry(&image[..], 8), Ok(None));
+        assert_eq!(layout.entry(&image[..], PARTITIONS.len() as u32), Ok(None));
         assert_eq!(layout.entry(&image[..], u32::MAX), Ok(None));
     }
 }
@@ -920,7 +921,7 @@ type Change = fn(&mut Vec<Entry>) -> (u32, u32);
 fn a_record_of_another_layout_reads_but_doesnt_match() {
     let changes: [Change; 6] = [
         |entries| {
-            entries[3].size -= 0x1000;
+            entries[OTA_1_INDEX].size -= 0x1_0000;
             (TABLE_OFFSET, FLASH_SIZE)
         },
         |entries| {
@@ -990,7 +991,15 @@ fn a_malformed_record_is_no_record() {
 fn a_record_past_the_first_segment_is_no_record() {
     let record = board_layout_record();
     let len_of = |entries: usize| 256 + 32 + 32 * entries;
-    for first_len in [256, 256 + 28, 256 + 32, len_of(7), len_of(8) - 4, len_of(8)] {
+    let n = PARTITIONS.len();
+    for first_len in [
+        256,
+        256 + 28,
+        256 + 32,
+        len_of(n - 1),
+        len_of(n) - 4,
+        len_of(n),
+    ] {
         let mut builder = app_image();
         let first = &mut builder.segments[0].1;
         first.truncate(256);
@@ -999,7 +1008,7 @@ fn a_record_past_the_first_segment_is_no_record() {
         let image = builder.build();
         assert!(app(&image).is_ok(), "{first_len}");
         let found = layout_of(&image);
-        assert_eq!(found.is_some(), first_len == len_of(8), "{first_len}");
+        assert_eq!(found.is_some(), first_len == len_of(n), "{first_len}");
     }
 }
 

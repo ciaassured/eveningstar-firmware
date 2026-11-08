@@ -139,15 +139,17 @@ pub(crate) fn ota_gated<'f>(
 }
 
 /// [`Ota`] over writers of `flash` made without `split`, booted from
-/// `ota_0`: of `alternate` as the alternate slot and `otadata` as the
-/// otadata, with modules of the layout's regions.
+/// `ota_0`: of `alternate` as the alternate slot, `otadata` as the otadata
+/// and `signature` as the alternate signature region, with modules of the
+/// layout's regions.
 pub(crate) fn ota_on_spans(
     flash: &TestFlash,
     alternate: Span,
     otadata: Span,
+    signature: Span,
 ) -> (Ota<'static>, Checks<'static>) {
     ota_of(
-        flash.boot_writers(alternate, otadata, Slot::Ota0),
+        flash.boot_writers(alternate, otadata, signature, Slot::Ota0),
         flash.writer(Span::from(layout::CONFIG_1), Slot::Ota0),
         flash.reader(Span::from(layout::OTA_0)),
         flash.reader(Span::from(layout::OTA_1)),

@@ -5,12 +5,16 @@
 
 use super::*;
 use crate::test_support::{
-    ESPFLASH_TABLE, PARTITIONS, Rng, TABLE, TABLE_OFFSET, entry_bytes, flash_with, md5_entry,
-    md5_entry_for, table_of, table_with_md5,
+    ESPFLASH_TABLE, OTA_0_INDEX, OTA_1_INDEX, PARTITIONS, Rng, TABLE, TABLE_OFFSET, entry_bytes,
+    flash_with, md5_entry, md5_entry_for, table_of, table_with_md5,
 };
 use crate::{FLAG_READONLY, TYPE_DATA};
 
 const N: usize = PARTITIONS.len();
+/// Offset of the board table's MD5 entry, its digest, and its end entry.
+const MD5_AT: usize = N * 32;
+const DIGEST_AT: usize = MD5_AT + 16;
+const END_AT: usize = MD5_AT + 32;
 
 /// The chip size the Nix bootloader's header gives: 8 MiB.
 const CHIP: u32 = 0x80_0000;
@@ -169,11 +173,11 @@ fn a_table_without_an_md5_entry_is_valid() {
 
 #[test]
 fn a_bad_md5_makes_the_table_invalid() {
-    let computed: [u8; 16] = TABLE[0x110..0x120].try_into().unwrap();
-    for at in [0x110, 0x115, 0x11F] {
+    let computed: [u8; 16] = TABLE[DIGEST_AT..DIGEST_AT + 16].try_into().unwrap();
+    for at in [DIGEST_AT, DIGEST_AT + 5, DIGEST_AT + 15] {
         let mut table = TABLE.to_vec();
         table[at] ^= 0x01;
-        let stored: [u8; 16] = table[0x110..0x120].try_into().unwrap();
+        let stored: [u8; 16] = table[DIGEST_AT..DIGEST_AT + 16].try_into().unwrap();
         assert_eq!(
             verify(&table[..], 0, CHIP),
             Err(TableError::Md5 {
@@ -202,7 +206,7 @@ fn a_bad_md5_makes_the_table_invalid() {
 #[test]
 fn the_md5_entry_s_padding_is_never_read() {
     let mut table = TABLE.to_vec();
-    table[0x102..0x110].fill(0x00);
+    table[MD5_AT + 2..DIGEST_AT].fill(0x00);
     assert!(verify(&table[..], 0, CHIP).is_ok());
     assert!(by_label(&table).matches());
 }
@@ -287,17 +291,17 @@ fn the_end_entry_is_its_magic_type_and_subtype() {
     // Its other 28 bytes aren't read.
     for fill in [0x00, 0x5A] {
         let mut table = TABLE.to_vec();
-        table[0x124..0x140].fill(fill);
+        table[END_AT + 4..END_AT + 32].fill(fill);
         assert!(verify(&table[..], 0, CHIP).is_ok(), "{fill:#x}");
         assert!(by_label(&table).matches());
     }
     // Nor is anything after it.
     let mut table = TABLE.to_vec();
-    table[0x140..].fill(0x00);
-    table[0x140..0x142].copy_from_slice(&0x1234_u16.to_le_bytes());
+    table[END_AT + 32..].fill(0x00);
+    table[END_AT + 32..END_AT + 34].copy_from_slice(&0x1234_u16.to_le_bytes());
     assert!(verify(&table[..], 0, CHIP).is_ok());
     // Its type and subtype have to be erased.
-    for at in [0x122, 0x123] {
+    for at in [END_AT + 2, END_AT + 3] {
         let mut table = TABLE.to_vec();
         table[at] = 0x00;
         assert_eq!(
@@ -427,7 +431,7 @@ fn a_partition_past_the_header_s_flash_size_is_invalid_inside_a_larger_chip() {
     assert_eq!(
         verify(TABLE, 0, crate::image::flash_size(2)),
         Err(TableError::PastChip {
-            index: 3,
+            index: OTA_1_INDEX,
             offset: 0x31_0000,
             size: 0x30_0000
         })
@@ -436,7 +440,7 @@ fn a_partition_past_the_header_s_flash_size_is_invalid_inside_a_larger_chip() {
     assert_eq!(
         verify(TABLE, 0, crate::image::flash_size(0xF)),
         Err(TableError::PastChip {
-            index: 2,
+            index: OTA_0_INDEX,
             offset: 0x1_0000,
             size: 0x30_0000
         })
@@ -471,7 +475,7 @@ fn entries_after_the_md5_entry_are_checked_too() {
             ..PARTITIONS[0]
         },
     );
-    table[0x110] ^= 1;
+    table[DIGEST_AT] ^= 1;
     assert!(matches!(
         verify(&table[..], 0, CHIP),
         Err(TableError::PastChip { index: 0, .. })
@@ -515,7 +519,7 @@ fn a_table_that_can_t_be_read_is_invalid_where_it_stops() {
 #[test]
 fn the_bootloader_keeps_the_last_partition_of_each_kind() {
     let otadata = PARTITIONS[1];
-    let ota_0 = PARTITIONS[2];
+    let ota_0 = PARTITIONS[OTA_0_INDEX];
     let entries = [
         Entry {
             offset: 0xD000,
@@ -571,7 +575,7 @@ fn the_bootloader_keeps_the_last_partition_of_each_kind() {
 
 #[test]
 fn partitions_of_other_kinds_are_left_out() {
-    let ota_0 = PARTITIONS[2];
+    let ota_0 = PARTITIONS[OTA_0_INDEX];
     let otadata = PARTITIONS[1];
     let mut entries = Vec::new();
     // Apps the bootloader doesn't boot from: other app subtypes, and TEE
@@ -638,16 +642,16 @@ fn extra_and_repeated_labels_are_extra() {
     entries.push(Entry {
         offset: 0x70_0000,
         size: 0x1_0000,
-        ..PARTITIONS[3]
+        ..PARTITIONS[OTA_1_INDEX]
     });
     let comparison = by_label(&table_with_md5(&entries));
     assert_eq!(comparison.expected, [Match::Matches; N]);
     assert_eq!(comparison.extra, 1);
     // In the other order, the first differs.
-    entries.swap(3, N);
+    entries.swap(OTA_1_INDEX, N);
     let comparison = by_label(&table_with_md5(&entries));
     assert_eq!(
-        comparison.expected[3],
+        comparison.expected[OTA_1_INDEX],
         Match::Differs(Fields::OFFSET | Fields::SIZE)
     );
     assert_eq!(comparison.extra, 1);
@@ -695,7 +699,7 @@ fn the_search_judges_candidates_as_the_bootloader_does() {
     let booted = 0x1_0000;
     // A table with a bad MD5 isn't one the bootloader read.
     let mut bad_md5 = TABLE.to_vec();
-    bad_md5[0x110] ^= 1;
+    bad_md5[DIGEST_AT] ^= 1;
     let flash = flash_with(0x1_0000, &[(0x3000, &bad_md5), (0x8000, TABLE)]);
     assert_eq!(find(&flash[..], booted, CHIP), Found::One(0x8000));
     // Nor is one past the chip size the header gives.
@@ -724,7 +728,7 @@ fn the_search_judges_candidates_as_the_bootloader_does() {
     assert_eq!(find(&flash[..], booted, CHIP), Found::One(0x3000));
     let mut slots = slots_of(&PARTITIONS[..2]);
     slots.push(md5_entry_for(&slots));
-    slots.push(entry_bytes(&PARTITIONS[2]));
+    slots.push(entry_bytes(&PARTITIONS[OTA_0_INDEX]));
     let left_out = table_of(&slots);
     let flash = flash_with(0x1_0000, &[(0x3000, &left_out)]);
     assert_eq!(find(&flash[..], booted, CHIP), Found::Nothing);
@@ -860,13 +864,13 @@ fn partitions_report_their_progress() {
     // A partition that can't be read is an error, with its position.
     let source = Failing {
         bytes: TABLE,
-        from: 3 * 32 + 1,
+        from: u32::try_from(OTA_1_INDEX * 32 + 1).unwrap(),
     };
     let read: Vec<_> = partitions(&source, 0, &verified).collect();
     assert_eq!(
-        read[3],
+        read[OTA_1_INDEX],
         Err(TableError::Read {
-            index: 3,
+            index: OTA_1_INDEX,
             error: ReadError::Device
         })
     );
@@ -874,12 +878,12 @@ fn partitions_report_their_progress() {
     assert_eq!(
         load(&mut loaded, &source, 0, &verified),
         Err(TableError::Read {
-            index: 3,
+            index: OTA_1_INDEX,
             error: ReadError::Device
         })
     );
     // What was kept before it stays.
-    assert_eq!(loaded.ota[0].map(|kept| kept.index), Some(2));
+    assert_eq!(loaded.ota[0].map(|kept| kept.index), Some(OTA_0_INDEX));
 }
 
 // Finding a moved table.
@@ -959,18 +963,18 @@ fn tables_without_the_booted_app_are_skipped() {
     // Well formed, with an app elsewhere.
     let elsewhere = table_with_md5(&[Entry {
         offset: 0x2_0000,
-        ..PARTITIONS[2]
+        ..PARTITIONS[OTA_0_INDEX]
     }]);
     // Well formed, with a data partition at the booted offset.
     let data_there = table_with_md5(&[Entry {
         kind: TYPE_DATA,
-        ..PARTITIONS[2]
+        ..PARTITIONS[OTA_0_INDEX]
     }]);
     // With the app, but malformed after it.
     let mut malformed = table_with_md5(&PARTITIONS);
-    malformed[3 * 32] = 0;
+    malformed[(OTA_1_INDEX + 1) * 32] = 0;
     // With the app, but no end within the table's length.
-    let unterminated = table_of(&[entry_bytes(&PARTITIONS[2]); MAX_ENTRIES]);
+    let unterminated = table_of(&[entry_bytes(&PARTITIONS[OTA_0_INDEX]); MAX_ENTRIES]);
     let flash = flash_with(
         0x10_0000,
         &[
@@ -1017,7 +1021,7 @@ fn a_booted_offset_of_0_or_off_a_sector_finds_nothing() {
     // An app entry at an offset off a sector, matching it, still isn't taken.
     let odd = table_with_md5(&[Entry {
         offset: 0x1_0800,
-        ..PARTITIONS[2]
+        ..PARTITIONS[OTA_0_INDEX]
     }]);
     let flash = flash_with(0x2_0000, &[(0x8000, &odd)]);
     assert_eq!(find(&flash[..], 0x1_0800, CHIP), Found::Nothing);
@@ -1028,8 +1032,14 @@ fn a_flash_shorter_than_the_booted_offset_is_searched_as_far_as_it_goes() {
     let flash = flash_with(0xD000, &[(0xC000, TABLE)]);
     assert_eq!(find(&flash[..], 0x31_0000, CHIP), Found::One(0xC000));
     // The table needs its entries, the MD5 entry and the end entry.
-    assert_eq!(find(&flash[..0xC140], 0x31_0000, CHIP), Found::One(0xC000));
-    assert_eq!(find(&flash[..0xC13F], 0x31_0000, CHIP), Found::Nothing);
+    assert_eq!(
+        find(&flash[..0xC000 + END_AT + 32], 0x31_0000, CHIP),
+        Found::One(0xC000)
+    );
+    assert_eq!(
+        find(&flash[..0xC000 + END_AT + 31], 0x31_0000, CHIP),
+        Found::Nothing
+    );
     assert_eq!(find(&[][..], 0x31_0000, CHIP), Found::Nothing);
 }
 
