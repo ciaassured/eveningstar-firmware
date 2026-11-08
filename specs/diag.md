@@ -333,7 +333,8 @@ The first types. Every code is permanent.
   sequence number of its entry.
 - **`Ota`**, written to the log directly: update refused (the refusal code),
   activated (versions from and to, the otadata sequence number), confirmed,
-  switched.
+  switched, retired (the version of an image below the floor erased after a
+  confirmation).
 - **`Rollback`**: see below.
 
 ## Rollback reasons, end to end
