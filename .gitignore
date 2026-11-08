@@ -9,6 +9,10 @@ lefthook-local.yml
 debug/
 target/
 
+# Fuzzing builds and findings; the corpora in fuzz/corpus are committed
+fuzz/artifacts/
+fuzz/coverage/
+
 # Editor configuration
 # Shared VS Code project files are committed; everything else stays local.
 .vscode/*

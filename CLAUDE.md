@@ -50,7 +50,10 @@ and update it when a design decision changes.
     `gdb`, `lefthook`, ESP-IDF (`idf.py`, `IDF_TARGET=esp32c6`), and the flake's
     own commands: `eveningstar-checks`, `flash-boot`, `flash-app`, `flash-all`,
     `esp-wipe`, `bootloader-menuconfig`, `storage-layout`, `storage-testdata`,
-    and for the web UI `web-dev`, `web-npm`, `web-types` and the pinned Node.
+    `fuzz` (the targets in `fuzz/`, with a pinned nightly toolchain, from
+    copies of their committed corpora; `--merge` adds what a run found to
+    them), and for the web UI `web-dev`,
+    `web-npm`, `web-types` and the pinned Node.
   - The Rust toolchain comes from `rust-toolchain.toml` (rustup), so `cargo`
     works with or without the dev shell.
 - Checks: `nix run .#checks` runs everything; `nix run .#checks -- lint`
@@ -66,7 +69,9 @@ and update it when a design decision changes.
   app over 75% of its slot) and `nix run .#checks -- test` (tests of the crates
   that also build on the host, run on the host target, and the web UI's tests)
   run one group. `lint` and `test` are each two finer groups, `rust-lint` and
-  `web-lint`, `rust-test` and `web-test`, which CI runs as separate jobs. The
+  `web-lint`, `rust-test` and `web-test`, which CI runs as separate jobs.
+  `nix run .#checks -- fuzz` runs each fuzz target for a minute; it is a CI
+  job, not a default group or a hook. The
   crates that also build on the host are listed in `host_crates` in
   `nix/checks.nix`; clippy checks them for both targets, and keeps their
   features out of the firmware's lint. They build into `target/checks`. The

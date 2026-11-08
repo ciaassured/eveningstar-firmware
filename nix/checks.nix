@@ -34,7 +34,8 @@ in
       # crates that also build on the host, and the web UI's). With no
       # arguments, every group runs. `lint` and `test` are each two finer
       # groups, `rust-lint` and `web-lint`, `rust-test` and `web-test`, which CI
-      # runs as separate jobs.
+      # runs as separate jobs. `fuzz` runs the fuzz targets for a minute each;
+      # it is not among the default groups.
       packages.checks = pkgs.writeShellApplication {
         name = "eveningstar-checks";
         runtimeInputs = [ toolchain pkgs.stdenv.cc pkgs.diffutils pkgs.espflash pkgs.jq ];
@@ -170,6 +171,11 @@ in
                 run_check "clippy (host crates, host target)" cargo clippy --all-features \
                   --all-targets "''${host_crates[@]/#/--package=}" --target "$host_target" \
                   -- -D warnings -A clippy::large_stack_frames
+                # The fuzz crate is outside the workspace; its lint needs no
+                # nightly, only its sanitizer build does.
+                run_check "rustfmt (fuzz)" cargo fmt --manifest-path fuzz/Cargo.toml -- --check
+                run_check "clippy (fuzz)" cargo clippy --manifest-path fuzz/Cargo.toml \
+                  --target "$host_target" -- -D warnings
                 ;;
               web-lint)
                 run_check "web lint and type check" nix build --no-link .#web-lint .#web-typecheck
@@ -200,8 +206,13 @@ in
               web-test)
                 run_check "web tests" nix build --no-link .#web-test
                 ;;
+              fuzz)
+                # Each fuzz target for a minute, from its committed corpus, with
+                # the pinned nightly toolchain (nix/fuzz.nix).
+                run_check "fuzz" nix run .#fuzz -- 60
+                ;;
               *)
-                echo "unknown check group: $group (expected lint, build, test, rust-lint, web-lint, rust-test or web-test)" >&2
+                echo "unknown check group: $group (expected lint, build, test, fuzz, rust-lint, web-lint, rust-test or web-test)" >&2
                 exit 2
                 ;;
             esac
