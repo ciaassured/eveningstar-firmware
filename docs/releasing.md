@@ -50,9 +50,9 @@ These checks stop the mistakes they name; each runs without being asked.
   the device's configuration.
 
 They don't catch a wrong decision: a security fix released without raising
-`secure_version`, a `secure_version` raised by mistake (devices can't switch
-back to the previous release over the network once they confirm), or release
-notes that omit a stepping-stone release.
+`secure_version`, a `secure_version` raised by mistake (devices that confirm
+the release erase the previous one and can't return to it over the
+network), or release notes that omit a stepping-stone release.
 
 ## Before the release
 
@@ -67,9 +67,9 @@ notes that omit a stepping-stone release.
    `nix/release.nix` keeps each release's value, so the check knows the
    previous one.
 
-   Raising it means devices that confirm the release can't switch back to an
-   earlier one except over USB, and the web UI says so at upload and at
-   confirmation.
+   Raising it means devices that confirm the release erase the earlier one
+   from their other slot, with its configuration, and can return to it only
+   over USB; the web UI says so at upload and at confirmation.
 3. Check the configuration schema: when it changed, the new firmware carries
    the migration, the host migration tests cover a fixture of every past
    schema, and the compatibility entry names the oldest schema it migrates
@@ -194,8 +194,7 @@ offline media (compromised), or both copies of a key are gone (lost).
    the current one, which keeps signing.
 3. Release at once, signed with the current usable generation. After a
    compromise, raise `secure_version`: devices that confirm the release
-   stop trusting the compromised key and can't switch back to a release
-   that trusts it.
+   stop trusting the compromised key and erase the release that trusts it.
 4. Say in the release notes which generation is compromised or lost, and
    since when. Devices that don't update keep trusting a compromised key.
 
