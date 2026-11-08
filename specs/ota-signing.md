@@ -373,8 +373,11 @@ whoever has it can reflash anything, by design.
   is lower than the running image's is refused for an update, and for a
   switch once the running image is confirmed (decision 7). During a trial
   nothing is refused: the bootloader's rollback and a switch both return to
-  the previous image. Ordinary versions may go down within one
-  `secure_version`. The floor binds only the firmware's own paths: USB
+  the previous image. Once the running image is confirmed, an image below
+  the floor in the other slot is retired: its otadata entry, first sector,
+  signature sector and configuration are erased, so not even the
+  bootloader's fallback can start it ("Retiring an image below the
+  floor"). Ordinary versions may go down within one `secure_version`. USB
   flashing always restores any image.
 - **Replay.** Uploading a signed image again installs the same image again.
   It is harmless within the downgrade rule.
@@ -710,13 +713,12 @@ parses to the same result as without the additions.
   1 (decision 33); the build and the ceremony check both. An image that
   trusts the development key accepts firmware from anyone, so it is
   vulnerable by design, and the floor already says so: once a release is
-  confirmed, switching to a development build in the other slot is refused
-  like any lower `secure_version`, and during the trial it is allowed. No
-  signature is checked and no key list is consulted. Uploading a
-  development-signed image to a release image is refused anyway: the release
-  trusts no development key. The confirm control says: "The image in the
-  other slot is a development build. It can't be started again after
-  confirmation, except by flashing over USB."
+  confirmed, a development build in the other slot is retired like any
+  image below the floor, and during the trial it stays. No signature is
+  checked and no key list is consulted. Uploading a development-signed image
+  to a release image is refused anyway: the release trusts no development
+  key. The confirm control says: "The development build in the other slot
+  is erased when you confirm. Flashing over USB restores it."
 - One build setting chooses the flavour: `EVENINGSTAR_RELEASE`, set only by
   `nix build .#release`. The firmware's build script derives everything
   from it and from `nix/keys.nix` and `nix/release.nix`: the trust set (with
@@ -1031,11 +1033,44 @@ N+1, trusts N+1 to N+3, `secure_version` 2.
   because B raises `secure_version`, says that confirming ends the way back
   to A over the network. The owner can extend the trial and investigate, or
   let it roll back.
-- If the owner confirms B anyway, A's entry is still `Valid` in the other
-  sector, so A is installed, but the switch is refused: 1 < 2. B takes a fix
-  signed with N+1; USB restores A. Had B kept `secure_version` 1, the owner
-  switches to A: an entry for A with state `New`, a trial boot of A, with
+- If the owner confirms B anyway, A is retired: 1 < 2, so its entry, first
+  sector, signature sector and configuration are erased, and nothing can
+  start it, the bootloader's fallback included. B takes a fix signed with
+  N+1; USB restores A. Had B kept `secure_version` 1, A stays, and the owner
+  switches to it: an entry for A with state `New`, a trial boot of A, with
   A's configuration as it was when the update began (decision 27).
+
+### Retiring an image below the floor
+
+The bootloader doesn't know the floor. An image below it stays bootable
+while it lies in the other slot: the bootloader selects its entry when the
+running image's entry no longer verifies, and its fallback loop boots any
+image that loads when the selected one doesn't. So, once the running image
+is confirmed, the firmware retires such an image.
+
+- **When:** the running image is `Valid`, and the other slot holds an
+  installed image whose `secure_version` is lower than the running image's
+  (a development build after a release included). Never during a trial,
+  never for an equal or higher `secure_version`.
+- **What, in this order:**
+  1. the otadata settled so both entries name the running slot (the write
+     `begin_update` already plans), so the slot is no longer installed;
+  2. the slot's first sector and signature sector erased, so the image no
+     longer loads;
+  3. the slot's configuration wiped: it holds the old image's credentials,
+     and a slot's configuration dies with its image.
+- **Triggered by state:** the rule runs after every confirmation and at
+  every boot, so a power cut part way through is finished at the next boot.
+  Every step is idempotent, and each leaves a state the rule still matches
+  until the last is done.
+- **The cost:** a confirmed image that later fails to load, from a hardware
+  fault, has nothing to fall back to, and the board needs USB. That is what
+  raising `secure_version` means; a bug in the new image is still caught by
+  its trial, before anything is retired.
+- `Ota::retire_below_floor` does it, through the alternate slot's writer and
+  the alternate configuration's, which `Ota` already holds; it is called by
+  the storage glue, not through the API. A `diag` record says what was
+  retired (`specs/diag.md`).
 
 ### Self-checks
 
@@ -1244,6 +1279,10 @@ impl Ota<'_> {
     /// passes the image, project, layout and board checks, and once the
     /// running image is confirmed its `secure_version` isn't lower.
     pub async fn installed_other(&mut self) -> Result<Installed<'_, '_>, OtaError>;
+    /// Retires the other slot's image when the running image is `Valid` and
+    /// the other's `secure_version` is lower: otadata, first and signature
+    /// sectors, configuration. Does nothing otherwise.
+    pub async fn retire_below_floor(&mut self) -> Result<Retired, OtaError>;
 }
 
 /// An image installed in the other slot, at the slot's epoch E. Built only
@@ -1340,11 +1379,11 @@ impl Update<'_, '_> {
 - Security release warning, at upload once the image verified and on the
   confirm control, when the image raises `secure_version` above the other
   slot's: "This release fixes a security vulnerability. Once it is
-  confirmed, firmware with a lower security version can't be started
-  through updates or slot switches. Flashing over USB restores any
-  firmware." The confirm control adds the version it rules out: "Version
-  1.3.2 can't be started again after confirmation, except by flashing over
-  USB."
+  confirmed, firmware with a lower security version is erased from the
+  device and can't be installed over the network again. Flashing over USB
+  restores any firmware." The confirm control names what it erases:
+  "Confirming erases version 1.3.2 and its configuration. Flashing over USB
+  restores it."
 - Web UI: on every page, while the running image trusts the development key,
   a banner: "This firmware trusts the development signing key. Anyone can
   sign firmware that this device installs." On the update page the same
@@ -1539,8 +1578,12 @@ and so on), so a doctest that fails for another reason doesn't pass:
 - Switch scenarios: after confirming an image with a new generation and the
   same `secure_version`, a switch to the older image (and to a USB-flashed
   one without a signature) must boot it as a trial and leave both installed;
-  with a raised `secure_version`, the switch must be refused after
-  confirmation and succeed during the trial;
+  with a raised `secure_version`, the switch must succeed during the trial,
+  and confirmation must retire the older image: its otadata entry gone, its
+  first sector, signature sector and configuration erased, `esptool
+  read-flash` showing `0xFF` there, and a corrupted entry or a failing load
+  of the new image no longer starting it; a power cut at each step of the
+  retirement must be finished at the next boot;
   a switch must be refused after an upload that failed verification, after a
   power cut during an upload, after an automatic rollback (the slot is
   `ABORTED`), to a slot whose image was corrupted, and, after a release is
@@ -1561,8 +1604,10 @@ used.
    full `u32` (no eFuse). Lower than the running image's is
    refused for updates, and for switches once the running image is
    confirmed; nothing is refused during a trial; equal is allowed whatever
-   the version string. Warnings at upload and at confirmation, which say
-   that USB always recovers.
+   the version string. Once the running image is confirmed, an image below
+   the floor in the other slot is retired: entry, magic, signature sector
+   and configuration erased (user, 2026-11-08). Warnings at upload and at
+   confirmation, which say so, and that USB always recovers.
 9. **The image's own records.** One image information block after the
    layout record: magic and length, then type-length-value entries; unknown
    types skipped, values only grow, meanings never change.
@@ -1584,7 +1629,8 @@ used.
     the API's sake only.
 23. **Trust what is installed.** A switch, in either direction, checks the
     target's integrity, never its signature (shown), and after confirmation
-    its `secure_version`. "Installed" is an otadata entry naming the slot,
+    its `secure_version`, and an image below the floor is retired once the
+    running image is confirmed. "Installed" is an otadata entry naming the slot,
     which only a verified activation writes for a slot an update touched. A
     switch after confirmation boots as a trial. Today `roll_back` works
     after confirmation too but selects the old image as `Valid` with no
