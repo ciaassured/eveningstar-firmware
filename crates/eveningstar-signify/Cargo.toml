@@ -1,0 +1,29 @@
+[package]
+name = "eveningstar-signify"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+base64.workspace = true
+curve25519-dalek.workspace = true
+ed25519-dalek.workspace = true
+
+[dev-dependencies]
+base64 = { workspace = true, features = ["alloc"] }
+serde_json.workspace = true
+sha2.workspace = true
+
+[features]
+# Trust sets built from keys a test chooses.
+test-support = []
+
+[[test]]
+name = "signify"
+path = "tests/signify.rs"
+required-features = ["test-support"]
+
+[lints]
+workspace = true

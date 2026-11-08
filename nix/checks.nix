@@ -38,7 +38,7 @@ in
       # it is not among the default groups.
       packages.checks = pkgs.writeShellApplication {
         name = "eveningstar-checks";
-        runtimeInputs = [ toolchain pkgs.stdenv.cc pkgs.diffutils pkgs.espflash pkgs.jq ];
+        runtimeInputs = [ toolchain pkgs.stdenv.cc pkgs.diffutils pkgs.espflash pkgs.jq pkgs.signify ];
         text = ''
           status=0
 
@@ -146,7 +146,7 @@ in
           # The crates that also build on the host, and the host's target.
           # Their features stay out of the firmware's lint, as `--all-features`
           # would otherwise enable them in the firmware's dependency on them.
-          host_crates=(eveningstar-api eveningstar-boot eveningstar-esp-formats eveningstar-ota eveningstar-records eveningstar-storage eveningstar-system)
+          host_crates=(eveningstar-api eveningstar-boot eveningstar-esp-formats eveningstar-ota eveningstar-records eveningstar-signify eveningstar-storage eveningstar-system)
           host_target="$(rustc --print host-tuple)"
 
           expanded=()
@@ -200,7 +200,9 @@ in
                 fi
                 ;;
               rust-test)
-                run_check "host tests" cargo test --all-features \
+                # The signify crate's differential tests run the stock signify
+                # binary, and fail rather than skip when it's missing here.
+                EVENINGSTAR_REQUIRE_SIGNIFY=1 run_check "host tests" cargo test --all-features \
                   "''${host_crates[@]/#/--package=}" --target "$host_target"
                 ;;
               web-test)
