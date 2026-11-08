@@ -1,7 +1,6 @@
 # Diagnostics: messages across reboots and firmware versions
 
-Status: proposed 2026-11-08, revised twice the same day after review; for
-the user's review. No code is written until the user approves it. Builds on
+Status: decided 2026-11-08, after three reviews. Builds on
 `specs/storage-v2.md` (the `diag` region and its store) and
 `specs/ota-signing.md` (the trial, its self-checks, rollback, and the image
 information block's encoding).
@@ -178,7 +177,7 @@ update). On top of it, fixed for good:
 
 ### Placement
 
-- The last 1 KiB of LP RAM, `0x5000_3C00` to `0x5000_4000`: a `NOLOAD`
+- The last 2 KiB of LP RAM, `0x5000_3800` to `0x5000_4000`: a `NOLOAD`
   output section placed there by a linker fragment of the firmware's own,
   with an `ASSERT` that esp-hal's `.rtc_fast.*` sections end below it. The
   address and the format are a permanent contract between every firmware
@@ -194,17 +193,26 @@ update). On top of it, fixed for good:
 ### Format
 
 - A header written once and never changed: magic, total length, CRC-32 over
-  both.
-- A ring of 4 entries. Each: length, a sequence number (`u32`), the boot ID
-  of the boot that wrote it (0 when written before the boot ID exists), a
-  repeat count, one record, and a CRC-32 over all of it.
+  both. The rest, about 2 KiB, is a byte ring of variable-length entries.
+- An entry: length, a sequence number (`u32`), the boot ID of the boot that
+  wrote it (0 when written before the boot ID exists), a repeat count, one
+  record, and a CRC-32 over all of it; padded to 4 bytes. Entries are
+  as long as their record, as in the log, so a long panic message takes
+  more room and a reset reason little.
+- **Writing:** a writer starts at the word after the head entry, or at the
+  start of the ring when the entry doesn't fit before its end; an entry
+  never wraps. It overwrites whatever is there, so the oldest entries go,
+  and stores the entry's CRC last, so an interrupted write tears at most
+  that entry and whatever it was overwriting.
+- **Reading:** a scan from the start of the ring takes each word as a
+  possible entry, keeps it when its length fits and its CRC matches, and
+  then continues after it; otherwise it moves on by a word. Overwritten and
+  torn entries fail their CRC and are skipped.
 - **Validity** is the header's magic and CRC, and each entry's CRC; nothing
   else. The reset reason is recorded, never used to discard: random bytes
   after a power-on don't pass a CRC-32.
 - **The head** is the valid entry with the highest sequence number, as with
-  the otadata. A writer writes the next slot with the next sequence number,
-  the entry's CRC last, so an interrupted write tears at most that entry.
-  There is no index to update.
+  the otadata. There is no index to update.
 - **Sequence numbers never restart** while the mailbox lives: clearing
   replaces each moved entry with a `Drained` entry that keeps its number,
   so the highest stays readable.
@@ -235,14 +243,21 @@ described.
   limits, as the panic handler's: nothing is recorded while interrupts are
   off, or while the flash cache is off inside a program or erase, which
   only the next boot's reset reason shows.
-- **`SoftwareReset::reset`**: a `Reset` record with its `ResetCause`.
-  `ResetCause::GracefulReboot` gains the reason's permanent code, through a
-  trait the firmware's reboot reasons implement.
+- **The watchdog supervisor**, before it resets for a missed deadline: a
+  `Watchdog` record with the task's name, its timeout, how long since it
+  last fed its handle, and the other supervised tasks whose handles are
+  also overdue.
+- **The reboot service**, before it resets: a `Reboot` record with the
+  reason's permanent code (through a trait the firmware's reboot reasons
+  implement), whether it was graceful or immediate, how long it waited, and
+  the holds still held when a graceful reboot's deadline forced it.
+- **`SoftwareReset::reset`** writes nothing of its own: each caller has
+  already said why.
 - **The confirmation window**, when it ends a trial: a `TrialEnd` record with
   the reason. The graceful reboot that follows can end in a different reset
   (a watchdog, a power cut); the records then show both.
 - **Coalescing:** a writer whose record equals the head's (same type, cause
-  and location) writes it again in the next slot with the repeat count plus
+  and location) writes it again after the head with the repeat count plus
   one, instead of a new entry with a count of 1.
 - Writers outside the panic handler and the watchdog interrupt write inside
   a critical section, which esp-sync's re-entrant implementation allows
@@ -325,9 +340,10 @@ The first types. Every code is permanent.
   path with `--remap-path-prefix`), line and column, and the message (at
   most 96 bytes).
 - **`Hang`**: the interrupted PC.
-- **`Reset`**: the firmware's cause (`GracefulReboot` with the reason's code,
-  `ImmediateReboot`, `MissedDeadline` with the task's name, at most 16
-  bytes).
+- **`Watchdog`**: the task's name (at most 16 bytes), its timeout, the time
+  since its last feed, and the names of other overdue tasks.
+- **`Reboot`**: the reason's code, graceful or immediate, the time waited,
+  and the holders still holding when the deadline forced it.
 - **`TrialEnd`**: why the trial ended (a required self-check failed, with its
   ID; the deadline passed), the trial image's version, and the otadata
   sequence number of its entry.
@@ -368,7 +384,8 @@ alternate slot's descriptor), which of the cases, and the cause, in this
 order:
 
 1. a `TrialEnd` record of the trial's boots: its reason;
-2. a `Panic`, `Hang` or `Reset` record of the trial's boots: that;
+2. a `Panic`, `Hang`, `Watchdog` or `Reboot` record of the trial's boots:
+   that;
 3. a chip reset reason at this boot: power lost during the trial;
 4. otherwise: a reset with no message, with the reset reason.
 
@@ -395,7 +412,7 @@ log, nothing is written, rather than a wrong record.
   sequence number, boot ID, uptime, type and fields; an unknown type shows
   its type and length only. Mailbox entries not yet moved to the log
   (unverified tier) appear marked as such.
-- The latest `Rollback` and `Reset` records also appear in `GET /firmware`
+- The latest `Rollback` and reset records also appear in `GET /firmware`
   and `GET /system`.
 - `DELETE /api/v1/diag` erases the log, with the highest permission tier: 64
   sector erases, with its own watchdog handle fed per erase and a yield
@@ -434,37 +451,36 @@ log, nothing is written, rather than a wrong record.
   runs; power cuts during a drain, a rotation and `DELETE /diag` leave a log
   that mounts with every completed record.
 
-## Decisions for the user
+## Decisions
 
-Each with a recommendation.
+Taken with the user (2026-11-08).
 
-1. **Two layers.** Recommended: the mailbox in LP RAM and the log in `diag`.
-2. **Mailbox size and place.** Recommended: the last 1 KiB of LP RAM, fixed
-   for good, by a linker fragment of the firmware's own.
-3. **Mailbox entries.** Recommended: a ring of 4, the head found by sequence
-   number.
-4. **Log format.** Recommended: a ring of sectors with CRC-checked headers,
-   padded records with a CRC-32 each, every word programmed once, a torn
-   tail ending the sector.
-5. **Crash loops.** Recommended: coalesced in the mailbox, written to the log
-   at powers of two.
-6. **The panic message.** It formats values the code chose, so it may one
-   day hold something sensitive. Recommended: kept, at most 96 bytes, and
-   served only with the highest permission tier; the other fields with the
-   read tier.
-7. **The shared encoding.** Recommended: the one `specs/ota-signing.md`
-   defines, with its committed registry.
-8. **Hangs.** Recommended: MWDT0's stage 0 as an interrupt that records the
-   PC, stage 1 resetting a second later.
-9. **Where the `unsafe` lives.** Recommended: one module in the firmware
-   crate's glue, volatile copies only, all parsing safe and on the host.
-10. **Clearing the log.** Recommended: `DELETE /diag` with the highest
-    permission tier, and no clearing at a factory reset unless the user asks
-    for it then.
-11. **Unverified tier.** Recommended: the mailbox is read and served but not
-    cleared, as there is no writer of `diag`.
-12. **Reboot reasons across the trait boundary.** Recommended:
-    `ResetCause::GracefulReboot` carries the reason's permanent `u16` code.
+1. **Two layers:** the mailbox in LP RAM and the log in `diag`.
+2. **Mailbox size and place:** the last 2 KiB of LP RAM, fixed for good, by a
+   linker fragment of the firmware's own; little else is expected to use LP
+   RAM.
+3. **Mailbox entries:** variable length, as in the log, in a byte ring where
+   the oldest are overwritten; the head found by sequence number.
+4. **Log format:** a ring of sectors with CRC-checked headers, padded records
+   with a CRC-32 each, every word programmed once, a torn tail ending the
+   sector.
+5. **Crash loops:** coalesced in the mailbox where possible, written to the
+   log at powers of two.
+6. **The panic message:** kept small, at most 96 bytes, and served only with
+   the highest permission tier; the other fields with the read tier.
+7. **The shared encoding:** the one `specs/ota-signing.md` defines, with its
+   committed registry.
+8. **Hangs and resets:** MWDT0's stage 0 as an interrupt that records the PC,
+   stage 1 resetting a second later; the watchdog supervisor and the reboot
+   service each write a detailed record of why they reset.
+9. **Where the `unsafe` lives:** one module in the firmware crate's glue,
+   volatile copies only, all parsing safe and on the host.
+10. **Clearing the log:** `DELETE /diag` with the highest permission tier,
+    and no clearing at a factory reset unless the user asks for it then.
+11. **Unverified tier:** the mailbox is read and served but not cleared, as
+    there is no writer of `diag`.
+12. **Reboot reasons across the trait boundary:** the reboot service's record
+    carries the reason's permanent `u16` code.
 
 ## Left open
 
