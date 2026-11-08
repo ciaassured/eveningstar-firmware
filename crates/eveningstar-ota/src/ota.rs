@@ -89,7 +89,7 @@ impl<'f> Ota<'f> {
     /// image verified and its descriptor reads. [`confirm`](Self::confirm)
     /// writes only once every self-check of `gate` has passed, and
     /// [`begin_update`](Self::begin_update) wipes `alternate_config`, the
-    /// alternate slot's configuration, and the alternate signature region.
+    /// alternate slot's configuration, after the alternate signature region.
     pub async fn new(
         writers: BootWriters<'f>,
         alternate_config: Writer<'f, AlternateConfig>,
@@ -164,8 +164,8 @@ impl<'f> Ota<'f> {
     /// bootloader never selects the slot while it is rewritten, whatever is cut
     /// short. Then a write session opens on the slot, which the [`Update`]
     /// holds, and the slot's first sector is erased, so the slot holds no
-    /// image that verifies. Then the alternate slot's configuration and
-    /// signature region are wiped whole: they belong to the image the update
+    /// image that verifies. Then the alternate slot's signature region and
+    /// configuration are wiped whole: they belong to the image the update
     /// replaces. Nothing verifies
     /// in the slot before [`Update::finish`], so an image that verifies there
     /// after an update had both wiped during that update; a wipe cut short
@@ -192,8 +192,8 @@ impl<'f> Ota<'f> {
         self.settle().await?;
         let mut session = self.alternate.begin();
         session.erase(0, SECTOR_SIZE).await?;
-        self.alternate_config.begin().wipe().await?;
         self.alternate_signature.begin().wipe().await?;
+        self.alternate_config.begin().wipe().await?;
         Ok(Update::new(
             session,
             self.slot,

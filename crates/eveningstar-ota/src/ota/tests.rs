@@ -122,6 +122,8 @@ fn the_test_images_verify_with_what_they_name() {
 fn flashed(image: &[u8]) -> RamNor {
     let config_0 = vec![CONFIG_PATTERN; CONFIG_0.size as usize];
     let config_1 = vec![CONFIG_PATTERN; CONFIG_1.size as usize];
+    let sig_0 = vec![CONFIG_PATTERN; SIG_0.size as usize];
+    let sig_1 = vec![CONFIG_PATTERN; SIG_1.size as usize];
     let flash = RamNor::with(
         FLASH_SIZE,
         &[
@@ -130,6 +132,8 @@ fn flashed(image: &[u8]) -> RamNor {
             (OTA_0.offset, image),
             (CONFIG_0.offset, &config_0),
             (CONFIG_1.offset, &config_1),
+            (SIG_0.offset, &sig_0),
+            (SIG_1.offset, &sig_1),
         ],
     );
     assert_eq!(boot_device(&flash), Some(Ota0));
@@ -185,18 +189,18 @@ fn holds(flash: &RamNor, slot: Slot, image: &[u8]) -> bool {
     flash.at(slot.partition().offset, image.len()) == image
 }
 
-/// The pattern the tests' boards hold in both configurations, which
-/// nothing but a wipe sets back to `0xFF`.
+/// The pattern the tests' boards hold in both configurations and both
+/// signature regions, which nothing but a wipe sets back to `0xFF`.
 const CONFIG_PATTERN: u8 = 0x5A;
 
-/// Whether `config` of `flash` holds [`CONFIG_PATTERN`] throughout.
-fn config_kept(flash: &RamNor, config: Entry) -> bool {
-    flash.at(config.offset, config.size as usize) == vec![CONFIG_PATTERN; config.size as usize]
+/// Whether `region` of `flash` holds [`CONFIG_PATTERN`] throughout.
+fn kept(flash: &RamNor, region: Entry) -> bool {
+    flash.at(region.offset, region.size as usize) == vec![CONFIG_PATTERN; region.size as usize]
 }
 
-/// Whether `config` of `flash` is wiped: `0xFF` throughout.
-fn config_wiped(flash: &RamNor, config: Entry) -> bool {
-    flash.at(config.offset, config.size as usize) == vec![0xFF; config.size as usize]
+/// Whether `region` of `flash` is wiped: `0xFF` throughout.
+fn wiped(flash: &RamNor, region: Entry) -> bool {
+    flash.at(region.offset, region.size as usize) == vec![0xFF; region.size as usize]
 }
 
 /// Sectors of the alternate configuration.
@@ -210,10 +214,10 @@ fn signature_sectors() -> usize {
 }
 
 /// The erases `begin_update` ends with on a board running from `ota_0`: the
-/// slot's first sector, then each of `config_1`'s, then each of `sig_1`'s.
+/// slot's first sector, then each of `sig_1`'s, then each of `config_1`'s.
 fn begin_erases() -> Vec<Call> {
     let mut erases = vec![Call::Erase(OTA_1.offset)];
-    for region in [CONFIG_1, SIG_1] {
+    for region in [SIG_1, CONFIG_1] {
         erases.extend(
             (0..region.size / SECTOR_SIZE).map(|n| Call::Erase(region.offset + n * SECTOR_SIZE)),
         );
@@ -491,8 +495,8 @@ fn each_sector_is_erased_just_before_the_first_bytes_programmed_into_it() {
         .run(async {
             let mut update = ota.begin_update().await?;
             let begun = flash.writes().len();
-            // The slot's first sector, then the configuration and the
-            // signature region wiped.
+            // The slot's first sector, then the signature region and the
+            // configuration wiped.
             assert_eq!(
                 flash.writes()[begun - begin_erases().len()..begun],
                 begin_erases()
@@ -1396,8 +1400,10 @@ fn beginning_an_update_wipes_the_alternate_configuration_after_the_slot_s_first_
         );
         drop(update);
     });
-    assert!(config_wiped(&flash, CONFIG_1));
-    assert!(config_kept(&flash, CONFIG_0), "the running slot's");
+    assert!(wiped(&flash, CONFIG_1));
+    assert!(wiped(&flash, SIG_1));
+    assert!(kept(&flash, CONFIG_0), "the running slot's");
+    assert!(kept(&flash, SIG_0), "the running slot's");
 }
 
 #[test]
@@ -1410,7 +1416,8 @@ fn a_refused_update_leaves_the_alternate_configuration() {
         checks.run(ota.begin_update()).err(),
         Some(OtaError::Plan(PlanError::Unconfirmed))
     );
-    assert!(config_kept(&flash, CONFIG_0));
+    assert!(kept(&flash, CONFIG_0));
+    assert!(kept(&flash, SIG_0));
 }
 
 #[test]
@@ -1419,8 +1426,8 @@ fn switching_slots_without_an_update_leaves_both_configurations() {
     let flash = updated(app(), &new);
     // The update from `ota_0` wiped `config_1`; nothing since has touched
     // `config_0`, the rollback target's.
-    assert!(config_wiped(&flash, CONFIG_1));
-    assert!(config_kept(&flash, CONFIG_0));
+    assert!(wiped(&flash, CONFIG_1));
+    assert!(kept(&flash, CONFIG_0));
     let (mut ota, checks) = ota_on(&flash, Ota1);
     let old = checks.run(ota.verify_other()).unwrap();
     checks.run(ota.activate(old)).unwrap();
@@ -1429,7 +1436,8 @@ fn switching_slots_without_an_update_leaves_both_configurations() {
     let (mut ota, checks) = ota_on(&flash, Ota0);
     checks.run(ota.roll_back()).unwrap();
     assert_eq!(reboot(&flash), Ota1);
-    assert!(config_kept(&flash, CONFIG_0));
+    assert!(kept(&flash, CONFIG_0));
+    assert!(kept(&flash, SIG_0));
 }
 
 #[test]
@@ -1445,24 +1453,30 @@ fn a_cut_wipe_leaves_a_slot_that_doesn_t_verify_and_the_next_update_wipes_again(
         .iter()
         .position(|op| *op == Call::Erase(OTA_1.offset))
         .unwrap();
-    // The same update, cut halfway through the wipe.
+    // The same update, cut halfway through the configuration's wipe, after
+    // the signature region's.
     let flash = start.copy();
     let (mut ota, checks) = ota_on(&flash, Ota0);
-    flash.cut_after(slot_erase + 1 + config_sectors() / 2, Tear::Prefix(0));
+    flash.cut_after(
+        slot_erase + 1 + signature_sectors() + config_sectors() / 2,
+        Tear::Prefix(0),
+    );
     assert_eq!(
         checks.run(ota.begin_update()).err(),
         Some(OtaError::Access(AccessError::Device))
     );
     flash.heal();
-    assert!(!config_kept(&flash, CONFIG_1) && !config_wiped(&flash, CONFIG_1));
-    assert!(config_kept(&flash, CONFIG_0));
+    assert!(!kept(&flash, CONFIG_1) && !wiped(&flash, CONFIG_1));
+    assert!(wiped(&flash, SIG_1));
+    assert!(kept(&flash, CONFIG_0));
+    assert!(kept(&flash, SIG_0));
     // The slot doesn't verify, so the old image boots, and the next update
     // wipes the configuration whole.
     assert_eq!(reboot(&flash), Ota0);
     let (mut ota, checks) = ota_on(&flash, Ota0);
     assert!(checks.run(ota.verify_other()).is_err());
     let image = finish_with(&mut ota, checks, &new).unwrap();
-    assert!(config_wiped(&flash, CONFIG_1));
+    assert!(wiped(&flash, CONFIG_1));
     checks.run(ota.activate(image)).unwrap();
     assert_eq!(reboot(&flash), Ota1);
 }
@@ -1939,14 +1953,24 @@ fn the_guard_refuses_what_a_wrong_span_would_write() {
     let flash = TestFlash::new(flashed(app()));
     let device = flash.device();
     // The running slot in place of the other one.
-    let (mut ota, checks) = ota_on_spans(&flash, Span::from(OTA_0), Span::from(OTADATA));
+    let (mut ota, checks) = ota_on_spans(
+        &flash,
+        Span::from(OTA_0),
+        Span::from(OTADATA),
+        Span::from(SIG_1),
+    );
     assert_eq!(
         checks.run(ota.begin_update()).err(),
         Some(OtaError::Access(AccessError::Protected))
     );
     // The boot chain in place of the otadata, holding no valid entry: a
     // confirmation would write its first sector.
-    let (mut ota, checks) = ota_on_spans(&flash, Span::from(OTA_1), Span::new(0, OTADATA.size));
+    let (mut ota, checks) = ota_on_spans(
+        &flash,
+        Span::from(OTA_1),
+        Span::new(0, OTADATA.size),
+        Span::from(SIG_1),
+    );
     assert_eq!(
         checks.run(ota.confirm()),
         Err(OtaError::Access(AccessError::Protected))
@@ -1963,6 +1987,26 @@ fn the_guard_refuses_what_a_wrong_span_would_write() {
     );
 }
 
+#[test]
+fn the_guard_refuses_a_wipe_of_the_running_slot_s_signature_region() {
+    let flash = TestFlash::new(flashed(app()));
+    let device = flash.device();
+    // The running slot's signature region in place of the other one's.
+    let (mut ota, checks) = ota_on_spans(
+        &flash,
+        Span::from(OTA_1),
+        Span::from(OTADATA),
+        Span::from(SIG_0),
+    );
+    assert_eq!(
+        checks.run(ota.begin_update()).err(),
+        Some(OtaError::Access(AccessError::Protected))
+    );
+    assert!(kept(device, SIG_0));
+    // Refused before the configuration's wipe.
+    assert!(kept(device, CONFIG_1));
+}
+
 // Sessions and epochs.
 
 /// The OTA mechanism of a board flashed with the firmware's image in `ota_0`,
@@ -1977,7 +2021,12 @@ fn watched() -> (
     Reader<'static, OtadataRole>,
 ) {
     let flash = TestFlash::new(flashed(app()));
-    let (ota, checks) = ota_on_spans(&flash, Span::from(OTA_1), Span::from(OTADATA));
+    let (ota, checks) = ota_on_spans(
+        &flash,
+        Span::from(OTA_1),
+        Span::from(OTADATA),
+        Span::from(SIG_1),
+    );
     let alternate = flash.reader(Span::from(OTA_1));
     let otadata = flash.reader(Span::from(OTADATA));
     (flash, ota, checks, alternate, otadata)
@@ -2160,7 +2209,12 @@ fn ota_is_unavailable_until_the_running_app_s_descriptor_reads() {
             device.poke(OTA_0.offset, image);
         }
         let flash = TestFlash::new(device);
-        let (mut ota, checks) = ota_on_spans(&flash, Span::from(OTA_1), Span::from(OTADATA));
+        let (mut ota, checks) = ota_on_spans(
+            &flash,
+            Span::from(OTA_1),
+            Span::from(OTADATA),
+            Span::from(SIG_1),
+        );
         let reason = ota.readiness().unwrap_err();
         assert!(matches!(reason, Unavailable::Descriptor(_)), "{reason:?}");
         if current.is_none() {
