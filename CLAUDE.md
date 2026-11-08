@@ -50,10 +50,10 @@ and update it when a design decision changes.
     `gdb`, `lefthook`, ESP-IDF (`idf.py`, `IDF_TARGET=esp32c6`), and the flake's
     own commands: `eveningstar-checks`, `flash-boot`, `flash-app`, `flash-all`,
     `esp-wipe`, `bootloader-menuconfig`, `storage-layout`, `storage-testdata`,
-    `trust-sets`, `fuzz` (the targets in `fuzz/`, with a pinned nightly
-    toolchain, from copies of their committed corpora; `--merge` adds what a
-    run found to them), and for the web UI `web-dev`, `web-npm`, `web-types`
-    and the pinned Node.
+    `trust-sets`, `secret-key-scan`, `fuzz` (the targets in `fuzz/`, with a
+    pinned nightly toolchain, from copies of their committed corpora;
+    `--merge` adds what a run found to them), and for the web UI `web-dev`,
+    `web-npm`, `web-types` and the pinned Node.
   - The Rust toolchain comes from `rust-toolchain.toml` (rustup), so `cargo`
     works with or without the dev shell.
 - Checks: `nix run .#checks` runs everything; `nix run .#checks -- lint`
@@ -75,8 +75,9 @@ and update it when a design decision changes.
   crates that also build on the host are listed in `host_crates` in
   `nix/checks.nix`; clippy checks them for both targets, and keeps their
   features out of the firmware's lint. They build into `target/checks`. The
-  lefthook Git hooks run `lint` on pre-commit and `build` and `test` on
-  pre-push, and CI uses the same entry point.
+  lefthook Git hooks run `lint` on pre-commit and `build`, `test` and the
+  secret key scan of the commits to push on pre-push, and CI uses the same
+  entry point.
 - Flashing: `cargo run` flashes and streams defmt logs through probe-rs and
   keeps running until stopped. `flash-boot`, `flash-app` and `flash-all` write
   the bootloader, partition table and OTA app layout defined in `nix/board.nix`
@@ -177,6 +178,11 @@ generations and the key ceremony.
   time adds a key; don't add a route that does.
 - Only the development key's secret key (`keys/eveningstar-dev-fw.sec`) is
   committed. Release secret keys never come near the repository.
+  `secret-key-scan` (`nix/secret-key-scan.sh`) finds any other signify secret
+  key by content, whatever the file's name: over the index in the `lint`
+  group, over the commits to push on pre-push, and over every commit of a
+  pull request in CI. Don't relax it or its fixtures without asking the
+  user.
 - Until the first key ceremony there are no release generations: development
   builds trust the development key alone, and there is no release trust set.
 

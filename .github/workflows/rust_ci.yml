@@ -79,18 +79,49 @@ jobs:
           nix build --no-link .#web-ui-bundle
           nix build --no-link --rebuild .#web-ui-bundle
 
+  # Every commit of a pull request scanned for signify secret keys, not just its
+  # tip, so a key added and removed again is still found. A push scans its tip,
+  # as the lint group does.
+  secret-keys:
+    name: Secret keys
+    if: ${{ github.event_name != 'schedule' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Scan for secret keys
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [[ -n "$BASE" ]]; then
+            nix run .#secret-key-scan -- --commits "$BASE..$HEAD_SHA"
+          else
+            nix run .#secret-key-scan -- --index
+          fi
+
   # One result for the jobs above, under the name the checks went by before they
   # were split.
   nix-checks:
     name: Nix checks
-    needs: checks
+    needs: [checks, secret-keys]
     if: ${{ always() && github.event_name != 'schedule' }}
     runs-on: ubuntu-24.04
     steps:
       - name: Require every check job to have passed
         env:
-          RESULT: ${{ needs.checks.result }}
-        run: test "$RESULT" = success
+          CHECKS: ${{ needs.checks.result }}
+          SECRET_KEYS: ${{ needs.secret-keys.result }}
+        run: test "$CHECKS" = success && test "$SECRET_KEYS" = success
 
   # Checks the packages of both lockfiles against the registry's advisories and
   # signatures. It installs them, with install scripts off, in a job that has no

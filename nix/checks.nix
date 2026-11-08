@@ -38,7 +38,7 @@ in
       # it is not among the default groups.
       packages.checks = pkgs.writeShellApplication {
         name = "eveningstar-checks";
-        runtimeInputs = [ toolchain pkgs.stdenv.cc pkgs.diffutils pkgs.espflash pkgs.jq pkgs.signify config.packages.trust-sets ];
+        runtimeInputs = [ toolchain pkgs.stdenv.cc pkgs.diffutils pkgs.espflash pkgs.jq pkgs.signify config.packages.trust-sets config.packages.secret-key-scan ];
         text = ''
           status=0
 
@@ -164,6 +164,8 @@ in
                 run_check "rustfmt" cargo fmt --all -- --check
                 run_check "storage layout" check_storage_layout
                 run_check "trust sets" trust-sets --check
+                run_check "secret keys" secret-key-scan --index
+                run_check "secret key scan fixtures" nix build --no-link .#secret-key-scan-test
                 run_check "clippy" cargo clippy --all-features --workspace \
                   "''${host_crates[@]/#/--exclude=}" -- -D warnings
                 run_check "clippy (host crates, chip target)" cargo clippy --all-features \
