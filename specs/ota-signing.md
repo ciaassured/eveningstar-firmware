@@ -587,8 +587,8 @@ from the repository at the release's signed tag and from the release notes.
   release trust set, so a release build doesn't compile. After the
   ceremony, a development build that also trusts the new generations is
   the update that carries boards to them.
-- The generator refuses: a gap in the generations; a missing file for the
-  three usable generations from `signing`; a duplicate keynum. A generation
+- The generator refuses: a gap in the generations; a missing file for any
+  listed generation; a duplicate keynum. A generation
   marked `lost` or `compromised` is skipped, never trusted again. The
   README's key table (generation, status, public key line) is generated
   from the same file and checked by the `lint` group.

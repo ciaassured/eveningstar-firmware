@@ -4,14 +4,20 @@
 # A signify secret key's second line is the base64 of 104 bytes beginning `Ed`
 # `BK`: 140 characters beginning `RWRCS`. Its first line is an untrusted
 # comment ending in `secret key`. Either one, anywhere in any file, is a
-# finding, except in keys/eveningstar-dev-fw.sec when that file is exactly a
-# comment line and a key line whose keynum is keys/eveningstar-dev-fw.pub's
-# and whose KDF rounds are 0, as `signify -G -n` writes them.
+# finding; the key line matches from `RWRCS` and 40 more base64 characters, so
+# a wrapped key is found too. The one exception is
+# keys/eveningstar-dev-fw.sec when that file is exactly a comment line and a
+# key line whose keynum is keys/eveningstar-dev-fw.pub's and whose KDF rounds
+# are 0, as `signify -G -n` writes them.
 #
-# Usage: secret-key-scan [--index | --commits RANGE | --unpushed]
-#   --index          the files staged for the next commit (the default)
-#   --commits RANGE  every commit `git rev-list RANGE` lists
-#   --unpushed       every commit on HEAD that no remote branch has
+# A Git command that fails fails the scan (exit 2): nothing passes unscanned.
+#
+# Usage: secret-key-scan [--index | --commits REV... | --unpushed | --pre-push]
+#   --index        the files staged for the next commit (the default)
+#   --commits REV  every commit `git rev-list REV...` lists
+#   --unpushed     every commit on HEAD that no remote branch has
+#   --pre-push     every commit of the refs a push sends, read from a pre-push
+#                  hook's standard input
 
 dev_sec=keys/eveningstar-dev-fw.sec
 dev_pub=keys/eveningstar-dev-fw.pub
@@ -20,19 +26,29 @@ dev_pub=keys/eveningstar-dev-fw.pub
 key_line='RWRC''S[A-Za-z0-9+/]{40,}'
 comment_line='^untrusted comment''[:] .*secret key[[:space:]]*$'
 
-# The bytes of the base64 on line $2 of the file whose contents are $1, as
-# lowercase hex.
+usage() {
+  echo "usage: secret-key-scan [--index | --commits REV... | --unpushed | --pre-push]" >&2
+  exit 2
+}
+
+# The bytes of the base64 line $1, as lowercase hex.
 decoded_hex() {
-  sed -n "$2p" <<< "$1" | base64 -d 2>/dev/null | od -An -v -tx1 | tr -d ' \n'
+  base64 -d <<< "$1" 2>/dev/null | od -An -v -tx1 | tr -d ' \n'
 }
 
 # Whether the development secret key, with contents $1, is the committed
-# development key: two lines, no passphrase, the public key's keynum.
+# development key: a comment line and one 140-character key line, no
+# passphrase, the public key's keynum.
 dev_key_allowed() {
-  local sec=$1 pub=$2 sec_hex pub_hex
+  local sec=$1 pub=$2 comment line sec_hex pub_hex
   [[ $(wc -l <<< "$sec") -eq 2 ]] || return 1
-  sec_hex=$(decoded_hex "$sec" 2)
-  pub_hex=$(decoded_hex "$pub" 2)
+  comment=$(sed -n 1p <<< "$sec")
+  line=$(sed -n 2p <<< "$sec")
+  [[ $comment =~ ^untrusted\ comment:\  ]] || return 1
+  ! grep -qE "$key_line" <<< "$comment" || return 1
+  [[ $line =~ ^[A-Za-z0-9+/]{139}=$ ]] || return 1
+  sec_hex=$(decoded_hex "$line")
+  pub_hex=$(decoded_hex "$(sed -n 2p <<< "$pub")")
   # 104 bytes: `Ed`, `BK`, the rounds, the salt, the checksum, the keynum and
   # the secret key.
   [[ ${#sec_hex} -eq 208 && ${sec_hex:0:8} == 4564424b ]] || return 1
@@ -40,13 +56,21 @@ dev_key_allowed() {
   [[ ${#pub_hex} -eq 84 && ${sec_hex:64:16} == "${pub_hex:4:16}" ]]
 }
 
-# Scans the tree $1 (`--cached` for the index, or a commit), and prints a line
-# for each finding.
+findings=""
+
+# Scans the tree $1 (`--cached` for the index, or a commit), adding a line to
+# `findings` for each finding.
 scan_tree() {
-  local where=$1 prefix="" path sec pub
+  local where=$1 prefix="" matches status=0 path sec pub
   [[ $where == --cached ]] || prefix="$where:"
-  # git grep exits 1 when nothing matches.
-  { git grep -l -E -e "$key_line" -e "$comment_line" "$where" -- . || true; } | while read -r path; do
+  # git grep exits 1 when nothing matches, and more on an error.
+  matches=$(git grep -l -E -e "$key_line" -e "$comment_line" "$where" -- .) || status=$?
+  if (( status > 1 )); then
+    echo "secret-key-scan: git grep failed on $where" >&2
+    exit 2
+  fi
+  while read -r path; do
+    [[ -n $path ]] || continue
     path=${path#"$prefix"}
     if [[ $path == "$dev_sec" ]]; then
       sec=$(git show "${prefix:-:}$path")
@@ -54,36 +78,68 @@ scan_tree() {
       if dev_key_allowed "$sec" "$pub"; then
         continue
       fi
-      echo "${prefix}$path: not the development key as signify -G -n writes it"
+      findings+="${prefix}$path: not the development key as signify -G -n writes it"$'\n'
     else
-      echo "${prefix}$path: holds a signify secret key"
+      findings+="${prefix}$path: holds a signify secret key"$'\n'
     fi
-  done
+  done <<< "$matches"
 }
+
+# Scans every commit `git rev-list` lists for its arguments.
+scan_commits() {
+  local list commit
+  list=$(git rev-list "$@") || {
+    echo "secret-key-scan: git rev-list $* failed" >&2
+    exit 2
+  }
+  while read -r commit; do
+    if [[ -n $commit ]]; then
+      scan_tree "$commit"
+    fi
+  done <<< "$list"
+}
+
+# The scan reads paths from the repository's root.
+root=$(git rev-parse --show-toplevel)
+cd "$root"
 
 mode=${1:---index}
 case "$mode" in
   --index)
-    (( $# <= 1 )) || { echo "usage: secret-key-scan [--index | --commits RANGE | --unpushed]" >&2; exit 2; }
-    findings=$(scan_tree --cached)
+    (( $# <= 1 )) || usage
+    scan_tree --cached
     ;;
-  --commits | --unpushed)
-    if [[ $mode == --commits ]]; then
-      (( $# == 2 )) || { echo "usage: secret-key-scan --commits RANGE" >&2; exit 2; }
-      mapfile -t commits < <(git rev-list "$2")
-    else
-      mapfile -t commits < <(git rev-list HEAD --not --remotes)
-    fi
-    findings=$(for commit in "${commits[@]}"; do scan_tree "$commit"; done)
+  --commits)
+    (( $# >= 2 )) || usage
+    scan_commits "${@:2}"
+    ;;
+  --unpushed)
+    (( $# == 1 )) || usage
+    scan_commits HEAD --not --remotes
+    ;;
+  --pre-push)
+    (( $# == 1 )) || usage
+    while read -r _local_ref local_sha _remote_ref remote_sha; do
+      # A deleted ref sends nothing.
+      if [[ $local_sha =~ ^0+$ ]]; then
+        continue
+      fi
+      if [[ $remote_sha =~ ^0+$ ]] || ! git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
+        # A new ref, or one whose remote commit isn't here: everything no
+        # remote branch has.
+        scan_commits "$local_sha" --not --remotes
+      else
+        scan_commits "$remote_sha..$local_sha"
+      fi
+    done
     ;;
   *)
-    echo "usage: secret-key-scan [--index | --commits RANGE | --unpushed]" >&2
-    exit 2
+    usage
     ;;
 esac
 
 if [[ -n $findings ]]; then
-  echo "$findings" >&2
+  printf '%s' "$findings" >&2
   echo "secret-key-scan: a signify secret key is in the repository; only the development key's may be" >&2
   exit 1
 fi
