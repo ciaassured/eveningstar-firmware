@@ -114,8 +114,9 @@ use crate::image::{self, ImageError};
 use crate::known::{self, Known};
 use crate::nor::{NorDevice, Reader, SECTOR_SIZE, State, Writer};
 use crate::roles::{
-    AlternateApp, AlternateConfig, Bootloader, CurrentApp, CurrentConfig, Diag, FoundApp,
-    FoundOtadata, FoundTable, Internal, Otadata, PartitionTable, Role, is_sensitive,
+    AlternateApp, AlternateConfig, AlternateSignature, Bootloader, CurrentApp, CurrentConfig,
+    CurrentSignature, Diag, FoundApp, FoundOtadata, FoundTable, Internal, Otadata, PartitionTable,
+    Role, is_sensitive,
 };
 use crate::{Entry, ReadError, Slot, SlotPartitions as _, Source, Span, layout, table};
 
@@ -367,6 +368,8 @@ pub struct LayoutHandles<'f> {
     pub current_config: Writer<'f, CurrentConfig>,
     /// The alternate slot's configuration, which is only wiped whole.
     pub alternate_config: Writer<'f, AlternateConfig>,
+    /// The current slot's signature region.
+    pub current_signature: Reader<'f, CurrentSignature>,
     /// The diagnostics partition.
     pub diag: Writer<'f, Diag>,
 }
@@ -378,22 +381,27 @@ pub struct BootWriters<'f> {
     pub alternate_app: Writer<'f, AlternateApp>,
     /// The otadata, which selects the slot to boot.
     pub otadata: Writer<'f, Otadata>,
+    /// The other slot's signature region, which an update writes.
+    pub alternate_signature: Writer<'f, AlternateSignature>,
     /// The slot that booted.
     slot: Slot,
 }
 
 #[cfg(any(test, feature = "test-support"))]
 impl<'f> BootWriters<'f> {
-    /// The boot writers `alternate_app` and `otadata`, for the app running
-    /// from `slot`, made of any writers for the tests.
+    /// The boot writers `alternate_app`, `otadata` and
+    /// `alternate_signature`, for the app running from `slot`, made of any
+    /// writers for the tests.
     pub(crate) const fn new(
         alternate_app: Writer<'f, AlternateApp>,
         otadata: Writer<'f, Otadata>,
+        alternate_signature: Writer<'f, AlternateSignature>,
         slot: Slot,
     ) -> Self {
         Self {
             alternate_app,
             otadata,
+            alternate_signature,
             slot,
         }
     }
@@ -456,6 +464,15 @@ pub fn split<'f>(
 }
 
 /// [`split`] with `bootloaders` as the known list.
+#[cfg_attr(
+    target_arch = "riscv32",
+    expect(
+        clippy::large_stack_frames,
+        reason = "the lint adds every local without overlap: the future's result, `Storage` \
+                  (516 bytes on the chip), counts twice, as the call's result and as the \
+                  future's output, though only one is live at a time"
+    )
+)]
 pub(crate) fn split_with<'f>(
     device: &'f mut dyn NorDevice,
     state: &'f mut State,
@@ -625,6 +642,15 @@ impl<'f> Chain<'f> {
     }
 
     /// The report evaluated, and the handles of the tier reached.
+    #[cfg_attr(
+        target_arch = "riscv32",
+        expect(
+            clippy::large_stack_frames,
+            reason = "the lint adds every local without overlap: `Storage` (516 bytes on the \
+                      chip) and the `Handles` and `Report` it is built of count separately, \
+                      though they are moved into it"
+        )
+    )]
     fn storage(&mut self, state: &'f State) -> Storage<'f> {
         // The handles first: they record the tier in the report.
         Storage {
@@ -651,10 +677,7 @@ impl<'f> Chain<'f> {
         match (tier, slot) {
             (Tier::Boot, Some(slot)) => {
                 self.record(Tier::Boot, Some(slot));
-                Handles::Boot(
-                    layout_handles(device, state, slot),
-                    boot_writers(device, state, slot),
-                )
+                boot_handles(device, state, slot)
             }
             (Tier::Layout, Some(slot)) => {
                 self.record(Tier::Layout, Some(slot));
@@ -721,6 +744,30 @@ fn read_partitions(
     booted: u32,
 ) -> Result<Partitions, TableError> {
     let mut loaded = table::Loaded::new();
+    let comparison = compare(whole, offset, verified, &mut loaded)?;
+    Ok(Partitions {
+        count: verified.partitions(),
+        md5_read_as_partition: verified.md5_read_as_partition(),
+        comparison,
+        booted: loaded
+            .apps()
+            .find(|kept| kept.offset == booted)
+            .map(|kept| Span::new(kept.offset, kept.size)),
+        otadata: loaded.otadata.map(|kept| Span::new(kept.offset, kept.size)),
+    })
+}
+
+/// The label comparison of the table at `offset`, which [`table::verify`]
+/// judged `verified`, with the layout, keeping in `loaded` what the
+/// bootloader keeps. Never inlined, so its reads stay out of the caller's
+/// frame.
+#[inline(never)]
+fn compare(
+    whole: &Raw<'_>,
+    offset: u32,
+    verified: &Verified,
+    loaded: &mut table::Loaded,
+) -> Result<LayoutComparison, TableError> {
     let mut error = None;
     let read = table::partitions(whole, offset, verified).map_while(|partition| match partition {
         Ok((index, entry)) => {
@@ -733,19 +780,10 @@ fn read_partitions(
         }
     });
     let comparison = table::compare_labels(read, &layout::PARTITIONS);
-    if let Some(error) = error {
-        return Err(error);
+    match error {
+        Some(error) => Err(error),
+        None => Ok(comparison),
     }
-    Ok(Partitions {
-        count: verified.partitions(),
-        md5_read_as_partition: verified.md5_read_as_partition(),
-        comparison,
-        booted: loaded
-            .apps()
-            .find(|kept| kept.offset == booted)
-            .map(|kept| Span::new(kept.offset, kept.size)),
-        otadata: loaded.otadata.map(|kept| Span::new(kept.offset, kept.size)),
-    })
 }
 
 /// The span of the app image at `booted`, as long as its headers describe:
@@ -775,6 +813,17 @@ fn located_reader<'f, R: Role<Device = Internal>>(
     Reader::new(device, state, cut)
 }
 
+/// The boot tier's handles for the app running from `slot`, on a flash that
+/// holds the layout, which the chain has checked. Never inlined, so the
+/// handles it makes stay out of the caller's frame.
+#[inline(never)]
+fn boot_handles<'f>(device: &'f dyn NorDevice, state: &'f State, slot: Slot) -> Handles<'f> {
+    Handles::Boot(
+        layout_handles(device, state, slot),
+        boot_writers(device, state, slot),
+    )
+}
+
 /// The layout tier's handles for the app running from `slot`, on a flash
 /// that holds the layout, which the chain has checked.
 fn layout_handles<'f>(
@@ -789,6 +838,7 @@ fn layout_handles<'f>(
         otadata: Reader::within(device, state, reader(layout::OTADATA)),
         current_config: Writer::of_partition(device, state, &slot.config(), slot),
         alternate_config: Writer::of_partition(device, state, &slot.other().config(), slot),
+        current_signature: Reader::within(device, state, reader(slot.signature())),
         diag: Writer::of_partition(device, state, &layout::DIAG, slot),
     }
 }
@@ -799,6 +849,7 @@ fn boot_writers<'f>(device: &'f dyn NorDevice, state: &'f State, slot: Slot) -> 
     BootWriters {
         alternate_app: Writer::of_partition(device, state, &slot.other().partition(), slot),
         otadata: Writer::of_partition(device, state, &layout::OTADATA, slot),
+        alternate_signature: Writer::of_partition(device, state, &slot.other().signature(), slot),
         slot,
     }
 }

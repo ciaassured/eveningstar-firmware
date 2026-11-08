@@ -1,4 +1,5 @@
-"""Fail if any requested Kconfig value did not survive resolution.
+"""Fail if any requested Kconfig value did not survive resolution, or if a
+forbidden symbol resolved set.
 
 Kconfig silently ignores unknown symbols, drops values whose dependencies are
 not met, and lets one choice win over another. Compare every requested value
@@ -10,8 +11,12 @@ import sys
 
 requested = json.load(open(sys.argv[1]))
 resolved = json.load(open(sys.argv[2]))
+forbidden = json.load(open(sys.argv[3])) if len(sys.argv) > 3 else []
 
 errors = []
+for key in forbidden:
+    if resolved.get(key) not in (None, False):
+        errors.append(f"CONFIG_{key}: forbidden, resolved to {resolved[key]!r}")
 for key, want in sorted(requested.items()):
     if key not in resolved:
         errors.append(f"CONFIG_{key}: not a visible symbol (typo, or its dependencies are not met)")
