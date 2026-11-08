@@ -43,9 +43,11 @@
             /^<!-- trust-sets:end -->$/ { while ((getline line < table) > 0) print line; skip = 0 }
             !skip { print }
             /^<!-- trust-sets:begin -->$/ { skip = 1; found = 1 }
-            END { if (!found) exit 1 }
+            /^<!-- trust-sets:begin -->$/ && done { twice = 1 }
+            /^<!-- trust-sets:end -->$/ { if (done || !found) twice = 1; done = found }
+            END { if (!done || skip || twice) exit 1 }
           ' README.md > "$work/README.md" || {
-            echo "README.md has no <!-- trust-sets:begin --> marker" >&2
+            echo "README.md needs one <!-- trust-sets:begin --> line and, after it, one <!-- trust-sets:end --> line" >&2
             exit 1
           }
 

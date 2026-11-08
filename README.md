@@ -58,9 +58,8 @@ nix run .#checks
 
 ## Signing keys
 
-Firmware updates are signed with
-[signify](https://man.openbsd.org/signify.1). The public keys are in `keys/`,
-listed in `nix/keys.nix`:
+Firmware signing keys are [signify](https://man.openbsd.org/signify.1) keys.
+The public keys are in `keys/`, listed in `nix/keys.nix`:
 
 <!-- trust-sets:begin -->
 
