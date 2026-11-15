@@ -19,6 +19,7 @@ The workspace's crates live flat under `crates/`.
 | `eveningstar-system`      | Reboots, reboot holds and the task watchdog supervisor               |
 | `eveningstar-records`     | The record encoding firmware versions share, and its type registry   |
 | `eveningstar-signify`     | signify's signed manifests, verified under compiled trust sets       |
+| `eveningstar-image-info`  | The image information block an app image carries after its layout    |
 | `eveningstar`             | The firmware: services, transports, drivers and watchdogs            |
 
 `eveningstar-board` and `eveningstar` build for the ESP32-C6 only; the others
@@ -1102,12 +1103,14 @@ the results kept since the last wait are logged before each.
   verified and looked up in `known.rs`, with its entry's table offset and
   rollback; the app verified as an ESP32-C6 image of the `eveningstar` project,
   with the layout record right after its descriptor equal to the generated
-  layout's in every byte; and the three, as `flash-all` writes them, taken
+  layout's in every byte and a readable image information block right after
+  the record; and the three, as `flash-all` writes them, taken
   through `split` to the boot tier. The `build` group runs it on the Nix
   bootloader and table and on the release app, and fails on a bootloader
   missing from `known.rs` (printing its entry), a table that isn't the layout,
   an app without the layout record or with one that isn't the generated
-  layout's (printing which entries differ), or an app over 75% of its slot.
+  layout's (printing which entries differ), an app without a readable image
+  information block after it, or an app over 75% of its slot.
 - The tests of the four storage crates read fixtures built by Nix and real
   captures in `crates/eveningstar-esp-formats/testdata/` (see its README). The
   `build` group fails when the Nix-built ones are stale.

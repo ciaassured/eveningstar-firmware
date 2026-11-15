@@ -21,6 +21,9 @@
 
 use core::convert::Infallible;
 
+/// The revision, as an image's information block names it.
+pub const REVISION: u8 = 2;
+
 use embassy_embedded_hal::shared_bus::asynch::spi::SpiDevice;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;

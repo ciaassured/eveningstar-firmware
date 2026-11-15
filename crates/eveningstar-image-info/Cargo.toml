@@ -1,0 +1,19 @@
+[package]
+name = "eveningstar-image-info"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+eveningstar-esp-formats.workspace = true
+eveningstar-records.workspace = true
+eveningstar-signify.workspace = true
+
+[dev-dependencies]
+eveningstar-esp-formats = { workspace = true, features = ["test-support"] }
+eveningstar-signify = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

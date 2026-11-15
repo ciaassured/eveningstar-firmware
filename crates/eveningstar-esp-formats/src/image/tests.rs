@@ -901,6 +901,14 @@ fn a_layout_record_round_trips_through_an_image() {
         }
         assert_eq!(layout.entry(&image[..], PARTITIONS.len() as u32), Ok(None));
         assert_eq!(layout.entry(&image[..], u32::MAX), Ok(None));
+        // The record ends after its entries; the first segment's data starts
+        // after the image's and the segment's headers, and its length is the
+        // segment header's second word.
+        let record_end = LAYOUT_RECORD_AT + 32 + 32 * PARTITIONS.len();
+        assert_eq!(layout.end(), record_end as u32);
+        let segment_len = u32::from_le_bytes(image[28..32].try_into().unwrap());
+        assert_eq!(layout.segment_end(), 32 + segment_len);
+        assert!(layout.end() <= layout.segment_end());
     }
 }
 

@@ -25,6 +25,7 @@ use core::task::{Context, Poll, Waker};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use eveningstar_image_info::{Block, Found};
 use eveningstar_storage::chain::{Tier, split};
 use eveningstar_storage::image;
 use eveningstar_storage::nor::{Flash, NorDevice};
@@ -248,6 +249,7 @@ fn check_app(checks: &mut Checks, path: &Path, bytes: &[u8]) {
         Err(error) => checks.fail(format!("no descriptor: {error:?}")),
     }
     check_layout_record(checks, bytes);
+    check_image_info(checks, bytes);
     let slot = u64::from(layout::OTA_0.size);
     let size = u64::from(app.size());
     let budget = slot * SLOT_BUDGET_PERCENT / 100;
@@ -300,6 +302,39 @@ fn check_layout_record(checks: &mut Checks, bytes: &[u8]) {
             }
         }
         Err(error) => checks.fail(format!("{what}, unreadable: {error:?}")),
+    }
+}
+
+/// The app's image information block, right after its layout record, read
+/// as a reader of the block reads it.
+fn check_image_info(checks: &mut Checks, bytes: &[u8]) {
+    let mut buf = [0; eveningstar_image_info::MAX_LEN];
+    let block = match eveningstar_image_info::read(bytes, &mut buf) {
+        Ok(Found::Block(block)) => block,
+        Ok(Found::Absent) => {
+            return checks.fail("no image information block after the layout record");
+        }
+        Ok(Found::TooLong) => return checks.fail("image information runs past its room"),
+        Err(error) => return checks.fail(format!("image information: {error:?}")),
+    };
+    match Block::parse(block) {
+        Ok(info) => {
+            let keys: Vec<String> = info
+                .keys()
+                .map(|key| format!("{:?}", key.generation()))
+                .collect();
+            checks.pass(format!(
+                "image information after the layout record: board {} (revisions {:#x}), \
+                 configuration schemas {} to {}, signed with {:?}, trusting {}",
+                info.board().name(),
+                info.board().revisions(),
+                info.compatibility().oldest_schema(),
+                info.compatibility().schema(),
+                info.signing(),
+                keys.join(", ")
+            ));
+        }
+        Err(error) => checks.fail(format!("image information unreadable: {error}")),
     }
 }
 

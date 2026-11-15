@@ -25,7 +25,9 @@ eveningstar-api.workspace = true
 eveningstar-board = { workspace = true, features = ["v2"] }
 eveningstar-boot.workspace = true
 eveningstar-esp-formats.workspace = true
+eveningstar-image-info.workspace = true
 eveningstar-ota.workspace = true
+eveningstar-signify.workspace = true
 eveningstar-storage.workspace = true
 eveningstar-system = { workspace = true, features = ["defmt"] }
 esp-bootloader-esp-idf.workspace = true

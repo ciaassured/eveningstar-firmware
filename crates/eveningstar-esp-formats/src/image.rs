@@ -484,9 +484,29 @@ pub struct AppLayout {
     table_offset: u32,
     flash_size: u32,
     count: u32,
+    /// Offset in the source just past the last entry.
+    end: u32,
+    /// Offset in the source just past the first segment, which holds the
+    /// record.
+    segment_end: u32,
 }
 
 impl AppLayout {
+    /// Offset in the source just past the record's last entry: where the
+    /// bytes an image places after its layout record start.
+    #[must_use]
+    pub const fn end(&self) -> u32 {
+        self.end
+    }
+
+    /// Offset in the source just past the first segment, which holds the
+    /// record: the bytes from [`end`](Self::end) up to it are the rest of
+    /// that segment.
+    #[must_use]
+    pub const fn segment_end(&self) -> u32 {
+        self.segment_end
+    }
+
     /// The table's offset the record gives.
     #[must_use]
     pub const fn table_offset(&self) -> u32 {
@@ -587,14 +607,23 @@ pub fn app_layout<S: Source + ?Sized>(source: &S) -> Result<Option<AppLayout>, I
     let flash_size = u32::from_le_bytes(field(&header, 20));
     let count = u32::from_le_bytes(field(&header, 24));
     let reserved: [u8; 4] = field(&header, 28);
+    // The record's end, relative to the segment's data.
+    let record_end = count
+        .checked_mul(table::ENTRY_LEN)
+        .and_then(|len| len.checked_add(header_end));
     let fits = usize::try_from(count).is_ok_and(|count| count <= table::MAX_ENTRIES)
-        && count
-            .checked_mul(table::ENTRY_LEN)
-            .and_then(|len| len.checked_add(header_end))
-            .is_some_and(|end| end <= segment.len);
-    if magic != LAYOUT_MAGIC || reserved != [0; 4] || !fits {
+        && record_end.is_some_and(|end| end <= segment.len);
+    let Some(record_end) =
+        record_end.filter(|_| magic == LAYOUT_MAGIC && reserved == [0; 4] && fits)
+    else {
         return Ok(None);
-    }
+    };
+    let absolute = |relative: u32| {
+        segment
+            .data
+            .checked_add(relative)
+            .ok_or(ImageError::PastEnd)
+    };
     Ok(Some(AppLayout {
         entries: at
             .checked_add(LAYOUT_HEADER_LEN)
@@ -602,6 +631,8 @@ pub fn app_layout<S: Source + ?Sized>(source: &S) -> Result<Option<AppLayout>, I
         table_offset,
         flash_size,
         count,
+        end: absolute(record_end)?,
+        segment_end: absolute(segment.len)?,
     }))
 }
 
