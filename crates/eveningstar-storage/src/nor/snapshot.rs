@@ -4,16 +4,16 @@ use core::fmt;
 use core::marker::PhantomData;
 
 use super::Reader;
-use super::handle::{Extent, address, read_chunked};
+use super::handle::{Window, address, read_chunked};
 use crate::roles::{Internal, Role};
 use crate::span::Span;
 use crate::state::{Epoch, WriteState};
 use crate::{ReadError, SnapshotError, Source};
 
-/// Fills `buf` with the bytes at `offset` in `extent`'s span, in one device
+/// Fills `buf` with the bytes at `offset` in `window`'s span, in one device
 /// call, when the region whose epoch `epoch` is, over the physical spans the
-/// epoch names, is `Stable(epoch)` both before and after it. On any error `buf` is zeroed, so
-/// no bytes of a failed read are kept.
+/// epoch names, is `Stable(epoch)` both before and after it. On any error
+/// `buf` is zeroed, so no bytes of a failed read are kept.
 ///
 /// Both loads of the state are `SeqCst`, and the device call between them is
 /// a compiler and hardware barrier on the one core that reaches the flash,
@@ -23,18 +23,18 @@ use crate::{ReadError, SnapshotError, Source};
 /// session that issued a device call on one of those spans: its bytes are
 /// those of `epoch`.
 pub(super) fn read_checked(
-    extent: &Extent<'_>,
+    window: &Window<'_>,
     epoch: Epoch,
     offset: u32,
     buf: &mut [u8],
 ) -> Result<(), ReadError> {
     let result = (|| {
-        let address = address(extent.span, offset, buf.len())?;
-        let state = extent.state();
+        let address = address(window.span, offset, buf.len())?;
+        let state = window.state();
         if state.load(epoch.spans()) != WriteState::Stable(epoch) {
             return Err(ReadError::Stale);
         }
-        extent
+        window
             .device()
             .read(address, buf)
             .map_err(|_| ReadError::Device)?;
@@ -63,7 +63,7 @@ pub(super) fn read_checked(
 pub struct Snapshot<'r, R: Role<Device = Internal>> {
     /// The flash and the snapshot's absolute span. The region's physical
     /// spans, whose state every read checks, are the epoch's.
-    extent: Extent<'r>,
+    window: Window<'r>,
     /// The span relative to the region.
     span: Span,
     epoch: Epoch,
@@ -88,10 +88,7 @@ impl<R: Role<Device = Internal>> Reader<'_, R> {
             return Err(SnapshotError::Busy);
         };
         Ok(Snapshot {
-            extent: Extent {
-                span: absolute,
-                ..self.extent
-            },
+            window: self.extent.window(absolute),
             span,
             epoch,
             role: PhantomData,
@@ -137,7 +134,7 @@ impl<R: Role<Device = Internal>> Source for Snapshot<'_, R> {
     /// Reads the snapshot in one device call, checked against its epoch;
     /// `buf` is zeroed on any error.
     fn read(&self, offset: u32, buf: &mut [u8]) -> Result<(), ReadError> {
-        read_checked(&self.extent, self.epoch, offset, buf)
+        read_checked(&self.window, self.epoch, offset, buf)
     }
 }
 

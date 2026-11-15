@@ -71,9 +71,8 @@ pub(super) async fn read_chunked(
     result
 }
 
-/// What every handle, snapshot and view holds: the flash it belongs to, and
-/// an absolute span. A handle's span is its region's; a snapshot's or a
-/// view's lies inside its region, whose physical spans its epoch names.
+/// What every handle holds: the flash it belongs to, and its region's
+/// absolute span.
 #[derive(Clone, Copy)]
 pub(super) struct Extent<'f> {
     pub(super) flash: &'f Flash<'f>,
@@ -112,16 +111,43 @@ impl<'f> Extent<'f> {
         self.flash.state()
     }
 
-    /// The physical spans the extent's span shares a byte with: a handle's
-    /// region's.
+    /// The physical spans the region shares a byte with.
     fn spans(&self) -> Spans {
         State::spans_of(self.span)
     }
 
-    /// The write state of the region over the extent's span: a handle's
-    /// region's.
+    /// The region's write state.
     pub(super) fn write_state(&self) -> WriteState {
         self.state().load(self.spans())
+    }
+
+    /// The window of `span`, absolute, which lies inside the region.
+    pub(super) const fn window(&self, span: Span) -> Window<'f> {
+        Window {
+            flash: self.flash,
+            span,
+        }
+    }
+}
+
+/// What a snapshot or a view holds: the flash and an absolute span inside a
+/// region. It has no write state of its own: its reads check the region's,
+/// over the physical spans their epoch names.
+#[derive(Clone, Copy)]
+pub(super) struct Window<'f> {
+    flash: &'f Flash<'f>,
+    pub(super) span: Span,
+}
+
+impl<'f> Window<'f> {
+    /// The device.
+    pub(super) fn device(&self) -> &'f dyn NorDevice {
+        self.flash.device()
+    }
+
+    /// The device's state table.
+    pub(super) fn state(&self) -> &'f State {
+        self.flash.state()
     }
 }
 
