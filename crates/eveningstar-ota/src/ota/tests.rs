@@ -19,8 +19,8 @@ use eveningstar_esp_formats::image;
 use eveningstar_esp_formats::otadata::{Otadata as Selection, PlanError, Sector, State};
 use eveningstar_esp_formats::test_support::{
     APP as UNLAID_APP, BOOTLOADER, ImageBuilder, OTADATA_FIRST_BOOT, OTADATA_LEN, PARTITIONS, Rng,
-    TABLE, Tear, app_descriptor_bytes, board_layout_record, boot, data, idf_loads,
-    layout_record_bytes, restamp, segment_at, with_layout,
+    TABLE, Tear, app_descriptor_bytes, board_layout_record, boot, data, idf_loads, info_block,
+    layout_record_bytes, layout_value_bytes, restamp, segment_at, with_layout,
 };
 use eveningstar_storage::layout::{
     CONFIG_0, CONFIG_1, FLASH_SIZE, OTA_0, OTA_1, OTADATA, SIG_0, SIG_1, TABLE_OFFSET,
@@ -777,8 +777,8 @@ fn the_project_is_the_running_app_s() {
     );
 }
 
-/// The firmware's image with layout records of other layouts after its
-/// descriptor: one entry changed in each field, an entry fewer, one more,
+/// The firmware's image with the layout entries of other layouts in its
+/// information block after its descriptor: one entry changed in each field, an entry fewer, one more,
 /// and another table offset or flash size.
 fn other_layouts() -> Vec<Vec<u8>> {
     let changes: [fn(&mut Vec<Entry>); 8] = [
@@ -813,16 +813,23 @@ fn other_layouts() -> Vec<Vec<u8>> {
 
 #[test]
 fn the_test_layouts_differ_from_the_compiled_one_only() {
-    assert_eq!(board_layout_record().len(), 32 + 32 * PARTITIONS.len());
-    let compiled = image::app_layout(app()).unwrap().unwrap();
     assert_eq!(
-        compiled.matches(app(), &eveningstar_storage::LAYOUT_RECORD),
+        board_layout_record().len(),
+        (6 + 4 + 8 + 32 * PARTITIONS.len()).next_multiple_of(4)
+    );
+    let entry = |image: &[u8]| match image::info_entry(image, image::LAYOUT_ENTRY) {
+        Ok(image::InfoFound::Entry(entry)) => entry,
+        found => panic!("{found:?}"),
+    };
+    let compiled = entry(app());
+    assert_eq!(
+        eveningstar_storage::LAYOUT_RECORD.matches(app(), &compiled),
         Ok(true)
     );
     for image in other_layouts() {
-        let layout = image::app_layout(&image[..]).unwrap().unwrap();
+        let layout = entry(&image);
         assert_eq!(
-            layout.matches(&image[..], &eveningstar_storage::LAYOUT_RECORD),
+            eveningstar_storage::LAYOUT_RECORD.matches(&image[..], &layout),
             Ok(false)
         );
         assert!(run(image::verify_app(&image[..])).is_ok());
@@ -846,7 +853,7 @@ fn an_image_of_another_layout_is_refused() {
 }
 
 #[test]
-fn an_image_without_a_layout_record_is_refused() {
+fn an_image_without_a_layout_entry_is_refused() {
     let mut shifted = vec![0; 4];
     shifted.extend(board_layout_record());
     let mut cut = ImageBuilder::new(vec![
@@ -855,14 +862,22 @@ fn an_image_without_a_layout_record_is_refused() {
     ]);
     cut.segments[0]
         .1
-        .extend(&board_layout_record()[..32 + 32 * 7]);
+        .extend(&board_layout_record()[..6 + 4 + 8 + 32 * 7 + 2]);
+    let value = layout_value_bytes(TABLE_OFFSET, FLASH_SIZE, &PARTITIONS);
     let images = [
-        // The fixture, built before the record.
+        // The fixture, built before the block.
         UNLAID_APP.to_vec(),
-        // The record four bytes further on.
+        // The block four bytes further on.
         with_layout(UNLAID_APP, &shifted),
-        // A first segment that ends inside the record.
+        // A first segment that ends inside the block.
         cut.build(),
+        // A block without a layout entry.
+        with_layout(UNLAID_APP, &info_block(&[(1, &[1; 20])])),
+        // A block with the board's layout entry twice.
+        with_layout(
+            UNLAID_APP,
+            &info_block(&[(image::LAYOUT_ENTRY, &value), (image::LAYOUT_ENTRY, &value)]),
+        ),
     ];
     let flash = flashed(app());
     let (mut ota, checks) = ota_on(&flash, Ota0);
@@ -874,13 +889,13 @@ fn an_image_without_a_layout_record_is_refused() {
 }
 
 #[test]
-fn only_the_record_right_after_the_descriptor_counts() {
+fn only_the_block_right_after_the_descriptor_counts() {
     let mut other = PARTITIONS.to_vec();
     other[2].offset += 0x1_0000;
     let other = layout_record_bytes(TABLE_OFFSET, FLASH_SIZE, &other);
     let flash = flashed(app());
     let (mut ota, checks) = ota_on(&flash, Ota0);
-    // A second record after the board's changes nothing.
+    // A second block after the board's changes nothing.
     let mut two = board_layout_record();
     two.extend(&other);
     let image = with_layout(UNLAID_APP, &two);

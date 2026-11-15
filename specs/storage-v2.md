@@ -149,7 +149,10 @@ The code follows these where the sections below say otherwise.
   endpoint does, so an activated update rolls back after 10 minutes until one
   exists. This replaces "Rolling back an image that can't be confirmed" under
   "OTA" and the confirmation-window bullet above.
-- **The layout record.** Every app image embeds the compiled layout right after
+- **The layout record.** Superseded on 2026-11-15: the layout is the layout
+  entry of the image information block (`specs/ota-signing.md`, "The image's
+  own records"), which lies where the record did. The record as first built:
+  every app image embedded the compiled layout right after
   its app descriptor, at offset 0x100 of the first segment's data: a 32-byte
   header (the magic `EVENINGSTAR-LYT1`, the table's offset, the flash size and
   the entry count as little-endian `u32`, four zero bytes) and the entries in
@@ -810,7 +813,7 @@ design's; what changes is where the checks live.
   every 10 minutes until someone confirms. That is accepted over a lockout. A
   confirmation, which calls `Ota::confirm`, cancels it.
 - **The layout record.** `Update::finish` and `Ota::verify_other` (so
-  `roll_back` too) refuse an image whose layout record is missing or differs
+  `roll_back` too) refuse an image whose layout entry is missing or differs
   from the compiled layout (`OtaError::Layout`); see "Decided during
   implementation".
 

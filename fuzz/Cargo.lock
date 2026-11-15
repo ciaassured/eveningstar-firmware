@@ -120,6 +120,7 @@ dependencies = [
 name = "eveningstar-esp-formats"
 version = "0.1.0"
 dependencies = [
+ "eveningstar-records",
  "md-5",
  "sha2",
 ]

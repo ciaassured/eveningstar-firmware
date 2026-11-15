@@ -262,8 +262,8 @@ impl<'f> Ota<'f> {
     ///
     /// [`OtaError::Unavailable`] until OTA is ready, [`OtaError::Image`] when
     /// the image doesn't verify, [`OtaError::Project`] when its project name
-    /// isn't the running app's, [`OtaError::Layout`] when it embeds no layout
-    /// record or one of another layout, and [`OtaError::Changed`] when the
+    /// isn't the running app's, [`OtaError::Layout`] when it carries no layout
+    /// entry or one of another layout, and [`OtaError::Changed`] when the
     /// slot's write state records no epoch.
     pub async fn verify_other(&mut self) -> Result<VerifiedImage<'f>, OtaError> {
         let project = self.ready()?;

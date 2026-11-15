@@ -1,5 +1,5 @@
 use eveningstar_esp_formats::test_support::{
-    APP, app_image_with_layout, board_layout_record, with_layout,
+    APP, FLASH_SIZE, PARTITIONS, TABLE_OFFSET, app_image, layout_value_bytes, with_layout,
 };
 use eveningstar_records::Writer;
 use eveningstar_records::registry;
@@ -58,15 +58,32 @@ fn parse(bytes: &[u8]) -> Result<ImageInfo, Error> {
     })
 }
 
+/// The layout entry's value of the board the formats crate's fixtures
+/// describe.
+fn layout_value() -> Vec<u8> {
+    layout_value_bytes(TABLE_OFFSET, FLASH_SIZE, &PARTITIONS)
+}
+
+/// The whole block of `info` with the fixtures' layout: what [`encode`]
+/// writes, then the layout entry.
+fn encoded(info: &ImageInfo) -> Vec<u8> {
+    let layout = layout_value();
+    let mut block = encode(info, layout.len()).to_vec();
+    block.extend_from_slice(&layout_header(layout.len()));
+    block.extend_from_slice(&layout);
+    block
+}
+
 /// The block of [`sample`], as this format first encoded it.
 const FIXTURE: &[u8] = include_bytes!("../testdata/block-1.bin");
 
 #[test]
 fn the_block_round_trips() {
     let info = sample();
-    let block = encode(&info);
-    assert_eq!(block.len(), LEN);
+    let block = encoded(&info);
+    assert_eq!(block.len(), LEN + 4 + layout_value().len());
     assert_eq!(parse(&block), Ok(info));
+    assert_eq!(Block::parse(&block).unwrap().layout(), &layout_value()[..]);
     assert_eq!(info.board.name(), "eveningstar");
     assert!(info.board.supports(2));
     assert!(!info.board.supports(1));
@@ -78,21 +95,24 @@ fn the_block_round_trips() {
 #[test]
 fn the_released_fixture_reads_and_is_what_encode_writes() {
     assert_eq!(parse(FIXTURE), Ok(sample()));
-    assert_eq!(&encode(&sample())[..], FIXTURE);
+    assert_eq!(encoded(&sample()), FIXTURE);
 }
 
-/// A newer image's block: an unknown type first, and every value longer
-/// than this reader knows, in another order.
+/// A newer image's block: an unknown type first, every value but the
+/// layout's longer than this reader knows, in another order. The layout's
+/// is compared whole, so it never grows.
 fn future() -> Vec<u8> {
-    let block = encode(&sample());
+    let block = encoded(&sample());
     let container = Container::parse(&block, MAGIC).unwrap();
     let mut buf = [0; MAX_LEN];
     let mut writer = Writer::new(&mut buf, MAGIC).unwrap();
     writer.push(0x7777, &[0xAB; 12]).unwrap();
-    for kind in [TRUST, BOARD, COMPATIBILITY] {
-        let mut longer = container.require(kind).unwrap().value.to_vec();
-        longer.extend_from_slice(&[0xCD; 8]);
-        writer.push(kind, &longer).unwrap();
+    for kind in [TRUST, LAYOUT, BOARD, COMPATIBILITY] {
+        let mut value = container.require(kind).unwrap().value.to_vec();
+        if kind != LAYOUT {
+            value.extend_from_slice(&[0xCD; 8]);
+        }
+        writer.push(kind, &value).unwrap();
     }
     writer.finish().to_vec()
 }
@@ -108,12 +128,12 @@ fn a_future_block_reads_as_the_same_facts() {
 
 #[test]
 fn a_block_needs_each_type_once() {
-    let block = encode(&sample());
+    let block = encoded(&sample());
     let container = Container::parse(&block, MAGIC).unwrap();
-    for missing in [BOARD, COMPATIBILITY, TRUST] {
+    for missing in [BOARD, COMPATIBILITY, TRUST, LAYOUT] {
         let mut buf = [0; MAX_LEN];
         let mut writer = Writer::new(&mut buf, MAGIC).unwrap();
-        for kind in [BOARD, COMPATIBILITY, TRUST]
+        for kind in [BOARD, COMPATIBILITY, TRUST, LAYOUT]
             .into_iter()
             .filter(|kind| *kind != missing)
         {
@@ -135,7 +155,7 @@ fn a_block_needs_each_type_once() {
 
 /// `block` with the value of `kind` replaced by what `change` makes of it.
 fn with_value(kind: u16, change: impl Fn(&mut Vec<u8>)) -> Vec<u8> {
-    let block = encode(&sample());
+    let block = encoded(&sample());
     let container = Container::parse(&block, MAGIC).unwrap();
     let mut buf = [0; MAX_LEN];
     let mut writer = Writer::new(&mut buf, MAGIC).unwrap();
@@ -221,12 +241,12 @@ fn slots_past_the_count_are_ignored() {
 
 #[test]
 fn every_truncation_and_bit_flip_reads_without_a_panic() {
-    let block = encode(&sample());
+    let block = encoded(&sample());
     for len in 0..block.len() {
         assert!(parse(&block[..len]).is_err());
     }
     for bit in 0..block.len() * 8 {
-        let mut flipped = block;
+        let mut flipped = block.clone();
         flipped[bit / 8] ^= 1 << (bit % 8);
         let _ = parse(&flipped);
     }
@@ -258,39 +278,37 @@ fn the_types_keep_the_released_registry() {
 }
 
 #[test]
-fn an_image_s_block_is_read_after_its_layout_record() {
-    let record = board_layout_record();
+fn an_image_s_block_is_read_after_its_descriptor() {
     let mut buf = [0; MAX_LEN];
-    let block = encode(&sample());
-    let image = with_layout(APP, &[&record[..], &block[..]].concat());
+    let block = encoded(&sample());
+    let image = with_layout(APP, &block);
     assert_eq!(read(&image[..], &mut buf), Ok(Found::Block(&block[..])));
     assert_eq!(parse(&block), Ok(sample()));
 
-    // An image with a record and no block after it, and one with no record.
-    let image = with_layout(APP, &record);
+    // Other bytes after the descriptor, and an image built before blocks.
+    let image = with_layout(APP, &[0; 8]);
     assert_eq!(read(&image[..], &mut buf), Ok(Found::Absent));
     assert_eq!(read(APP, &mut buf), Ok(Found::Absent));
 
     // A header longer than the room a reader allows.
-    let mut long = block;
+    let mut long = block.clone();
     long[4..6].copy_from_slice(&u16::try_from(MAX_LEN + 4).unwrap().to_le_bytes());
-    let image = with_layout(APP, &[&record[..], &long[..]].concat());
+    let image = with_layout(APP, &long);
     assert_eq!(read(&image[..], &mut buf), Ok(Found::BadLength));
 
     // A header whose length is shorter than the header itself.
     let mut short = block;
     short[4..6].copy_from_slice(&3_u16.to_le_bytes());
-    let image = with_layout(APP, &[&record[..], &short[..]].concat());
+    let image = with_layout(APP, &short);
     assert_eq!(read(&image[..], &mut buf), Ok(Found::BadLength));
 }
 
 #[test]
 fn a_block_is_read_only_inside_the_first_segment() {
-    // A first segment that ends 100 bytes after the layout record.
-    let record = board_layout_record();
-    let at = 256 + record.len();
+    // A first segment that ends 100 bytes after the descriptor.
+    let at = 256;
     let header = |len: u16| {
-        let mut builder = app_image_with_layout();
+        let mut builder = app_image();
         let first = &mut builder.segments[0].1;
         first.truncate(at + 100);
         first[at..at + 4].copy_from_slice(&MAGIC.to_le_bytes());

@@ -17,8 +17,8 @@
 //! The formats on the flash (the partition table, ESP images and the otadata)
 //! are read by `eveningstar-esp-formats`, whose [`image`], [`otadata`] and
 //! [`table`] modules are re-exported. [`LAYOUT_RECORD`] is the compiled
-//! layout as a layout record, the form in which an app image embeds the
-//! layout it is built for. The crate is `no_std`, allocation-free,
+//! layout as a layout record, the value of the layout entry in which an app
+//! image's information block gives the layout it is built for. The crate is `no_std`, allocation-free,
 //! and also builds on the host. The `test-support` feature adds the
 //! `test_support` module: a NOR flash in RAM that takes power cuts, the
 //! simulated ESP-IDF bootloader run on it, and handles over it.
@@ -54,8 +54,9 @@ const _: () = assert!(layout::OTADATA.size == 2 * otadata::SECTOR_SIZE);
 /// The layout record of the compiled layout, with one entry per partition.
 pub type CompiledLayoutRecord = image::LayoutRecord<{ layout::PARTITIONS.len() }>;
 
-/// The compiled layout as a layout record ([`image::LayoutRecord`]): the
-/// table's offset, the flash size and every partition, in table order.
+/// The compiled layout as a layout record ([`image::LayoutRecord`]), the
+/// value of an image information block's layout entry: the table's offset,
+/// the flash size and every partition, in table order.
 pub const LAYOUT_RECORD: CompiledLayoutRecord = match image::LayoutRecord::new(
     layout::TABLE_OFFSET,
     layout::FLASH_SIZE,
@@ -213,7 +214,11 @@ mod tests {
             (BOARD_TABLE_OFFSET, BOARD_FLASH_SIZE)
         );
         let image = with_layout(&app_image().build(), &board_layout_record());
-        let embedded = image::app_layout(&image[..]).unwrap().unwrap();
-        assert_eq!(embedded.matches(&image[..], &LAYOUT_RECORD), Ok(true));
+        let image::InfoFound::Entry(entry) =
+            image::info_entry(&image[..], image::LAYOUT_ENTRY).unwrap()
+        else {
+            panic!("the image's block holds a layout entry");
+        };
+        assert_eq!(LAYOUT_RECORD.matches(&image[..], &entry), Ok(true));
     }
 }

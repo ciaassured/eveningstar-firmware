@@ -353,28 +353,55 @@ pub fn bootloader_image() -> ImageBuilder {
 /// The flash size of the board whose table is [`TABLE`]: 8 MiB.
 pub const FLASH_SIZE: u32 = 0x80_0000;
 
-/// The bytes of a layout record of the table at `table_offset` on a flash of
+/// The value of a layout entry of the table at `table_offset` on a flash of
 /// `flash_size` bytes holding `entries`, assembled byte by byte as the
 /// format describes it.
-pub fn layout_record_bytes(table_offset: u32, flash_size: u32, entries: &[Entry]) -> Vec<u8> {
-    let mut record = b"EVENINGSTAR-LYT1".to_vec();
-    record.extend_from_slice(&table_offset.to_le_bytes());
-    record.extend_from_slice(&flash_size.to_le_bytes());
-    record.extend_from_slice(&(entries.len() as u32).to_le_bytes());
-    record.extend_from_slice(&[0; 4]);
+pub fn layout_value_bytes(table_offset: u32, flash_size: u32, entries: &[Entry]) -> Vec<u8> {
+    let mut value = table_offset.to_le_bytes().to_vec();
+    value.extend_from_slice(&flash_size.to_le_bytes());
     for entry in entries {
-        record.extend_from_slice(&entry_bytes(entry));
+        value.extend_from_slice(&entry_bytes(entry));
     }
-    record
+    value
 }
 
-/// The layout record of the board whose table is [`TABLE`].
+/// An image information block holding `entries`, each a type and a value
+/// whose length is a multiple of 4, assembled byte by byte.
+pub fn info_block(entries: &[(u16, &[u8])]) -> Vec<u8> {
+    let mut body = Vec::new();
+    for (kind, value) in entries {
+        assert_eq!(value.len() % 4, 0, "a value padded to 4 bytes");
+        body.extend_from_slice(&kind.to_le_bytes());
+        body.extend_from_slice(&(value.len() as u16).to_le_bytes());
+        body.extend_from_slice(value);
+    }
+    let mut block = crate::image::INFO_MAGIC.to_le_bytes().to_vec();
+    block.extend_from_slice(&((6 + body.len()) as u16).to_le_bytes());
+    block.extend_from_slice(&body);
+    block
+}
+
+/// An image information block holding only the layout entry of the table at
+/// `table_offset` on a flash of `flash_size` bytes holding `entries`,
+/// followed by zeros up to a multiple of 4 bytes, so a segment that holds it
+/// keeps a length a segment can have. Readers ignore bytes past the block's
+/// total length.
+pub fn layout_record_bytes(table_offset: u32, flash_size: u32, entries: &[Entry]) -> Vec<u8> {
+    let value = layout_value_bytes(table_offset, flash_size, entries);
+    let mut block = info_block(&[(crate::image::LAYOUT_ENTRY, &value)]);
+    block.resize(block.len().next_multiple_of(4), 0);
+    block
+}
+
+/// The image information block of the board whose table is [`TABLE`],
+/// holding only its layout entry.
 pub fn board_layout_record() -> Vec<u8> {
     layout_record_bytes(TABLE_OFFSET, FLASH_SIZE, &PARTITIONS)
 }
 
-/// Offset of an app's layout record in its image: after the image header,
-/// the first segment's header and the 256-byte app descriptor.
+/// Offset of an app's image information block, which holds its layout
+/// entry, in its image: after the image header, the first segment's header
+/// and the 256-byte app descriptor.
 pub const LAYOUT_RECORD_AT: usize = 24 + 8 + 256;
 
 /// `image` with its checksum and digest made again to match its segments,

@@ -27,6 +27,7 @@
 
 mod container;
 pub mod registry;
+pub mod streamed;
 mod value;
 mod writer;
 
