@@ -844,8 +844,8 @@ fn each_tier_hands_out_exactly_its_handles() {
     // Unverified: located readers only, no slot, configuration or writer.
     let storage = split_on(board(espflash_board()), 0x1_0000);
     assert!(matches!(storage.handles, Handles::Unverified(_)));
-    // Layout: readers of both slots and the otadata, writers of the
-    // configurations and diag, and no boot writers.
+    // Layout: readers of both slots, their signature regions and the
+    // otadata, writers of the configurations and diag, and no boot writers.
     let storage = split_on(board(unknown_bootloader(&nix_board())), OTA_0.offset);
     assert!(matches!(storage.handles, Handles::Layout(_)));
     // Boot: the layout tier's and the boot writers.
@@ -855,8 +855,8 @@ fn each_tier_hands_out_exactly_its_handles() {
 
 #[test]
 fn the_tier_s_handles_are_made_once_per_state_table() {
-    // `split` borrows the device and the state table mutably for as long as
-    // the handles live; readers of one role share no state with another
+    // `split` borrows the flash, the device and its state table, mutably for
+    // as long as the handles live; readers of one role share no state with another
     // table's.
     let flash = nix_board();
     let first = run(split(over(lend(&flash)), OTA_0.offset));

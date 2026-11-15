@@ -397,6 +397,8 @@ whoever has it can reflash anything, by design.
   three generations from `signing` that aren't `lost` or `compromised`.
 - **Unsigned untrusted comment.** The device never reads it: it doesn't pick
   the key, isn't stored apart from the signature file, and isn't shown. The
+  signature view serves its bytes as `0xFF`, so a file uploaded with an
+  edited comment can't make the device serve text someone else chose. The
   release instructions always pass `-p`, so the desktop doesn't use it
   either.
 - **Taking the board from its owner.** Firmware that runs can burn eFuses:
@@ -422,7 +424,10 @@ whoever has it can reflash anything, by design.
   attached or not (with validation skipping pinned off, decision 16), so an
   unverified image is never loadable: not while it is written, not after a
   refusal, an abandoned upload or a power cut. Erasing the slot's first
-  sector after a refusal is then only for the API's sake (decision 15).
+  sector after a refusal is then only for the API's sake (decision 15). The
+  alternate signature region keeps the refused upload's file until the next
+  update begins, so the API reports and publishes it for debugging; it
+  names no image in the slot, so nothing treats it as one's signature.
 
 ### Accepted
 
@@ -1169,12 +1174,20 @@ every past schema to the current one.
   `CurrentSignature` and `AlternateSignature`, paired with the slots like
   the configurations. Both have a reader in the layout and boot tiers; the
   OTA mechanism holds the alternate one's writer.
-- The signature's content module owns both readers and parses each region;
-  its `signature` view publishes the file once it parsed, whatever key
-  signed it, and never the padding or the rest of the region. Verifying the
-  file under the trust set is separate and only reported
-  (`signature.status`). This is an ordinary content module under the
-  publication rules: nothing outside a parsed file is published.
+- The signature's content module owns both readers and parses each region
+  with the device's grammar ("Signed format"). The file ends after its last
+  line: the message ends at the first line that doesn't start with
+  `SHA256 (`, which in a region is the first `0xFF` byte after a `\n`, as
+  no line of the message holds one. Every byte after the file must be
+  `0xFF`; a region with anything else there doesn't parse.
+- Its `signature` view publishes the file once it parsed, whatever key
+  signed it, and never the padding or the rest of the region. The comment's
+  text, between `untrusted comment: ` and its `\n`, is a sanitized span,
+  served as `0xFF`: stock signify still reads the file, as it never reads
+  the comment either. Verifying the file under the trust set is separate and
+  only reported (`signature.status`). This is an ordinary content module
+  under the publication rules: nothing outside a parsed file is published,
+  and nothing in it whose content is unchecked.
 
 ### Byte path
 
@@ -1371,7 +1384,8 @@ impl Update<'_, '_> {
   from the generated trust set, never from a comment.
 - `signature.status`: `verified`, `unsigned` (an erased signature region),
   `stale` (a signature that verifies under a trusted key but lists no digest
-  of this image, as a USB flash leaves behind), `unknown_key`, `invalid`
+  of the image in the slot, as a USB flash leaves behind, or a refused
+  upload's beside a slot that holds none), `unknown_key`, `invalid`
   (with a reason: format, signature), `checking`.
 - `update.state`: `idle`, `signature_held`, `receiving` (bytes written),
   `verifying`, `refused` (reason), `activated` (next boot).
@@ -1469,6 +1483,9 @@ command, so its evidence doesn't depend on the authors.
   which the trust set generator refuses; a base64, comment or manifest form
   outside the device's subset; a file over 4 KiB). Any other disagreement
   fails the check.
+- Each signed case also runs through the signature view: the published
+  file, with its comment served as `0xFF`, still checks with `signify -C`
+  (checked by hand with signify 33 on 2026-11-15).
 
 ### RFC 8032 and Wycheproof
 
@@ -1685,7 +1702,8 @@ first proposed, so earlier references hold; 38 isn't used.
     new one added: no board has shipped and no release exists.
 17. **The image digest.** The SHA accelerator alone, as the slot check and
     the bootloader use it; the board test compares it with `sha256sum`.
-18. **The untrusted comment.** Ignored, never shown.
+18. **The untrusted comment.** Ignored, never shown; the signature view
+    serves it as `0xFF`.
 19. **Key names.** `eveningstar-<generation>-fw` and `eveningstar-dev-fw`.
 20. **Ceremony.** As written: offline machine, passphrase, two offline
     copies, N to N+2 generated at first and one more per rotation,
