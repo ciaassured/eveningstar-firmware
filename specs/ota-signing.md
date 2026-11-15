@@ -1204,9 +1204,11 @@ every past schema to the current one.
   slot's 64 KiB alignment, so no other region moves. The app slots stay
   ESP-IDF's plain app partitions.
 - A signature region holds the signature file padded with `0xFF`, and
-  belongs to its slot's image, as the slot's configuration does: an update
-  erases the alternate one, a retirement erases it, and nothing else writes
-  it.
+  belongs to its slot's image: an update erases the alternate one, a
+  retirement erases it, and nothing else writes it. Unlike the
+  configuration, it outlives a refused upload: the region keeps that
+  upload's file, which belongs to no image, until the next update begins
+  (decision 15).
 - The change goes through `nix/board.nix`, then `storage-layout` and
   `storage-testdata`: the partition table, the generated layout, the layout
   record and the fixtures change. No board has shipped and no release
@@ -1220,14 +1222,19 @@ every past schema to the current one.
   `SHA256 (`, which in a region is the first `0xFF` byte after a `\n`, as
   no line of the message holds one. Every byte after the file must be
   `0xFF`; a region with anything else there doesn't parse.
+- A region whose 4096 bytes are all `0xFF` holds no file (`unsigned`). That
+  is checked before the parse, so a region that starts with `0xFF` and holds
+  other bytes later, as a wipe cut by a power loss leaves it, is `invalid`
+  (format), not `unsigned`.
 - Its `signature` view publishes the file once it parsed, whatever key
   signed it, and never the padding or the rest of the region. The comment's
   text, between `untrusted comment: ` and its `\n`, is a sanitized span,
-  served as `0xFF`: stock signify still reads the file, as it never reads
-  the comment either. Verifying the file under the trust set is separate and
-  only reported (`signature.status`). This is an ordinary content module
-  under the publication rules: nothing outside a parsed file is published,
-  and nothing in it whose content is unchecked.
+  served as `0xFF`: stock signify still reads the file with `-p`, as it
+  reads the comment only to choose the key file when `-p` isn't given, and
+  the release instructions always pass it. Verifying the file under the
+  trust set is separate and only reported (`signature.status`). This is an
+  ordinary content module under the publication rules: nothing outside a
+  parsed file is published, and nothing in it whose content is unchecked.
 
 ### Byte path
 
@@ -1421,10 +1428,11 @@ impl Update<'_, '_> {
 
 - `public_key` is the key file's second line; `keynum` is hex. Names come
   from the generated trust set, never from a comment.
-- `signature.status`: `verified`, `unsigned` (an erased signature region),
-  `stale` (a signature that verifies under a trusted key but lists no digest
-  of the image in the slot, as a USB flash leaves behind, or a refused
-  upload's beside a slot that holds none), `unknown_key`, `invalid`
+- `signature.status`: `verified`, `unsigned` (every byte of the signature
+  region `0xFF`), `stale` (a signature that verifies under a trusted key but
+  lists no digest of the image in the slot, as a USB flash leaves behind, or
+  a refused upload's that verifies, beside a slot that holds none),
+  `unknown_key`, `invalid`
   (with a reason: format, signature), `checking`.
 - `update.state`: `idle`, `signature_held`, `receiving` (bytes written),
   `verifying`, `refused` (reason), `activated` (next boot).
@@ -1522,9 +1530,12 @@ command, so its evidence doesn't depend on the authors.
   which the trust set generator refuses; a base64, comment or manifest form
   outside the device's subset; a file over 4 KiB). Any other disagreement
   fails the check.
-- Each signed case also runs through the signature view: the published
-  file, with its comment served as `0xFF`, still checks with `signify -C`
-  (checked by hand with signify 33 on 2026-11-15).
+- Each signed case also runs with its comment's text replaced by `0xFF`, as
+  the signature view serves it, and must still check with `signify -C -p`.
+  Until the corpus has these cases, this rests on one check by hand, with
+  signify 33 on 2026-11-15: a development-signed `SHA256.sig` with its
+  comment's text replaced by `0xFF` gave `Signature Verified` and `OK` from
+  `signify -C -p keys/eveningstar-dev-fw.pub -x SHA256.sig img.bin`.
 
 ### RFC 8032 and Wycheproof
 
@@ -1542,6 +1553,8 @@ command, so its evidence doesn't depend on the authors.
   signed image, of the signature region and of the manifest flipped in turn
   after `finish` programs them, and between `finish` and `activate`; each must
   end in a refusal and no otadata write.
+- Every byte of the padding after a signature file in its region flipped in
+  turn: the region is `invalid` (format), and its view publishes nothing.
 - The held first word: until the first verification passes, the slot's first
   word reads `0xFFFFFFFF` after every write, refusal, abandonment and power
   cut; a first word flipped between steps 6 and 7 fails the second
@@ -1561,8 +1574,15 @@ command, so its evidence doesn't depend on the authors.
 
 - `cargo-fuzz` targets for the signature file parser, the manifest parser,
   the `.pub` parser used by the generator, the image information block
-  parser, and `verify` end to end. Property: no panic; an accepted input's
-  message verifies with `verify_strict` and has exactly one matching line.
+  parser, the signature region parser (the end of the file, the padding, an
+  all-`0xFF` region), and `verify` end to end. Property: no panic; an
+  accepted input's message verifies with `verify_strict` and has exactly
+  one matching line.
+- Host properties of the signature region parser: every corpus file
+  followed by `0xFF` up to 4096 bytes parses to that file; a `0xFF` byte
+  inside the comment doesn't end it; any byte other than `0xFF` in the
+  padding fails the region; a region that starts with `0xFF` and holds other
+  bytes later is `invalid`, and one of all `0xFF` is `unsigned`.
 - The end-to-end target also links OpenBSD's own verification code
   (signify's parsing and SUPERCOP `ref`, built with `cc` in a test-only
   crate from the vendored C sources) and applies the rule of the
@@ -1581,7 +1601,11 @@ command, so its evidence doesn't depend on the authors.
 ### compile_fail tests
 
 One doctest per bypass, each pinned to its error code (`compile_fail,E0599`
-and so on), so a doctest that fails for another reason doesn't pass:
+and so on), so a doctest that fails for another reason doesn't pass. Stable
+rustdoc doesn't check the code, only nightly's does (found in review on
+2026-11-15: a pin of `E0000` passed on stable), so until the doctests also
+run under nightly the pins document the intended error but enforce nothing
+(see "Left open"):
 
 - building `Signed`, `Verified`, `TrustedKey` or `TrustSet` outside its crate
   (private fields, no constructor);
@@ -1641,6 +1665,9 @@ and so on), so a doctest that fails for another reason doesn't pass:
 - After each refusal above, and after an upload cut by closing the
   connection or by a power cycle, `esptool read-flash` of the slot's first
   4 bytes gives `ff ff ff ff`.
+- After a refusal whose signature file verified, the alternate signature is
+  still published, equal to the upload's file with its comment's text as
+  `0xFF`, and reported `stale`.
 - Refused at upload, likewise: an image whose trust entry lacks the key that
   signed it; a release-signed image whose trust entry holds the development
   key; an image whose oldest migratable schema is newer than the device's.
@@ -1679,7 +1706,9 @@ first proposed, so earlier references hold; 38 isn't used.
 2. **How the manifest names the image.** By digest alone: exactly one line
    whose digest is the image's; its name is reported.
 3. **Where the signature lives.** In a region of its own per slot (`sig_0`,
-   `sig_1`), not inside the app slots ("Signature regions").
+   `sig_1`), not inside the app slots ("Signature regions"). The file ends
+   after its last line, and every byte after it must be `0xFF` (decided
+   2026-11-15).
 4. **The primitive.** ed25519-dalek 3.0.0 `verify_strict`, default features
    off, no `hazmat`, no `legacy_compatibility`; `sha2` 0.11 for its SHA-512.
    The audit gap is the cost; the differential tests and vectors are the
@@ -1722,7 +1751,9 @@ first proposed, so earlier references hold; 38 isn't used.
     through the first verification and is programmed only once the image
     verified, then the image is verified again from the flash. The slot's
     first sector is erased after a refusal or an abandoned upload, for the
-    API's sake only.
+    API's sake only. The alternate signature region keeps the refused
+    upload's file until the next update begins, for debugging (decided
+    2026-11-15).
 16. **Bootloader configuration.** Pinned in `nix/bootloader`, reserved like
     `SECURE_*` and checked by `_check-sdkconfig.py`:
     - `BOOTLOADER_SKIP_VALIDATE_ON_POWER_ON`, `_ALWAYS` and
@@ -1841,3 +1872,6 @@ first proposed, so earlier references hold; 38 isn't used.
   `large_stack_frames` lint, and its time on the ESP32-C6.
 - Code size of ed25519-dalek and curve25519-dalek in the image.
 - Whether the web UI's update page takes both files in one drop.
+- How the `compile_fail` error codes get checked: the host crates' doctests
+  run under the dev shell's pinned nightly, or under stable with
+  `RUSTC_BOOTSTRAP=1` for that step.
