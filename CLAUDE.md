@@ -65,8 +65,9 @@ and update it when a design decision changes.
   through the storage crate's `check-images` example, which fails on a
   bootloader missing from `known.rs`, printing its entry, a table that isn't the
   layout or that the bootloader would refuse, an app without the layout record
-  right after its descriptor or with one that isn't the generated layout, or an
-  app over 75% of its slot) and `nix run .#checks -- test` (tests of the crates
+  right after its descriptor or with one that isn't the generated layout, an
+  app without a readable image information block after the record, or an app
+  over 75% of its slot) and `nix run .#checks -- test` (tests of the crates
   that also build on the host, run on the host target, and the web UI's tests)
   run one group. `lint` and `test` are each two finer groups, `rust-lint` and
   `web-lint`, `rust-test` and `web-test`, which CI runs as separate jobs.

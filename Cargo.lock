@@ -1138,7 +1138,9 @@ dependencies = [
  "eveningstar-board",
  "eveningstar-boot",
  "eveningstar-esp-formats",
+ "eveningstar-image-info",
  "eveningstar-ota",
+ "eveningstar-signify",
  "eveningstar-storage",
  "eveningstar-system",
  "heapless 0.9.3",
@@ -1193,6 +1195,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "eveningstar-image-info"
+version = "0.1.0"
+dependencies = [
+ "eveningstar-esp-formats",
+ "eveningstar-records",
+ "eveningstar-signify",
+]
+
+[[package]]
 name = "eveningstar-ota"
 version = "0.1.0"
 dependencies = [
@@ -1226,6 +1237,7 @@ dependencies = [
  "embassy-sync 0.8.0",
  "embedded-storage-async",
  "eveningstar-esp-formats",
+ "eveningstar-image-info",
  "hex-literal",
  "sha2",
 ]

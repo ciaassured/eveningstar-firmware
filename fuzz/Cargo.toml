@@ -14,10 +14,18 @@ members = ["."]
 
 [dependencies]
 libfuzzer-sys = "0.4"
+eveningstar-image-info = { path = "../crates/eveningstar-image-info" }
 eveningstar-records = { path = "../crates/eveningstar-records" }
 eveningstar-signify = { path = "../crates/eveningstar-signify", features = ["test-support"] }
 ed25519-dalek = { version = "3.0.0", default-features = false }
 base64 = "0.23"
+
+[[bin]]
+name = "image_info"
+path = "fuzz_targets/image_info.rs"
+test = false
+doc = false
+bench = false
 
 [[bin]]
 name = "records"

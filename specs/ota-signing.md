@@ -663,6 +663,30 @@ The types now:
   key its generation (0 for the development key), keynum and 32-byte public
   key.
 
+As built (`eveningstar-image-info`, 2026-11-15):
+
+- The magic is `0x4949_5345` (`ESII`), and the types are 1 (board), 2
+  (compatibility) and 3 (trust). The crate's `registry.txt` is the committed
+  registry.
+- **Board:** a 16-byte name, `[a-z0-9-]` zero-padded, then the revisions as a
+  32-bit set (bit `n` for revision `n`). The board crate gives the name
+  (`eveningstar`) and the revision (2, the only one; earlier revisions were
+  development boards).
+- **Compatibility:** both schemas are 0 until a configuration store exists.
+- **Trust:** `signing` and `count`, then four fixed key slots of generation,
+  keynum and public key, of which the first `count` are used and the rest
+  zero. A value's fields are fixed, and a type appears once, so a list of
+  keys is fixed slots: four, the three release generations and the
+  development key a development build trusts beside them. More keys would be
+  new slots appended after the fourth. A development build is signed with
+  the development key.
+- The firmware places the layout record and the block in one `static` of
+  `#[repr(C)]` byte arrays, so they lie in that order with no gap, and
+  `check-images` reads the release build's block where a reader looks for it.
+- Readers find the block with `read`, which reports no block (an image built
+  before blocks existed), a block too long for its room, or the block's
+  bytes, and parse it in place with `Block::parse`, which copies none of it.
+
 The layout record stays as it is: it is compared byte for byte, and it can
 never change over OTA anyway.
 

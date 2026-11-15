@@ -14,7 +14,10 @@ mod v2;
 
 // Types whose definition depends on how the selected revision wires the board.
 #[cfg(feature = "v2")]
-pub use v2::{ETHERNET_MAC_READ, EthernetChip, EthernetSpi, FlashCs, FlashSpi};
+pub use v2::{ETHERNET_MAC_READ, EthernetChip, EthernetSpi, FlashCs, FlashSpi, REVISION};
+
+/// The board's name, as an image's information block names it.
+pub const NAME: &str = "eveningstar";
 
 use core::fmt;
 
