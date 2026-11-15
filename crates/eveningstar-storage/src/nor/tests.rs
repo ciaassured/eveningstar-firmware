@@ -766,8 +766,14 @@ fn publish_fails_when_another_span_is_written_while_it_checks_a_sanitized_span()
         flash.writer(Span::from(layout::OTADATA), Slot::Ota0);
     let found: Reader<'_, FoundApp> = flash.reader(Span::new(0xB000, 0x6000));
     let epoch = stable(found.write_state());
-    // The sanitized span lies in the first slot; the otadata is written
-    // during its check's read.
+    // The sanitized span lies in the first slot. Without a write, the check
+    // reads it once and the publication succeeds.
+    found
+        .publish(epoch, Span::new(0x5000, 8), &[Span::new(0, 4)])
+        .unwrap();
+    assert_eq!(reads(&flash), 1);
+    // With the otadata written during the check's read, it fails, after that
+    // one read.
     flash
         .device()
         .before_call(0, move || write_word(&mut otadata, 0x1000));
@@ -777,6 +783,7 @@ fn publish_fails_when_another_span_is_written_while_it_checks_a_sanitized_span()
             .unwrap_err(),
         PublishError::Stale
     );
+    assert_eq!(reads(&flash), 2);
 }
 
 #[test]
