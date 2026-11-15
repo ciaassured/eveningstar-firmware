@@ -165,8 +165,8 @@ impl<R: Publishable<Device = Internal>> PublicRead for Published<'_, R> {
 /// is made only from a [`Published`], so it holds the bytes a publication
 /// allowed, and reads them as the [`Published`] did.
 pub struct PublicView<'r> {
-    /// The device, the view's absolute span, and the region's physical
-    /// spans.
+    /// The flash and the view's absolute span. The region's physical spans
+    /// are the epoch's.
     extent: Extent<'r>,
     /// The view's span, relative to the region.
     span: Span,

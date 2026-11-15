@@ -8,7 +8,7 @@ use core::task::Poll;
 use embedded_storage_async::nor_flash::{ErrorType, MultiwriteNorFlash, NorFlash, ReadNorFlash};
 use eveningstar_esp_formats::pace::{Pace as _, Yield};
 
-use super::{NorDevice, SECTOR_SIZE, State, WORD_SIZE};
+use super::{Flash, NorDevice, SECTOR_SIZE, State, WORD_SIZE};
 use crate::guard::{CHUNK_LEN, is_protected};
 use crate::roles::{Internal, Programmable, Role, Writable};
 use crate::span::Span;
@@ -71,49 +71,57 @@ pub(super) async fn read_chunked(
     result
 }
 
-/// What every handle holds: the device, its state table, an absolute span,
-/// and the physical spans of the region it belongs to.
+/// What every handle, snapshot and view holds: the flash it belongs to, and
+/// an absolute span. A handle's span is its region's; a snapshot's or a
+/// view's lies inside its region, whose physical spans its epoch names.
 #[derive(Clone, Copy)]
 pub(super) struct Extent<'f> {
-    pub(super) device: &'f dyn NorDevice,
-    pub(super) state: &'f State,
+    pub(super) flash: &'f Flash<'f>,
     pub(super) span: Span,
-    pub(super) spans: Spans,
 }
 
 impl<'f> Extent<'f> {
-    /// The extent of `span`, absolute, on `device`, or `None` when it
-    /// doesn't lie inside the device's capacity.
-    fn new(device: &'f dyn NorDevice, state: &'f State, span: Span) -> Option<Self> {
-        if !Span::new(0, device.capacity()).contains(span) {
+    /// The extent of `span`, absolute, on `flash`, or `None` when it doesn't
+    /// lie inside the device's capacity.
+    fn new(flash: &'f Flash<'f>, span: Span) -> Option<Self> {
+        if !Span::new(0, flash.device().capacity()).contains(span) {
             return None;
         }
-        Some(Self {
-            device,
-            state,
-            span,
-            spans: State::spans_of(span),
-        })
+        Some(Self { flash, span })
     }
 
-    /// The extent of `span`, absolute, on `device`, cut to the device's
+    /// The extent of `span`, absolute, on `flash`, cut to the device's
     /// capacity: as much of it as lies inside, which may be nothing.
-    fn within(device: &'f dyn NorDevice, state: &'f State, span: Span) -> Self {
-        let capacity = device.capacity();
+    fn within(flash: &'f Flash<'f>, span: Span) -> Self {
+        let capacity = flash.device().capacity();
         let offset = span.offset.min(capacity);
         let end = span.end().unwrap_or(u32::MAX).min(capacity);
-        let span = Span::new(offset, end.saturating_sub(offset));
         Self {
-            device,
-            state,
-            span,
-            spans: State::spans_of(span),
+            flash,
+            span: Span::new(offset, end.saturating_sub(offset)),
         }
     }
 
-    /// The region's write state.
+    /// The device.
+    pub(super) fn device(&self) -> &'f dyn NorDevice {
+        self.flash.device()
+    }
+
+    /// The device's state table.
+    pub(super) fn state(&self) -> &'f State {
+        self.flash.state()
+    }
+
+    /// The physical spans the extent's span shares a byte with: a handle's
+    /// region's.
+    fn spans(&self) -> Spans {
+        State::spans_of(self.span)
+    }
+
+    /// The write state of the region over the extent's span: a handle's
+    /// region's.
     pub(super) fn write_state(&self) -> WriteState {
-        self.state.load(self.spans)
+        self.state().load(self.spans())
     }
 }
 
@@ -126,6 +134,15 @@ impl fmt::Debug for Extent<'_> {
     }
 }
 
+// A handle is a reference to the flash and a span, and a writer also the
+// slot that booted.
+#[cfg(target_arch = "riscv32")]
+const _: () = {
+    use crate::roles::{CurrentApp, Diag};
+    assert!(size_of::<Reader<'static, CurrentApp>>() == 12);
+    assert!(size_of::<Writer<'static, Diag>>() == 16);
+};
+
 /// The reader of a region with role `R`.
 ///
 /// A reader reads only through snapshots, which fail once the region is
@@ -137,20 +154,20 @@ pub struct Reader<'f, R: Role<Device = Internal>> {
 }
 
 impl<'f, R: Role<Device = Internal>> Reader<'f, R> {
-    /// The reader of `span`, absolute, on `device`, or `None` when the span
+    /// The reader of `span`, absolute, on `flash`, or `None` when the span
     /// doesn't lie inside the device's capacity.
-    pub(crate) fn new(device: &'f dyn NorDevice, state: &'f State, span: Span) -> Option<Self> {
+    pub(crate) fn new(flash: &'f Flash<'f>, span: Span) -> Option<Self> {
         Some(Self {
-            extent: Extent::new(device, state, span)?,
+            extent: Extent::new(flash, span)?,
             role: PhantomData,
         })
     }
 
-    /// The reader of `span`, absolute, on `device`, cut to the device's
+    /// The reader of `span`, absolute, on `flash`, cut to the device's
     /// capacity: as much of it as lies inside, which may be nothing.
-    pub(crate) fn within(device: &'f dyn NorDevice, state: &'f State, span: Span) -> Self {
+    pub(crate) fn within(flash: &'f Flash<'f>, span: Span) -> Self {
         Self {
-            extent: Extent::within(device, state, span),
+            extent: Extent::within(flash, span),
             role: PhantomData,
         }
     }
@@ -192,7 +209,7 @@ impl<'f, R: Role<Device = Internal>> Reader<'f, R> {
     pub fn changed(&self) -> impl Future<Output = ()> + '_ {
         let from = self.write_state();
         poll_fn(move |cx| {
-            let ready = self.extent.state.waiters().register_then(cx.waker(), || {
+            let ready = self.extent.state().waiters().register_then(cx.waker(), || {
                 let now = self.write_state();
                 now.is_stable() && now != from
             });
@@ -228,42 +245,32 @@ pub struct Writer<'f, R: Writable<Device = Internal>> {
 }
 
 impl<'f, R: Writable<Device = Internal>> Writer<'f, R> {
-    /// The writer of `span`, absolute, on `device`, while the app runs from
+    /// The writer of `span`, absolute, on `flash`, while the app runs from
     /// `running`; `None` when the span doesn't lie inside the device's
     /// capacity or inside one physical span of the compiled layout, so every
     /// byte it writes has a write state. Only the test support makes writers
     /// of any span; `split` makes them of the layout's partitions
     /// ([`of_partition`](Self::of_partition)).
     #[cfg(any(test, feature = "test-support"))]
-    pub(crate) fn new(
-        device: &'f dyn NorDevice,
-        state: &'f State,
-        span: Span,
-        running: Slot,
-    ) -> Option<Self> {
+    pub(crate) fn new(flash: &'f Flash<'f>, span: Span, running: Slot) -> Option<Self> {
         if !State::inside_one(span) {
             return None;
         }
         Some(Self {
-            extent: Extent::new(device, state, span)?,
+            extent: Extent::new(flash, span)?,
             running,
             role: PhantomData,
         })
     }
 
     /// The writer of `entry`, a partition of the compiled layout, on
-    /// `device`, while the app runs from `running`, cut to the device's
+    /// `flash`, while the app runs from `running`, cut to the device's
     /// capacity. It is the writer `new` makes on a device that
     /// holds the layout, as every partition of the layout is one physical
     /// span; on a smaller one, it covers what lies inside the device.
-    pub(crate) fn of_partition(
-        device: &'f dyn NorDevice,
-        state: &'f State,
-        entry: &Entry,
-        running: Slot,
-    ) -> Self {
+    pub(crate) fn of_partition(flash: &'f Flash<'f>, entry: &Entry, running: Slot) -> Self {
         Self {
-            extent: Extent::within(device, state, Span::of(entry)),
+            extent: Extent::within(flash, Span::of(entry)),
             running,
             role: PhantomData,
         }
@@ -324,7 +331,7 @@ impl<R: Writable<Device = Internal>> Source for Writer<'_, R> {
 
     /// Reads the region directly, in one device call.
     fn read(&self, offset: u32, buf: &mut [u8]) -> Result<(), ReadError> {
-        read_direct(self.extent.device, self.extent.span, offset, buf)
+        read_direct(self.extent.device(), self.extent.span, offset, buf)
     }
 }
 
@@ -368,7 +375,7 @@ impl<'w, R: Writable<Device = Internal>> Session<'w, R> {
     /// barrier on the one core that reaches the flash, so no call of the
     /// session moves before it.
     fn new(extent: Extent<'w>, running: Slot) -> Self {
-        extent.state.begin(extent.spans);
+        extent.state().begin(extent.spans());
         Self {
             extent,
             running,
@@ -401,7 +408,7 @@ impl<'w, R: Writable<Device = Internal>> Session<'w, R> {
     fn erase_sector(&mut self, address: u32) -> Result<(), AccessError> {
         self.written = true;
         self.extent
-            .device
+            .device()
             .erase_sector(address)
             .map_err(|_| AccessError::Device)
     }
@@ -410,7 +417,7 @@ impl<'w, R: Writable<Device = Internal>> Session<'w, R> {
     fn program_chunk(&mut self, address: u32, bytes: &[u8]) -> Result<(), AccessError> {
         self.written = true;
         self.extent
-            .device
+            .device()
             .program(address, bytes)
             .map_err(|_| AccessError::Device)
     }
@@ -593,7 +600,7 @@ impl<R: Writable<Device = Internal>> Source for Session<'_, R> {
 
     /// Reads the region directly, in one device call.
     fn read(&self, offset: u32, buf: &mut [u8]) -> Result<(), ReadError> {
-        read_direct(self.extent.device, self.extent.span, offset, buf)
+        read_direct(self.extent.device(), self.extent.span, offset, buf)
     }
 }
 
@@ -603,7 +610,7 @@ impl<R: Writable<Device = Internal>> Drop for Session<'_, R> {
     /// session's last device call, a barrier, so no call of the session moves
     /// after it.
     fn drop(&mut self) {
-        self.extent.state.end(self.extent.spans, self.written);
+        self.extent.state().end(self.extent.spans(), self.written);
     }
 }
 

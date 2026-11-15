@@ -11,8 +11,8 @@ use crate::state::{Epoch, WriteState};
 use crate::{ReadError, SnapshotError, Source};
 
 /// Fills `buf` with the bytes at `offset` in `extent`'s span, in one device
-/// call, when the region covering `extent`'s physical spans is
-/// `Stable(epoch)` both before and after it. On any error `buf` is zeroed, so
+/// call, when the region whose epoch `epoch` is, over the physical spans the
+/// epoch names, is `Stable(epoch)` both before and after it. On any error `buf` is zeroed, so
 /// no bytes of a failed read are kept.
 ///
 /// Both loads of the state are `SeqCst`, and the device call between them is
@@ -30,14 +30,15 @@ pub(super) fn read_checked(
 ) -> Result<(), ReadError> {
     let result = (|| {
         let address = address(extent.span, offset, buf.len())?;
-        if extent.state.load(extent.spans) != WriteState::Stable(epoch) {
+        let state = extent.state();
+        if state.load(epoch.spans()) != WriteState::Stable(epoch) {
             return Err(ReadError::Stale);
         }
         extent
-            .device
+            .device()
             .read(address, buf)
             .map_err(|_| ReadError::Device)?;
-        if extent.state.load(extent.spans) != WriteState::Stable(epoch) {
+        if state.load(epoch.spans()) != WriteState::Stable(epoch) {
             return Err(ReadError::Stale);
         }
         Ok(())
@@ -60,8 +61,8 @@ pub(super) fn read_checked(
 ///
 /// Offsets are relative to the start of the snapshot's span.
 pub struct Snapshot<'r, R: Role<Device = Internal>> {
-    /// The device, the snapshot's absolute span, and the region's physical
-    /// spans, whose state every read checks.
+    /// The flash and the snapshot's absolute span. The region's physical
+    /// spans, whose state every read checks, are the epoch's.
     extent: Extent<'r>,
     /// The span relative to the region.
     span: Span,

@@ -376,16 +376,15 @@ fn verified<'f>(
 /// use eveningstar_boot::{AppSlot, Otadata};
 /// use eveningstar_ota::{Ota, OtaError, SelfChecks};
 /// use eveningstar_storage::chain::{Handles, split};
-/// use eveningstar_storage::nor::{NorDevice, State};
+/// use eveningstar_storage::nor::Flash;
 ///
 /// static CHECKS: SelfChecks<(), 0> = SelfChecks::new([]);
 ///
 /// async fn switch_back(
-///     flash: &mut dyn NorDevice,
-///     state: &mut State,
+///     flash: &mut Flash<'_>,
 ///     booted: u32,
 /// ) -> Result<(), OtaError> {
-///     let storage = split(flash, state, booted).await;
+///     let storage = split(flash, booted).await;
 ///     if let Handles::Boot(handles, writers) = storage.handles {
 ///         let current = AppSlot::new(handles.current_app);
 ///         let alternate = AppSlot::new(handles.alternate_app);
@@ -405,16 +404,15 @@ fn verified<'f>(
 /// use eveningstar_boot::{AppSlot, Otadata};
 /// use eveningstar_ota::{Ota, OtaError, SelfChecks};
 /// use eveningstar_storage::chain::{Handles, split};
-/// use eveningstar_storage::nor::{NorDevice, State};
+/// use eveningstar_storage::nor::Flash;
 ///
 /// static CHECKS: SelfChecks<(), 0> = SelfChecks::new([]);
 ///
 /// async fn switch_back(
-///     flash: &mut dyn NorDevice,
-///     state: &mut State,
+///     flash: &mut Flash<'_>,
 ///     booted: u32,
 /// ) -> Result<(), OtaError> {
-///     let Handles::Boot(handles, writers) = split(flash, state, booted).await.handles else {
+///     let Handles::Boot(handles, writers) = split(flash, booted).await.handles else {
 ///         return Ok(());
 ///     };
 ///     let current = AppSlot::new(handles.current_app);
@@ -423,7 +421,7 @@ fn verified<'f>(
 ///     let config = handles.alternate_config;
 ///     let mut ota = Ota::new(writers, config, &current, &alternate, &otadata, &CHECKS).await;
 ///     let image = ota.verify_other().await?;
-///     let Handles::Boot(handles, writers) = split(flash, state, booted).await.handles else {
+///     let Handles::Boot(handles, writers) = split(flash, booted).await.handles else {
 ///         return Ok(());
 ///     };
 ///     let current = AppSlot::new(handles.current_app);

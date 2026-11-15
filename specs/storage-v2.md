@@ -391,8 +391,9 @@ known point:
 - `reserved` has no role. Space without a role has no handle.
 - Each role has at most one reader and one writer per boot. Neither is
   `Clone` or `Copy`. Handle constructors are crate-private, and `split`
-  takes the device and the state table as `&'f mut`, so no handle outlives
-  them or is made twice.
+  takes the `nor::Flash` (the device and the state table) as `&'f mut`, so
+  no handle outlives it or is made twice. Each handle points to the `Flash`
+  rather than holding the device and the table.
 - Functions take the role they need: `fn activate(slot: &Writer<AlternateApp>)`
   can't be given a configuration, the current slot, or a region of another
   device, and `R::SIZE` is a constant a store can assert on.
@@ -405,8 +406,8 @@ known point:
 
 Each physical span of the compiled layout (the bootloader's span, the table's
 sector, each partition) has a write state: one atomic word, held in a state
-table that `split` borrows mutably for as long as its handles live
-(`nor::State`, one per device, placed in a `static` by the firmware). Every
+table inside the `nor::Flash` that `split` borrows mutably for as long as
+its handles live (one per device, placed in a `static` by the firmware). Every
 role maps onto the spans it covers. Only the `state` module encodes and
 decodes the words.
 

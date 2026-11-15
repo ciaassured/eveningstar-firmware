@@ -5,8 +5,8 @@
 //! [`split`] runs the verification chain once per boot through a [`NorDevice`]
 //! and hands out the handles of the trust tier it reaches ([`chain::Storage`]);
 //! the [`chain`] module documents the steps and the tiers. A handle is a reader
-//! or a writer of a region with a role ([`roles`]), over a state table that
-//! gives each region a [`WriteState`] ([`nor`]). Readers read through
+//! or a writer of a region with a role ([`roles`]), over a [`nor::Flash`]
+//! whose state table gives each region a [`WriteState`]. Readers read through
 //! snapshots, which fail once their region is written, and readers of
 //! publishable roles publish views ([`PublicRead`]), the only bytes meant to
 //! leave the device. Writers write only inside a session, whose erases and

@@ -632,8 +632,13 @@ Each role below gives its span, its class and its handles.
   Reader in the unverified tier.
 
 - Each role has at most one reader and one writer per boot. Neither is `Clone`
-  or `Copy`, only the crate makes them, and `split` takes the device and its
-  state table as `&'f mut`, so no handle outlives them or is made twice.
+  or `Copy`, only the crate makes them, and `split` takes the `nor::Flash` (the
+  device and its state table) as `&'f mut`, so no handle outlives it or is
+  made twice.
+- A handle holds a reference to the `Flash` and its span, and a writer also
+  the slot that booted: 12 bytes for a reader and 16 for a writer on the chip.
+  Snapshots and views take the region's physical spans from their epoch, so
+  the handles carry none.
 - A function takes the role it needs: a function of a `Writer<AlternateApp>`
   can't be given a configuration, the current slot or a region of another
   device. The `compile_fail` doctests in `nor.rs`, `roles.rs` and `chain.rs`
@@ -664,8 +669,8 @@ mistake in a caller's arithmetic still can't reach them.
 
 Each physical span of the compiled layout (the bootloader's span up to the
 table offset, the table's sector and each partition) has a write state: one
-atomic word in the device's state table (`nor::State`, which the firmware
-places in a `static` and `split` borrows). Only the `state` module encodes and
+atomic word in the device's state table, inside the `nor::Flash` that the
+firmware places in a `static` and `split` borrows. Only the `state` module encodes and
 decodes the words. Everything else sees a `WriteState`: `Stable(epoch)` while
 no write session is open, `Writing(epoch)`, the epoch it started from, while
 one is.

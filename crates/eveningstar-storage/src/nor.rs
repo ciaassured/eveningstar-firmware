@@ -1,9 +1,10 @@
-//! NOR flash: the device trait, its sizes, the state table and the handles
-//! of the internal flash's regions.
+//! NOR flash: the device trait, its sizes, the [`Flash`] the handles share,
+//! and the handles of the internal flash's regions.
 //!
 //! A region's handles are a [`Reader<'f, R>`] and a [`Writer<'f, R>`], where
-//! `R` is its [role]. Each holds the device, the [`State`] table and the
-//! region's span; neither is `Clone` nor `Copy`, and only the crate makes them.
+//! `R` is its [role]. Each holds a reference to the [`Flash`], which holds the
+//! device and its state table, and the region's span; neither is `Clone` nor
+//! `Copy`, and only the crate makes them.
 //! A writer reads at any time and writes only through a [`Session`], which
 //! marks the region written to while it lives.
 //!
@@ -269,7 +270,8 @@ mod state;
 pub use handle::{Reader, Session, Writer};
 pub use published::{PublicView, Published};
 pub use snapshot::Snapshot;
-pub use state::State;
+pub use state::Flash;
+pub(crate) use state::State;
 
 /// Size of a NOR flash sector, the unit of erasure, in bytes.
 pub const SECTOR_SIZE: u32 = 4096;

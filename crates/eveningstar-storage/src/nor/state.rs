@@ -1,8 +1,9 @@
-//! The internal flash's state table: one write-state word per physical span
-//! of the compiled layout.
+//! The internal flash as its handles share it: the device, and its state
+//! table of one write-state word per physical span of the compiled layout.
 
 use core::fmt;
 
+use super::NorDevice;
 use crate::span::Span;
 use crate::state::{self, Spans, Waiters, Word, WriteState};
 use crate::{SECTOR_SIZE, layout};
@@ -57,11 +58,9 @@ const _: () = assert!(disjoint(&PHYSICAL));
 /// layout: the bootloader's span (0x0 up to [`layout::TABLE_OFFSET`]), the
 /// table's sector, and each entry of [`layout::PARTITIONS`].
 ///
-/// One table serves one device. It is placed by its owner, for example in a
-/// `static`, and borrowed mutably for as long as the handles made over it
-/// live, so its handles are made once. Bytes outside every physical span have
-/// no write state: no writer covers them.
-pub struct State {
+/// One table serves one device, inside its [`Flash`]. Bytes outside every
+/// physical span have no write state: no writer covers them.
+pub(crate) struct State {
     words: [Word; SPANS],
     /// The tasks waiting for a region to change.
     waiters: Waiters,
@@ -69,8 +68,7 @@ pub struct State {
 
 impl State {
     /// A table in which no span has been written.
-    #[must_use]
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             words: [const { Word::new() }; SPANS],
             waiters: Waiters::new(),
@@ -117,17 +115,57 @@ impl State {
     }
 }
 
-impl Default for State {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl fmt::Debug for State {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("State")
             .field("words", &self.words)
             .field("waiters", &self.waiters)
+            .finish()
+    }
+}
+
+/// The internal flash as its handles share it: the device and its state
+/// table.
+///
+/// One serves one device. It is placed by the device's owner, for example in
+/// a `static`, and borrowed mutably by [`split`] for as long as the handles
+/// made over it live, so its handles are made once. Each handle points to
+/// it, rather than holding the device and the table itself.
+///
+/// [`split`]: crate::chain::split
+pub struct Flash<'f> {
+    device: &'f dyn NorDevice,
+    state: State,
+}
+
+impl<'f> Flash<'f> {
+    /// `device`, with a state table in which no span has been written. The
+    /// device is borrowed mutably for as long as the flash lives, so nothing
+    /// else reaches it meanwhile.
+    #[must_use]
+    pub const fn new(device: &'f mut dyn NorDevice) -> Self {
+        Self {
+            device,
+            state: State::new(),
+        }
+    }
+
+    /// The device.
+    pub(crate) fn device(&self) -> &'f dyn NorDevice {
+        self.device
+    }
+
+    /// The state table.
+    pub(crate) const fn state(&self) -> &State {
+        &self.state
+    }
+}
+
+impl fmt::Debug for Flash<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Flash")
+            .field("capacity", &self.device.capacity())
+            .field("state", &self.state)
             .finish()
     }
 }

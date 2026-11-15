@@ -27,7 +27,7 @@ use std::process::ExitCode;
 
 use eveningstar_storage::chain::{Tier, split};
 use eveningstar_storage::image;
-use eveningstar_storage::nor::{NorDevice, State};
+use eveningstar_storage::nor::{Flash, NorDevice};
 use eveningstar_storage::table::{self, Match};
 use eveningstar_storage::{DeviceError, LAYOUT_RECORD, known, layout};
 
@@ -354,8 +354,8 @@ fn check_tier(checks: &mut Checks, bootloader: &[u8], table: &[u8], app: &[u8]) 
         }
     }
     let mut board = Board(flash);
-    let mut state = State::new();
-    let storage = block_on(split(&mut board, &mut state, layout::OTA_0.offset));
+    let mut flash = Flash::new(&mut board);
+    let storage = block_on(split(&mut flash, layout::OTA_0.offset));
     let report = storage.report;
     match report.failed {
         None => checks.check(report.tier == Tier::Boot, "reaches the boot tier"),

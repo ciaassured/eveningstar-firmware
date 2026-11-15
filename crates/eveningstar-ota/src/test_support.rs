@@ -12,7 +12,7 @@ use core::task::{Context, Poll, Waker};
 use eveningstar_boot::{App, AppSlot, Otadata};
 use eveningstar_esp_formats::pace::Yield;
 use eveningstar_storage::chain::{BootWriters, Handles};
-use eveningstar_storage::nor::{NorDevice, Reader, State, Writer};
+use eveningstar_storage::nor::{Flash, NorDevice, Reader, Writer};
 use eveningstar_storage::roles::{
     AlternateApp, AlternateConfig, CurrentApp, Otadata as OtadataRole,
 };
@@ -122,8 +122,8 @@ pub(crate) fn ota_gated<'f>(
     running: Slot,
     gate: &'f dyn ConfirmGate,
 ) -> (Ota<'f>, Checks<'f>) {
-    let state = Box::leak(Box::new(State::new()));
-    let storage = run(split(device, state, running.partition().offset));
+    let flash = Box::leak(Box::new(Flash::new(device)));
+    let storage = run(split(flash, running.partition().offset));
     assert_eq!(storage.report.tier, Tier::Boot, "{:?}", storage.report);
     let Handles::Boot(handles, writers) = storage.handles else {
         panic!("{:?}", storage.handles);

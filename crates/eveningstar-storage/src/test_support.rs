@@ -3,7 +3,7 @@
 //! it made without `split`. The module allocates, and is built only for tests
 //! and with the `test-support` feature.
 //!
-//! The RAM device and the state table lock through `critical-section`, so a
+//! The RAM device and the flash's state table lock through `critical-section`, so a
 //! host test needs an implementation of it, such as `critical-section`'s
 //! `std` feature.
 //!
@@ -438,23 +438,24 @@ pub fn boot_device(device: &RamNor) -> Option<Slot> {
     booted
 }
 
-/// A [`RamNor`] and a state table, both leaked so the handles made over them
-/// are `'static` and can move into a hook.
+/// A [`RamNor`] and a [`Flash`](nor::Flash) over it, both leaked so the
+/// handles made over them are `'static` and can move into a hook.
 ///
 /// It makes any number of readers and writers, of any span: the uniqueness
 /// `split` gives is up to the test.
 #[derive(Clone, Copy, Debug)]
 pub struct TestFlash {
     device: &'static RamNor,
-    state: &'static nor::State,
+    flash: &'static nor::Flash<'static>,
 }
 
 impl TestFlash {
     /// The handles' flash: `device`, with a new state table.
     pub fn new(device: RamNor) -> Self {
+        let device: &'static RamNor = Box::leak(Box::new(device));
         Self {
-            device: Box::leak(Box::new(device)),
-            state: Box::leak(Box::new(nor::State::new())),
+            device,
+            flash: Box::leak(Box::new(nor::Flash::new(device.lend()))),
         }
     }
 
@@ -466,7 +467,7 @@ impl TestFlash {
     /// A reader of `span`, absolute, with role `R`. Panics unless the span
     /// lies inside the device.
     pub fn reader<R: Role<Device = Internal>>(&self, span: Span) -> nor::Reader<'static, R> {
-        nor::Reader::new(self.device, self.state, span).expect("the span lies inside the device")
+        nor::Reader::new(self.flash, span).expect("the span lies inside the device")
     }
 
     /// A writer of `span`, absolute, with role `R`, while the app runs from
@@ -477,7 +478,7 @@ impl TestFlash {
         span: Span,
         running: Slot,
     ) -> nor::Writer<'static, R> {
-        nor::Writer::new(self.device, self.state, span, running)
+        nor::Writer::new(self.flash, span, running)
             .expect("the span lies inside the device and one physical span")
     }
 
