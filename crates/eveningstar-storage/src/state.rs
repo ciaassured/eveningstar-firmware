@@ -140,6 +140,13 @@ pub struct Epoch {
     count: u64,
 }
 
+impl Epoch {
+    /// The spans of the region whose epoch this is.
+    pub(crate) const fn spans(self) -> Spans {
+        self.spans
+    }
+}
+
 impl fmt::Display for Epoch {
     /// The epoch as a decimal number, which tells it apart from the region's
     /// other epochs this boot.

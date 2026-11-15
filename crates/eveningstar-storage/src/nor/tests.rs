@@ -54,21 +54,19 @@ fn poll_once<F: Future>(future: Pin<&mut F>) -> Poll<F::Output> {
 
 #[test]
 fn a_reader_lies_inside_the_device() {
-    let flash = TestFlash::new(RamNor::erased(0x4000));
-    let state = State::new();
-    let device = flash.device();
-    assert!(Reader::<Otadata>::new(device, &state, Span::new(0, 0x4000)).is_some());
-    assert!(Reader::<Otadata>::new(device, &state, Span::new(0x4000, 0)).is_some());
-    assert!(Reader::<Otadata>::new(device, &state, Span::new(0x3FFF, 2)).is_none());
-    assert!(Reader::<Otadata>::new(device, &state, Span::new(1, u32::MAX)).is_none());
+    let device = RamNor::erased(0x4000);
+    let flash = Flash::new(device.lend());
+    assert!(Reader::<Otadata>::new(&flash, Span::new(0, 0x4000)).is_some());
+    assert!(Reader::<Otadata>::new(&flash, Span::new(0x4000, 0)).is_some());
+    assert!(Reader::<Otadata>::new(&flash, Span::new(0x3FFF, 2)).is_none());
+    assert!(Reader::<Otadata>::new(&flash, Span::new(1, u32::MAX)).is_none());
 }
 
 #[test]
 fn a_writer_lies_inside_one_physical_span() {
-    let flash = flash();
-    let state = State::new();
-    let device = flash.device();
-    let writer = |span| Writer::<Diag>::new(device, &state, span, Slot::Ota0);
+    let device = flash().device();
+    let flash = Flash::new(device.lend());
+    let writer = |span| Writer::<Diag>::new(&flash, span, Slot::Ota0);
     assert!(writer(Span::from(layout::DIAG)).is_some());
     assert!(writer(Span::new(layout::DIAG.offset + SECTOR, SECTOR)).is_some());
     // Across two partitions, in the gap before the first slot, past the
@@ -77,10 +75,9 @@ fn a_writer_lies_inside_one_physical_span() {
     assert!(writer(Span::new(0xE000, SECTOR)).is_none());
     assert!(writer(Span::new(FLASH_SIZE, SECTOR)).is_none());
     // Inside the layout but past a smaller device.
-    let small = TestFlash::new(RamNor::erased(0x10_0000));
-    assert!(
-        Writer::<Diag>::new(small.device(), &state, Span::from(layout::DIAG), Slot::Ota0).is_none()
-    );
+    let small = RamNor::erased(0x10_0000);
+    let small = Flash::new(small.lend());
+    assert!(Writer::<Diag>::new(&small, Span::from(layout::DIAG), Slot::Ota0).is_none());
 }
 
 #[test]

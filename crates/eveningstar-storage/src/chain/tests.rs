@@ -22,9 +22,10 @@ use eveningstar_esp_formats::{TYPE_APP, TYPE_DATA};
 
 const N: usize = layout::PARTITIONS.len();
 
-/// A state table for one `split`, leaked so it outlives the handles.
-fn state() -> &'static mut State {
-    Box::leak(Box::new(State::new()))
+/// `device` with a new state table, for one `split`, leaked so it outlives
+/// the handles.
+fn over(device: &mut dyn NorDevice) -> &mut Flash<'_> {
+    Box::leak(Box::new(Flash::new(device)))
 }
 
 /// `flash`, leaked so the handles over it can outlive the statement.
@@ -190,7 +191,7 @@ fn layout_consistent(handles: &LayoutHandles<'_>, slot: Slot) {
 /// The chain run on `flash` with `bootloaders` as the known list, for the
 /// app booted at `booted`.
 fn split_known<'f>(flash: &'f RamFlash, booted: u32, bootloaders: &'static [Known]) -> Storage<'f> {
-    let storage = run(split_with(lend(flash), state(), booted, bootloaders));
+    let storage = run(split_with(over(lend(flash)), booted, bootloaders));
     consistent(&storage);
     assert_eq!(flash.ops(), [], "split never writes");
     storage
@@ -303,7 +304,7 @@ fn a_board_running_from_ota_1_hands_out_the_other_slot_s_regions() {
 #[test]
 fn the_bootloader_is_hashed_with_yields() {
     let flash = nix_board();
-    let done = block_on(split(lend(&flash), state(), OTA_0.offset));
+    let done = block_on(split(over(lend(&flash)), OTA_0.offset));
     // 22 KiB hashed, a yield every 1 KiB.
     assert_eq!(
         done.wakes,
@@ -858,8 +859,8 @@ fn the_tier_s_handles_are_made_once_per_state_table() {
     // the handles live; readers of one role share no state with another
     // table's.
     let flash = nix_board();
-    let first = run(split(lend(&flash), state(), OTA_0.offset));
-    let second = run(split(lend(&flash), state(), OTA_0.offset));
+    let first = run(split(over(lend(&flash)), OTA_0.offset));
+    let second = run(split(over(lend(&flash)), OTA_0.offset));
     let (Handles::Boot(_, mut writers), Handles::Boot(handles, _)) =
         (first.handles, second.handles)
     else {

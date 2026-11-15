@@ -112,7 +112,7 @@ use eveningstar_esp_formats::table::{Found, LabelComparison, TableError, Verifie
 
 use crate::image::{self, ImageError};
 use crate::known::{self, Known};
-use crate::nor::{NorDevice, Reader, SECTOR_SIZE, State, Writer};
+use crate::nor::{Flash, NorDevice, Reader, SECTOR_SIZE, Writer};
 use crate::roles::{
     AlternateApp, AlternateConfig, AlternateSignature, Bootloader, CurrentApp, CurrentConfig,
     CurrentSignature, Diag, FoundApp, FoundOtadata, FoundTable, Internal, Otadata, PartitionTable,
@@ -431,8 +431,8 @@ pub enum Handles<'f> {
 
 /// What [`split`] hands out: the report, the readers every tier has, and the
 /// handles of the tier reached. Each role has at most one reader and one
-/// writer, and none is made twice: they borrow the device and its state table
-/// for as long as they live.
+/// writer, and none is made twice: they borrow the [`Flash`] for as long as
+/// they live, and each points to it.
 #[derive(Debug)]
 pub struct Storage<'f> {
     /// What the chain found, and the tier reached.
@@ -447,48 +447,37 @@ pub struct Storage<'f> {
     pub handles: Handles<'f>,
 }
 
-/// Runs the verification chain on `device`, the internal flash, for the app
+// Each handle points to the flash rather than holding it, so the handles of
+// a tier and the report pass through a frame together under the 1 KiB
+// `large_stack_frames` threshold.
+#[cfg(target_arch = "riscv32")]
+const _: () = assert!(size_of::<Storage<'static>>() <= 384);
+
+/// Runs the verification chain on `flash`, the internal flash, for the app
 /// the bootloader started at `booted`, the offset MMU entry 0 maps, and hands
-/// out the handles of the tier reached over `state`, the device's state
-/// table.
+/// out the handles of the tier reached over it.
 ///
 /// The bootloader is hashed yielding every [`image::YIELD_INTERVAL`] bytes;
-/// the rest runs without yielding. The device and the state table are
-/// borrowed mutably for as long as any handle lives, so no handle is made
-/// twice. The chain's state moves into the future rather than living in its
-/// frame.
-pub fn split<'f>(
-    device: &'f mut dyn NorDevice,
-    state: &'f mut State,
-    booted: u32,
-) -> impl Future<Output = Storage<'f>> + 'f {
-    split_with(device, state, booted, known::BOOTLOADERS)
+/// the rest runs without yielding. The flash is borrowed mutably for as long
+/// as any handle lives, so no handle is made twice. The chain's state moves
+/// into the future rather than living in its frame.
+pub fn split<'f>(flash: &'f mut Flash<'_>, booted: u32) -> impl Future<Output = Storage<'f>> + 'f {
+    split_with(flash, booted, known::BOOTLOADERS)
 }
 
 /// [`split`] with `bootloaders` as the known list.
-#[cfg_attr(
-    target_arch = "riscv32",
-    expect(
-        clippy::large_stack_frames,
-        reason = "the lint adds every local without overlap: the future's result, `Storage` \
-                  (516 bytes on the chip), counts twice, as the call's result and as the \
-                  future's output, though only one is live at a time"
-    )
-)]
 pub(crate) fn split_with<'f>(
-    device: &'f mut dyn NorDevice,
-    state: &'f mut State,
+    flash: &'f mut Flash<'_>,
     booted: u32,
     bootloaders: &'static [Known],
 ) -> impl Future<Output = Storage<'f>> + 'f {
-    let device: &'f dyn NorDevice = device;
-    let state: &'f State = state;
-    let mut chain = Chain::new(device, booted, bootloaders);
+    let flash: &'f Flash<'f> = flash;
+    let mut chain = Chain::new(flash.device(), booted, bootloaders);
     async move {
         chain.verify_bootloader().await;
         chain.locate();
         chain.judge();
-        chain.storage(state)
+        chain.storage(flash)
     }
 }
 
@@ -644,26 +633,13 @@ impl<'f> Chain<'f> {
     }
 
     /// The report evaluated, and the handles of the tier reached.
-    #[cfg_attr(
-        target_arch = "riscv32",
-        expect(
-            clippy::large_stack_frames,
-            reason = "the lint adds every local without overlap: `Storage` (516 bytes on the \
-                      chip) and the `Handles` and `Report` it is built of count separately, \
-                      though they are moved into it"
-        )
-    )]
-    fn storage(&mut self, state: &'f State) -> Storage<'f> {
+    fn storage(&mut self, flash: &'f Flash<'f>) -> Storage<'f> {
         // The handles first: they record the tier in the report.
         Storage {
-            handles: self.handles(state),
+            handles: self.handles(flash),
             report: self.report,
-            bootloader: self.bootloader_reader(state),
-            partition_table: Reader::new(
-                self.device,
-                state,
-                Span::new(layout::TABLE_OFFSET, SECTOR_SIZE),
-            ),
+            bootloader: self.bootloader_reader(flash),
+            partition_table: Reader::new(flash, Span::new(layout::TABLE_OFFSET, SECTOR_SIZE)),
         }
     }
 
@@ -671,23 +647,22 @@ impl<'f> Chain<'f> {
     /// handles of the tier. Never inlined, so the handles it makes stay out
     /// of the caller's frame.
     #[inline(never)]
-    fn handles(&mut self, state: &'f State) -> Handles<'f> {
+    fn handles(&mut self, flash: &'f Flash<'f>) -> Handles<'f> {
         let (tier, failed) = self.report.evaluate();
         let slot = booted_slot(self.report.booted);
         self.report.failed = failed;
-        let device = self.device;
         match (tier, slot) {
             (Tier::Boot, Some(slot)) => {
                 self.record(Tier::Boot, Some(slot));
-                boot_handles(device, state, slot)
+                boot_handles(flash, slot)
             }
             (Tier::Layout, Some(slot)) => {
                 self.record(Tier::Layout, Some(slot));
-                Handles::Layout(layout_handles(device, state, slot))
+                Handles::Layout(layout_handles(flash, slot))
             }
             _ => {
                 self.record(Tier::Unverified, None);
-                Handles::Unverified(self.located(state))
+                Handles::Unverified(self.located(flash))
             }
         }
     }
@@ -700,33 +675,32 @@ impl<'f> Chain<'f> {
 
     /// The bootloader's reader: up to the located table, else up to the
     /// compiled offset, within the flash.
-    fn bootloader_reader(&self, state: &'f State) -> Reader<'f, Bootloader> {
+    fn bootloader_reader(&self, flash: &'f Flash<'f>) -> Reader<'f, Bootloader> {
         let end = self.report.table.offset.unwrap_or(layout::TABLE_OFFSET);
-        Reader::within(self.device, state, Span::new(0, end))
+        Reader::within(flash, Span::new(0, end))
     }
 
     /// The readers of what was located, for the unverified tier.
-    fn located(&self, state: &'f State) -> Located<'f> {
+    fn located(&self, flash: &'f Flash<'f>) -> Located<'f> {
         let report = &self.report;
-        let device = self.device;
         let capacity = report.capacity;
         let partitions = report.table.partitions;
         let table = match (report.table.source, report.table.offset) {
             (Some(TableSource::Searched), Some(offset)) if partitions.is_some() => {
-                located_reader(device, state, Span::new(offset, SECTOR_SIZE), capacity)
+                located_reader(flash, Span::new(offset, SECTOR_SIZE), capacity)
             }
             _ => None,
         };
         let app = match partitions {
             Some(partitions) => partitions
                 .booted
-                .and_then(|span| located_reader(device, state, span, capacity)),
-            None => booted_image(device, report.booted)
-                .and_then(|span| located_reader(device, state, span, capacity)),
+                .and_then(|span| located_reader(flash, span, capacity)),
+            None => booted_image(self.device, report.booted)
+                .and_then(|span| located_reader(flash, span, capacity)),
         };
         let otadata = partitions
             .and_then(|partitions| partitions.otadata)
-            .and_then(|span| located_reader(device, state, span, capacity));
+            .and_then(|span| located_reader(flash, span, capacity));
         Located {
             table,
             app,
@@ -800,8 +774,7 @@ fn booted_image(device: &dyn NorDevice, booted: u32) -> Option<Span> {
 /// `capacity`; `None` when the cut span is empty, starts past the flash, or
 /// shares a byte with a span the compiled layout gives to sensitive data.
 fn located_reader<'f, R: Role<Device = Internal>>(
-    device: &'f dyn NorDevice,
-    state: &'f State,
+    flash: &'f Flash<'f>,
     span: Span,
     capacity: u32,
 ) -> Option<Reader<'f, R>> {
@@ -812,47 +785,40 @@ fn located_reader<'f, R: Role<Device = Internal>>(
     if cut.is_empty() || is_sensitive(cut) {
         return None;
     }
-    Reader::new(device, state, cut)
+    Reader::new(flash, cut)
 }
 
 /// The boot tier's handles for the app running from `slot`, on a flash that
 /// holds the layout, which the chain has checked. Never inlined, so the
 /// handles it makes stay out of the caller's frame.
 #[inline(never)]
-fn boot_handles<'f>(device: &'f dyn NorDevice, state: &'f State, slot: Slot) -> Handles<'f> {
-    Handles::Boot(
-        layout_handles(device, state, slot),
-        boot_writers(device, state, slot),
-    )
+fn boot_handles<'f>(flash: &'f Flash<'f>, slot: Slot) -> Handles<'f> {
+    Handles::Boot(layout_handles(flash, slot), boot_writers(flash, slot))
 }
 
 /// The layout tier's handles for the app running from `slot`, on a flash
 /// that holds the layout, which the chain has checked.
-fn layout_handles<'f>(
-    device: &'f dyn NorDevice,
-    state: &'f State,
-    slot: Slot,
-) -> LayoutHandles<'f> {
+fn layout_handles<'f>(flash: &'f Flash<'f>, slot: Slot) -> LayoutHandles<'f> {
     let reader = |entry: Entry| Span::of(&entry);
     LayoutHandles {
-        current_app: Reader::within(device, state, reader(slot.partition())),
-        alternate_app: Reader::within(device, state, reader(slot.other().partition())),
-        otadata: Reader::within(device, state, reader(layout::OTADATA)),
-        current_config: Writer::of_partition(device, state, &slot.config(), slot),
-        alternate_config: Writer::of_partition(device, state, &slot.other().config(), slot),
-        current_signature: Reader::within(device, state, reader(slot.signature())),
-        alternate_signature: Reader::within(device, state, reader(slot.other().signature())),
-        diag: Writer::of_partition(device, state, &layout::DIAG, slot),
+        current_app: Reader::within(flash, reader(slot.partition())),
+        alternate_app: Reader::within(flash, reader(slot.other().partition())),
+        otadata: Reader::within(flash, reader(layout::OTADATA)),
+        current_config: Writer::of_partition(flash, &slot.config(), slot),
+        alternate_config: Writer::of_partition(flash, &slot.other().config(), slot),
+        current_signature: Reader::within(flash, reader(slot.signature())),
+        alternate_signature: Reader::within(flash, reader(slot.other().signature())),
+        diag: Writer::of_partition(flash, &layout::DIAG, slot),
     }
 }
 
 /// The boot tier's writers for the app running from `slot`, on a flash that
 /// holds the layout, which the chain has checked.
-fn boot_writers<'f>(device: &'f dyn NorDevice, state: &'f State, slot: Slot) -> BootWriters<'f> {
+fn boot_writers<'f>(flash: &'f Flash<'f>, slot: Slot) -> BootWriters<'f> {
     BootWriters {
-        alternate_app: Writer::of_partition(device, state, &slot.other().partition(), slot),
-        otadata: Writer::of_partition(device, state, &layout::OTADATA, slot),
-        alternate_signature: Writer::of_partition(device, state, &slot.other().signature(), slot),
+        alternate_app: Writer::of_partition(flash, &slot.other().partition(), slot),
+        otadata: Writer::of_partition(flash, &layout::OTADATA, slot),
+        alternate_signature: Writer::of_partition(flash, &slot.other().signature(), slot),
         slot,
     }
 }

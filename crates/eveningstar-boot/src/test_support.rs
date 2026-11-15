@@ -10,7 +10,7 @@ use core::task::{Context, Poll, Waker};
 
 use eveningstar_esp_formats::pace::Pace;
 use eveningstar_esp_formats::test_support::{APP, BOOTLOADER, OTADATA_FIRST_BOOT, TABLE};
-use eveningstar_storage::nor::{NorDevice, State};
+use eveningstar_storage::nor::{Flash, NorDevice};
 use eveningstar_storage::test_support::{RamNor, run};
 use eveningstar_storage::{DeviceError, Storage, layout, split};
 use sha2::{Digest as _, Sha256};
@@ -57,8 +57,8 @@ impl NorDevice for Lent {
 pub(crate) fn split_board(device: RamNor, booted: u32) -> (Storage<'static>, &'static RamNor) {
     let device: &'static RamNor = Box::leak(Box::new(device));
     let lent: &'static mut dyn NorDevice = Box::leak(Box::new(Lent(device)));
-    let state = Box::leak(Box::new(State::new()));
-    (run(split(lent, state, booted)), device)
+    let flash = Box::leak(Box::new(Flash::new(lent)));
+    (run(split(flash, booted)), device)
 }
 
 /// A board flashed by `flash-all`: the Nix bootloader and table, the otadata

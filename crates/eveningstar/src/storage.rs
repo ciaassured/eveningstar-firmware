@@ -25,8 +25,8 @@
 //! reboots.
 //!
 //! [`InternalFlash`] is the one `FlashStorage`: every read, erase and program
-//! of the internal flash goes through it, one at a time. Its state table
-//! lives in a `static`.
+//! of the internal flash goes through it, one at a time. It and the
+//! [`Flash`] the handles share live in `static`s.
 
 use core::cell::RefCell;
 
@@ -43,12 +43,12 @@ use eveningstar_ota::{Ota, SelfCheck, SelfChecks};
 use eveningstar_storage::chain::{
     BootWriters, Handles, LayoutHandles, Located, Report, Storage, split,
 };
-use eveningstar_storage::nor::{NorDevice, Reader, State as StateTable, Writer};
+use eveningstar_storage::nor::{Flash, NorDevice, Reader, Writer};
 use eveningstar_storage::roles::{
     self, AlternateApp, AlternateConfig, CurrentApp, FoundApp, FoundTable,
 };
 use eveningstar_storage::{DeviceError, SECTOR_SIZE, Span, WriteState};
-use static_cell::{ConstStaticCell, StaticCell};
+use static_cell::StaticCell;
 
 use crate::services::reboot::GracefulReboot;
 use crate::services::storage::Storage as StorageService;
@@ -107,7 +107,7 @@ pub(crate) async fn start(
     static SERVICE: StaticCell<StorageService> = StaticCell::new();
 
     static INTERNAL_FLASH: StaticCell<InternalFlash> = StaticCell::new();
-    static STATE: ConstStaticCell<StateTable> = ConstStaticCell::new(StateTable::new());
+    static FLASH: StaticCell<Flash<'static>> = StaticCell::new();
 
     let started = Instant::now();
     let flash = INTERNAL_FLASH.init(InternalFlash::new(flash, cache));
@@ -115,7 +115,7 @@ pub(crate) async fn start(
         error!("MMU entry 0 maps no flash page: the booted offset is unknown");
         UNKNOWN_BOOTED
     });
-    let storage = split(flash, STATE.take(), booted).await;
+    let storage = split(FLASH.init(Flash::new(flash)), booted).await;
     info!(
         "Storage split in {} ms: {} bytes of flash, app booted from {=u32:#x}",
         started.elapsed().as_millis(),
@@ -331,12 +331,6 @@ impl OtaParts {
     ///
     /// If called more than once, which the one [`OtaParts`] of a boot
     /// prevents.
-    #[expect(
-        clippy::large_stack_frames,
-        reason = "the lint adds every local without overlap: `Ota` counts as the result of \
-                  `Ota::new`, inside that call's future, and as the value moved into its \
-                  `static`, though only one is live at a time"
-    )]
     pub(crate) async fn start(self) -> &'static mut Ota<'static> {
         static OTA: StaticCell<Ota<'static>> = StaticCell::new();
 
