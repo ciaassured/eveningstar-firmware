@@ -37,8 +37,8 @@ const OTADATA_AT: u32 = OTADATA.offset;
 
 // Images.
 
-/// The firmware's image, with the board's layout record written after its
-/// descriptor: the fixture predates the record.
+/// The firmware's image, with an information block holding the board's
+/// layout entry written after its descriptor: the fixture predates the block.
 fn app() -> &'static [u8] {
     static APP: LazyLock<Vec<u8>> =
         LazyLock::new(|| with_layout(UNLAID_APP, &board_layout_record()));
@@ -68,8 +68,9 @@ fn app_project(project: &str) -> Vec<u8> {
     })
 }
 
-/// A small image of `project` and `version`, with the board's layout record
-/// and `extra` words of data in its first segment.
+/// A small image of `project` and `version`, with an information block
+/// holding the board's layout entry and `extra` words of data in its first
+/// segment.
 fn small_image(project: &str, version: &str, extra: usize) -> Vec<u8> {
     let mut rng = Rng::new(0x5A11 + extra as u64);
     let mut first = app_descriptor_bytes(project, version);
@@ -878,6 +879,14 @@ fn an_image_without_a_layout_entry_is_refused() {
             UNLAID_APP,
             &info_block(&[(image::LAYOUT_ENTRY, &value), (image::LAYOUT_ENTRY, &value)]),
         ),
+        // The board's layout entry, then an entry that doesn't read.
+        with_layout(UNLAID_APP, &{
+            let mut block = info_block(&[(image::LAYOUT_ENTRY, &value), (1, &[1; 8])]);
+            let later = 6 + 4 + value.len();
+            block[later + 2..later + 4].copy_from_slice(&6_u16.to_le_bytes());
+            block.resize(block.len().next_multiple_of(4), 0);
+            block
+        }),
     ];
     let flash = flashed(app());
     let (mut ota, checks) = ota_on(&flash, Ota0);

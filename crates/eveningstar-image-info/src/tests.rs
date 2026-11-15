@@ -174,6 +174,8 @@ fn with_value(kind: u16, change: impl Fn(&mut Vec<u8>)) -> Vec<u8> {
 fn values_outside_their_rules_are_refused() {
     let short = with_value(TRUST, |value| value.truncate(TRUST_LEN - 4));
     assert_eq!(parse(&short), Err(Error::TooShort { kind: TRUST }));
+    let short = with_value(LAYOUT, |value| value.truncate(4));
+    assert_eq!(parse(&short), Err(Error::TooShort { kind: LAYOUT }));
     let upper = with_value(BOARD, |value| value[0] = b'E');
     assert_eq!(parse(&upper), Err(Error::Board));
     let gap = with_value(BOARD, |value| value[0] = 0);

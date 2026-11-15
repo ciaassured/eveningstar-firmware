@@ -527,46 +527,49 @@ size. The `lint` group fails when `layout.rs` is stale, and the `build` group
 checks that the table ESP-IDF builds resolves to the same partitions, which
 checks the numeric type, subtype and flag values against `gen_esp32part`.
 
-Every app image embeds the layout it is built for, so that the firmware can
+Every app image carries the layout it is built for, so that the firmware can
 tell an image built for another layout from one built for this one. The layout
-record sits right after the app descriptor, at offset 0x100 of the first
-segment's data:
+is the layout entry (type 4) of the image information block, which sits right
+after the app descriptor, at offset 0x100 of the first segment's data. The
+entry's value:
 
 | Offset | Length       | Content                                                             |
 | ------ | ------------ | ------------------------------------------------------------------- |
-| 0x00   | 16           | the magic `EVENINGSTAR-LYT1`, which names version 1 of the format   |
-| 0x10   | 4            | the partition table's offset, little-endian                         |
-| 0x14   | 4            | the flash size in bytes, little-endian                              |
-| 0x18   | 4            | the number of entries, little-endian                                |
-| 0x1C   | 4            | zero                                                                |
-| 0x20   | 32 per entry | the partitions in table order, each in the ESP-IDF table's encoding |
+| 0x00   | 4            | the partition table's offset, little-endian                         |
+| 0x04   | 4            | the flash size in bytes, little-endian                              |
+| 0x08   | 32 per entry | the partitions in table order, each in the ESP-IDF table's encoding |
 
-- The record is `eveningstar_storage::LAYOUT_RECORD`, built at compile time
-  from `layout.rs`. `main.rs` links it into the section
-  `.flash.appdesc.layout`. esp-hal 1.2.2's `rodata.x` collects `.flash.appdesc`
-  and then `.flash.appdesc.*` into one output section at the start of the
-  image, and the record's alignment of 1 leaves no gap after the descriptor's
-  256 bytes. Because the record sits at a fixed offset, `app_layout` finds it
-  from the image's header, the first segment's header and the descriptor's
-  page size alone, with no symbol table, and reads only the record's header,
-  as the entries are read on demand.
-- `app_layout` gives no record when the first segment ends before the header
-  or the entries do, the magic differs, the reserved bytes aren't zero, or the
-  count exceeds the table's capacity (96 entries). An image compares equal
-  to the compiled layout only when the table offset, the flash size, the entry
-  count and every entry are equal byte for byte.
-- `AppSlot::layout` (the `App` module) compares the record of a verified image
-  with the compiled one, reading it again at the model's epoch like the
+- The value is `eveningstar_storage::LAYOUT_RECORD`, built at compile time
+  from `layout.rs`. `main.rs` links the whole block, the layout entry last,
+  into the section `.flash.appdesc.info`. esp-hal 1.2.2's `rodata.x` collects
+  `.flash.appdesc` and then `.flash.appdesc.*` into one output section at the
+  start of the image, and the block's alignment of 1 leaves no gap after the
+  descriptor's 256 bytes. Because the block sits at a fixed offset,
+  `image::info_room` finds it from the image's header, the first segment's
+  header and the descriptor's page size alone, with no symbol table.
+- `image::info_entry` finds the layout entry by reading the block's headers
+  one at a time, with the record encoding's rules (`streamed::find` in
+  `eveningstar-records`, which gives a held container's verdict), so it needs
+  no buffer for the block. It finds no block when the room is shorter than a
+  block's header or the magic differs, an invalid block when its framing
+  doesn't read or the layout entry appears twice, and a missing entry.
+- Unlike the block's other values, the layout entry is compared whole:
+  `LayoutRecord::matches` takes an image's entry as the compiled layout only
+  when its length and every byte are equal, so a value that grew is another
+  layout.
+- `AppSlot::layout` (the `App` module) compares the layout entry of a verified
+  image with the compiled one, reading it again at the model's epoch like the
   descriptor, and says whether it is the compiled layout, another layout or
-  missing.
-- `Update::finish` and `Ota::verify_other` refuse an image whose record is
-  missing or differs (`OtaError::Layout`). `roll_back` verifies the alternate
-  slot with `verify_other`, so it refuses too. The layout can't change over
-  OTA, and an image built for another layout would boot into the unverified
-  tier, where the firmware runs on its default configuration without saving
-  it, and could leave a remote board on that configuration. After an update
-  from firmware that has no record, a `roll_back` to it is refused; the
-  bootloader's own rollback doesn't read the record and isn't affected.
+  missing (no block, an invalid one, or no entry).
+- `Update::finish` and `Ota::verify_other` refuse an image whose layout entry
+  is missing or differs (`OtaError::Layout`). `roll_back` verifies the
+  alternate slot with `verify_other`, so it refuses too. The layout can't
+  change over OTA, and an image built for another layout would boot into the
+  unverified tier, where the firmware runs on its default configuration
+  without saving it, and could leave a remote board on that configuration.
+  After an update from firmware without the entry, a `roll_back` to it is
+  refused; the bootloader's own rollback doesn't read the block and isn't
+  affected.
 
 ### Devices
 
@@ -850,7 +853,7 @@ and which carry the epoch they were parsed at, and published views.
   - Published view: each entry its parser pins down (compiled only).
 - `AppSlot` owns one app region: current, alternate or found.
   - Model: header, length, stored digest, file SHA-256, per epoch; the
-    descriptor and the layout record's comparison on request.
+    descriptor and the layout entry's comparison on request.
   - Published view: the image, once verified at the region's epoch now.
 
 - Every module is `Sync` and takes `&self`, so it lives in a `static` and is

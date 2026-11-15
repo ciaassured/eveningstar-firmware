@@ -1,5 +1,5 @@
 //! The record encoding every firmware version shares: the image information
-//! block an image carries after its layout record, and the diagnostics
+//! block an image carries after its app descriptor, and the diagnostics
 //! mailbox and log.
 //!
 //! Older firmware reads what newer firmware wrote (after a rollback), and

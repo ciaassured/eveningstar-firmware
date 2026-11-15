@@ -15,6 +15,21 @@ fn streamed(bytes: &[u8], magic: u32, kind: u16) -> Result<Option<Place>, Error>
     find(bytes.len(), magic, kind, read).expect("reads stay inside the limit")
 }
 
+/// [`find`] over the first `limit` bytes of `bytes`, read from memory.
+fn streamed_within(
+    bytes: &[u8],
+    limit: usize,
+    magic: u32,
+    kind: u16,
+) -> Result<Option<Place>, Error> {
+    let read = |at: usize, buf: &mut [u8]| -> Result<(), ()> {
+        assert!(at + buf.len() <= limit, "a read past the limit");
+        buf.copy_from_slice(bytes.get(at..at + buf.len()).ok_or(())?);
+        Ok(())
+    };
+    find(limit, magic, kind, read).expect("reads stay inside the limit")
+}
+
 /// What the held container gives for `bytes`, as a place in it.
 fn held(bytes: &[u8], magic: u32, kind: u16) -> Result<Option<Place>, Error> {
     let container = Container::parse(bytes, magic)?;
@@ -79,6 +94,25 @@ fn streaming_gives_the_held_container_s_verdict() {
                     streamed(&bytes, MAGIC, kind),
                     held(&bytes, MAGIC, kind),
                     "{bytes:02x?} {kind}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_limit_gives_the_verdict_of_the_bytes_before_it() {
+    let mut rng = Rng(0x11A1);
+    for case in cases() {
+        let mut longer = case.clone();
+        longer.extend_from_slice(&[0x5A; 12]);
+        for _ in 0..4 {
+            let limit = (rng.next() as usize) % (longer.len() + 1);
+            for kind in 0..6 {
+                assert_eq!(
+                    streamed_within(&longer, limit, MAGIC, kind),
+                    held(&longer[..limit], MAGIC, kind),
+                    "{longer:02x?} {limit} {kind}"
                 );
             }
         }
