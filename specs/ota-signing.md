@@ -1611,11 +1611,11 @@ command, so its evidence doesn't depend on the authors.
 ### compile_fail tests
 
 One doctest per bypass, each pinned to its error code (`compile_fail,E0599`
-and so on), so a doctest that fails for another reason doesn't pass. Stable
-rustdoc only checks that the doctest fails to compile (found in review on
-2026-11-15: a pin of `E0000` passed on stable), so the `rust-test` group runs
-the host crates' doctests again with the pinned nightly, whose rustdoc also
-checks the code:
+and so on), so a doctest whose errors don't include that code doesn't pass.
+Stable rustdoc only checks that the doctest fails to compile (found in review
+on 2026-11-15: a pin of `E0000` passed on stable), so the `rust-test` group
+runs the host crates' doctests again with the pinned nightly, whose rustdoc
+also checks the code. The bypasses to cover:
 
 - building `Signed`, `Verified`, `TrustedKey` or `TrustSet` outside its crate
   (private fields, no constructor);
