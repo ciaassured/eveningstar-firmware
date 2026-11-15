@@ -70,8 +70,8 @@
 //! }
 //! ```
 //!
-//! The layout tier reads the alternate slot and the otadata, and writes
-//! neither:
+//! The layout tier reads the alternate slot, its signature region and the
+//! otadata, and writes none of them:
 //!
 //! ```compile_fail,E0308
 //! use eveningstar_storage::chain::LayoutHandles;
@@ -91,19 +91,28 @@
 //! }
 //! ```
 //!
+//! ```compile_fail,E0599
+//! use eveningstar_storage::chain::LayoutHandles;
+//!
+//! fn sign(handles: &mut LayoutHandles<'_>) {
+//!     let _ = handles.alternate_signature.begin();
+//! }
+//! ```
+//!
 //! and only `split` makes the boot writers:
 //!
 //! ```compile_fail,E0451
 //! use eveningstar_storage::chain::BootWriters;
 //! use eveningstar_storage::nor::Writer;
-//! use eveningstar_storage::roles::{AlternateApp, Otadata};
+//! use eveningstar_storage::roles::{AlternateApp, AlternateSignature, Otadata};
 //! use eveningstar_storage::Slot;
 //!
 //! fn forge<'f>(
 //!     alternate_app: Writer<'f, AlternateApp>,
 //!     otadata: Writer<'f, Otadata>,
+//!     alternate_signature: Writer<'f, AlternateSignature>,
 //! ) -> BootWriters<'f> {
-//!     BootWriters { alternate_app, otadata, slot: Slot::Ota0 }
+//!     BootWriters { alternate_app, otadata, alternate_signature, slot: Slot::Ota0 }
 //! }
 //! ```
 
@@ -133,11 +142,12 @@ pub enum Tier {
     Unverified,
     /// The table is the layout and the app booted from a slot, but the
     /// bootloader isn't known to read the compiled offset and roll back: the
-    /// slots and the otadata are read, the configurations and `diag`
-    /// written.
+    /// slots, their signature regions and the otadata are read, the
+    /// configurations and `diag` written.
     Layout,
     /// As the layout tier, with a known bootloader that supports rollback:
-    /// the alternate slot and the otadata are written too.
+    /// the alternate slot, its signature region and the otadata are written
+    /// too.
     Boot,
 }
 
