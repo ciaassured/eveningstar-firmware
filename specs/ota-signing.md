@@ -424,10 +424,13 @@ whoever has it can reflash anything, by design.
   attached or not (with validation skipping pinned off, decision 16), so an
   unverified image is never loadable: not while it is written, not after a
   refusal, an abandoned upload or a power cut. Erasing the slot's first
-  sector after a refusal is then only for the API's sake (decision 15). The
-  alternate signature region keeps the refused upload's file until the next
-  update begins, so the API reports and publishes it for debugging; it
-  names no image in the slot, so nothing treats it as one's signature.
+  sector after a refusal is then only for the API's sake (decision 15). A
+  refusal at `finish` (steps 4, 5 or 7 of "Byte path"), after step 3
+  programmed the signature, leaves the alternate signature region holding
+  the refused upload's file until the next update begins, so the API
+  reports and publishes it for debugging; it names no image in the slot, so
+  nothing treats it as one's signature. A refusal or abandonment before
+  `finish` leaves the region as `begin_update` erased it.
 
 ### Accepted
 
@@ -1206,9 +1209,9 @@ every past schema to the current one.
 - A signature region holds the signature file padded with `0xFF`, and
   belongs to its slot's image: an update erases the alternate one, a
   retirement erases it, and nothing else writes it. Unlike the
-  configuration, it outlives a refused upload: the region keeps that
-  upload's file, which belongs to no image, until the next update begins
-  (decision 15).
+  configuration, it outlives an upload refused at `finish`: the region
+  keeps the file step 3 programmed, which belongs to no image, until the
+  next update begins (decision 15).
 - The change goes through `nix/board.nix`, then `storage-layout` and
   `storage-testdata`: the partition table, the generated layout, the layout
   record and the fixtures change. No board has shipped and no release
@@ -1224,8 +1227,11 @@ every past schema to the current one.
   `0xFF`; a region with anything else there doesn't parse.
 - A region whose 4096 bytes are all `0xFF` holds no file (`unsigned`). That
   is checked before the parse, so a region that starts with `0xFF` and holds
-  other bytes later, as a wipe cut by a power loss leaves it, is `invalid`
-  (format), not `unsigned`.
+  other bytes later, as a wipe cut by a power loss can leave it, is
+  `invalid` (format), not `unsigned`. The region parser applies to regions
+  only: an uploaded body (step 1 of "Byte path") is held to the file
+  grammar ("Signed format"), so a body with bytes after its last line is
+  refused, as signify refuses it.
 - Its `signature` view publishes the file once it parsed, whatever key
   signed it, and never the padding or the rest of the region. The comment's
   text, between `untrusted comment: ` and its `\n`, is a sanitized span,
@@ -1324,8 +1330,9 @@ pub fn verify<'s>(file: &'s [u8], trust: &TrustSet) -> Result<Verified<'s>, SigE
 ```
 
 `eveningstar-boot`'s app check calls it at the slot's epoch and keeps the
-result in the model (`Signature::Verified { key, line }`, `Unsigned`,
-`Invalid(reason)`), so both slots report their signature. It keeps the
+result in the model (`Signature::Verified { key, line }`, `Stale { key }`,
+`UnknownKey`, `Unsigned`, `Invalid(reason)`, one per `signature.status`),
+so both slots report their signature. It keeps the
 matching line's index, not its name: the model is copied in critical
 sections, and the name is read from the slot on request, as the descriptor
 is.
@@ -1531,7 +1538,9 @@ command, so its evidence doesn't depend on the authors.
   outside the device's subset; a file over 4 KiB). Any other disagreement
   fails the check.
 - Each signed case also runs with its comment's text replaced by `0xFF`, as
-  the signature view serves it, and must still check with `signify -C -p`.
+  the signature view serves it, and must give the same verdict as without
+  the replacement, under the case's own command (`signify -C -p` or
+  `signify -V -e -p`).
   Until the corpus has these cases, this rests on one check by hand, with
   signify 33 on 2026-11-15: a development-signed `SHA256.sig` with its
   comment's text replaced by `0xFF` gave `Signature Verified` and `OK` from
@@ -1578,8 +1587,9 @@ command, so its evidence doesn't depend on the authors.
   all-`0xFF` region), and `verify` end to end. Property: no panic; an
   accepted input's message verifies with `verify_strict` and has exactly
   one matching line.
-- Host properties of the signature region parser: every corpus file
-  followed by `0xFF` up to 4096 bytes parses to that file; a `0xFF` byte
+- Host properties of the signature region parser: every corpus case
+  followed by `0xFF` up to 4096 bytes gives the file parser's verdict on
+  it, and the same file when it accepts; a `0xFF` byte
   inside the comment doesn't end it; any byte other than `0xFF` in the
   padding fails the region; a region that starts with `0xFF` and holds other
   bytes later is `invalid`, and one of all `0xFF` is `unsigned`.
@@ -1665,9 +1675,11 @@ run under nightly the pins document the intended error but enforce nothing
 - After each refusal above, and after an upload cut by closing the
   connection or by a power cycle, `esptool read-flash` of the slot's first
   4 bytes gives `ff ff ff ff`.
-- After a refusal whose signature file verified, the alternate signature is
-  still published, equal to the upload's file with its comment's text as
-  `0xFF`, and reported `stale`.
+- After a refusal at `finish` whose signature file verified, the alternate
+  signature is still published, equal to the upload's file with its
+  comment's text as `0xFF`, and reported `stale`; after a refusal or
+  abandonment before `finish` (an image too large, a dropped connection),
+  it is `unsigned`.
 - Refused at upload, likewise: an image whose trust entry lacks the key that
   signed it; a release-signed image whose trust entry holds the development
   key; an image whose oldest migratable schema is newer than the device's.
@@ -1751,9 +1763,9 @@ first proposed, so earlier references hold; 38 isn't used.
     through the first verification and is programmed only once the image
     verified, then the image is verified again from the flash. The slot's
     first sector is erased after a refusal or an abandoned upload, for the
-    API's sake only. The alternate signature region keeps the refused
-    upload's file until the next update begins, for debugging (decided
-    2026-11-15).
+    API's sake only. After a refusal at `finish`, the alternate signature
+    region keeps the file step 3 programmed until the next update begins,
+    for debugging (decided 2026-11-15).
 16. **Bootloader configuration.** Pinned in `nix/bootloader`, reserved like
     `SECURE_*` and checked by `_check-sdkconfig.py`:
     - `BOOTLOADER_SKIP_VALIDATE_ON_POWER_ON`, `_ALWAYS` and
