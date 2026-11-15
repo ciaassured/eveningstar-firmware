@@ -1167,11 +1167,14 @@ every past schema to the current one.
   record and the fixtures change. No board has shipped and no release
   exists, so this needs nothing more. The storage crate gains the roles
   `CurrentSignature` and `AlternateSignature`, paired with the slots like
-  the configurations; the OTA mechanism holds the alternate one's writer.
-- The signature's content module parses and verifies the region; its
-  `signature` view publishes the file once it verified, and never the rest
-  of the region. This is an ordinary content module under the publication
-  rules: nothing outside an image is published.
+  the configurations. Both have a reader in the layout and boot tiers; the
+  OTA mechanism holds the alternate one's writer.
+- The signature's content module owns both readers and parses each region;
+  its `signature` view publishes the file once it parsed, whatever key
+  signed it, and never the padding or the rest of the region. Verifying the
+  file under the trust set is separate and only reported
+  (`signature.status`). This is an ordinary content module under the
+  publication rules: nothing outside a parsed file is published.
 
 ### Byte path
 
