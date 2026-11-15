@@ -1119,7 +1119,9 @@ the results kept since the last wait are logged before each.
 - The snapshot and publication tests interleave tasks at device calls: the RAM
   device runs a hook on its n-th call that opens a session, writes and ends
   it. Every rule of the write state and of publication has a test, and the
-  type rules have `compile_fail` doctests.
+  type rules have `compile_fail` doctests, each naming the error code it
+  fails with. Stable rustdoc doesn't check the code, so the `test` group runs
+  the doctests again with the pinned nightly, whose rustdoc does.
 - The OTA tests cut the power after any erase or program, in each way a NOR
   program can be cut, and boot a simulated bootloader afterwards, from a first
   boot, a rollback target, a pending activation and a fallback. They also

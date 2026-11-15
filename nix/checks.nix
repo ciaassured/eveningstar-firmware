@@ -20,6 +20,7 @@ in
     let
       toolchain = (inputs.rust-overlay.lib.mkRustBin { } pkgs)
         .fromRustupToolchainFile ../rust-toolchain.toml;
+      nightly = import ./_nightly.nix { inherit inputs pkgs; };
     in
     {
       # Every repository check, with a combined result, so the Git hooks and CI
@@ -31,7 +32,9 @@ in
       # checked against what Nix builds, and the Nix bootloader, table and the
       # built app image run through the storage crate's `check-images`) and
       # `test` (the tests of the
-      # crates that also build on the host, and the web UI's). With no
+      # crates that also build on the host, their doctests again with the
+      # pinned nightly, whose rustdoc checks the error codes of the
+      # `compile_fail` ones, and the web UI's). With no
       # arguments, every group runs. `lint` and `test` are each two finer
       # groups, `rust-lint` and `web-lint`, `rust-test` and `web-test`, which CI
       # runs as separate jobs. `fuzz` runs the fuzz targets for a minute each;
@@ -206,6 +209,14 @@ in
                 # The signify crate's differential tests run the stock signify
                 # binary, and fail rather than skip when it's missing here.
                 EVENINGSTAR_REQUIRE_SIGNIFY=1 run_check "host tests" cargo test --all-features \
+                  "''${host_crates[@]/#/--package=}" --target "$host_target"
+                # Stable rustdoc only checks that a `compile_fail` doctest fails
+                # to compile; the pinned nightly's also checks that it fails
+                # with the error code it names. Its own target directory keeps
+                # the two compilers from rebuilding each other's artifacts.
+                CARGO_TARGET_DIR="$CARGO_TARGET_DIR/nightly" RUSTC=${nightly}/bin/rustc \
+                  RUSTDOC=${nightly}/bin/rustdoc run_check "doctest error codes" \
+                  ${nightly}/bin/cargo test --doc --all-features \
                   "''${host_crates[@]/#/--package=}" --target "$host_target"
                 ;;
               web-test)

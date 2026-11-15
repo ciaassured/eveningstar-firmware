@@ -2,9 +2,8 @@
 {
   perSystem = { pkgs, ... }:
     let
-      # cargo-fuzz needs a nightly compiler: this dated one, which
-      # rust-overlay's locked revision provides.
-      nightly = (inputs.rust-overlay.lib.mkRustBin { } pkgs).nightly."2026-10-12".minimal;
+      # cargo-fuzz needs a nightly compiler: the pinned one.
+      nightly = import ./_nightly.nix { inherit inputs pkgs; };
     in
     {
       # Runs the fuzz targets in `fuzz/` from copies of their committed

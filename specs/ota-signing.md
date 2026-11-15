@@ -1612,10 +1612,10 @@ command, so its evidence doesn't depend on the authors.
 
 One doctest per bypass, each pinned to its error code (`compile_fail,E0599`
 and so on), so a doctest that fails for another reason doesn't pass. Stable
-rustdoc doesn't check the code, only nightly's does (found in review on
-2026-11-15: a pin of `E0000` passed on stable), so until the doctests also
-run under nightly the pins document the intended error but enforce nothing
-(see "Left open"):
+rustdoc only checks that the doctest fails to compile (found in review on
+2026-11-15: a pin of `E0000` passed on stable), so the `rust-test` group runs
+the host crates' doctests again with the pinned nightly, whose rustdoc also
+checks the code:
 
 - building `Signed`, `Verified`, `TrustedKey` or `TrustSet` outside its crate
   (private fields, no constructor);
@@ -1884,6 +1884,3 @@ first proposed, so earlier references hold; 38 isn't used.
   `large_stack_frames` lint, and its time on the ESP32-C6.
 - Code size of ed25519-dalek and curve25519-dalek in the image.
 - Whether the web UI's update page takes both files in one drop.
-- How the `compile_fail` error codes get checked: the host crates' doctests
-  run under the dev shell's pinned nightly, or under stable with
-  `RUSTC_BOOTSTRAP=1` for that step.
