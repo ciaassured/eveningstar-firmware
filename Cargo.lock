@@ -1238,6 +1238,7 @@ dependencies = [
  "embedded-storage-async",
  "eveningstar-esp-formats",
  "eveningstar-image-info",
+ "eveningstar-signify",
  "hex-literal",
  "sha2",
 ]

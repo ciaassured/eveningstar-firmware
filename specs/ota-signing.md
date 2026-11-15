@@ -674,12 +674,17 @@ As built (`eveningstar-image-info`, 2026-11-15):
   development boards).
 - **Compatibility:** both schemas are 0 until a configuration store exists.
 - **Trust:** `signing` and `count`, then four fixed key slots of generation,
-  keynum and public key, of which the first `count` are used and the rest
-  zero. A value's fields are fixed, and a type appears once, so a list of
-  keys is fixed slots: four, the three release generations and the
+  keynum and public key, of which the first `count` (at least 1) are used
+  and the rest zero. A value's fields are fixed, and a type appears once, so
+  a list of keys is fixed slots: four, the three release generations and the
   development key a development build trusts beside them. More keys would be
-  new slots appended after the fourth. A development build is signed with
+  new slots appended after the fourth: a reader reads every slot the count
+  names that the value holds, so an older reader reads them too, and a
+  count past the slots held is refused. A development build is signed with
   the development key.
+- A key is the development key when its public key is the development key's,
+  whatever generation the block states, as "Development and release keys"
+  requires; the stated generation is only reported.
 - The firmware places the layout record and the block in one `static` of
   `#[repr(C)]` byte arrays, so they lie in that order with no gap, and
   `check-images` reads the release build's block where a reader looks for it.

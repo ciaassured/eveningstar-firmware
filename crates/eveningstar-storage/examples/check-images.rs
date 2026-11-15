@@ -26,6 +26,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use eveningstar_image_info::{Block, Found};
+use eveningstar_signify::trust;
 use eveningstar_storage::chain::{Tier, split};
 use eveningstar_storage::image;
 use eveningstar_storage::nor::{Flash, NorDevice};
@@ -314,11 +315,24 @@ fn check_image_info(checks: &mut Checks, bytes: &[u8]) {
         Ok(Found::Absent) => {
             return checks.fail("no image information block after the layout record");
         }
-        Ok(Found::TooLong) => return checks.fail("image information runs past its room"),
+        Ok(Found::BadLength) => {
+            return checks
+                .fail("image information's length is shorter than its header or past its room");
+        }
         Err(error) => return checks.fail(format!("image information: {error:?}")),
     };
     match Block::parse(block) {
         Ok(info) => {
+            // A development build trusts the development trust set, as the
+            // signify crate generates it.
+            let expected = trust::DEVELOPMENT.keys();
+            let same = info.keys().count() == expected.len()
+                && info.keys().zip(expected).all(|(key, wanted)| {
+                    key.keynum() == wanted.keynum() && key.public_key() == wanted.public_key()
+                });
+            if !same {
+                checks.fail("image information trusts other keys than the development trust set");
+            }
             let keys: Vec<String> = info
                 .keys()
                 .map(|key| format!("{:?}", key.generation()))
