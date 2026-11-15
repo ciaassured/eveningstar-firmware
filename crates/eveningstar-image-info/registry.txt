@@ -19,3 +19,6 @@ type 3 trust min 184
   field key_3_generation 140 4
   field key_3_keynum 144 8
   field key_3_public_key 152 32
+type 4 layout min 8
+  field table_offset 0 4
+  field flash_size 4 4

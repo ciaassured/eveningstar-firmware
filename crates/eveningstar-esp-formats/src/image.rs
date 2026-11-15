@@ -391,39 +391,48 @@ impl fmt::Debug for BootloaderDescriptor {
     }
 }
 
-/// The magic that starts a layout record, which names its format: version 1.
-pub const LAYOUT_MAGIC: [u8; 16] = *b"EVENINGSTAR-LYT1";
+/// The image information block's magic, `ESII` in its little-endian bytes.
+/// The block holds the facts an update is judged by, in the shared record
+/// encoding (`eveningstar-records`); this module reads its layout entry, and
+/// `eveningstar-image-info` its other types.
+pub const INFO_MAGIC: u32 = 0x4949_5345;
 
-/// Offset of an app's layout record from the start of its first segment's
-/// data: right after the 256-byte app descriptor.
-pub const LAYOUT_AT: u32 = APP_DESC_LEN;
+/// Offset of an app's image information block from the start of its first
+/// segment's data: right after the 256-byte app descriptor.
+pub const INFO_AT: u32 = APP_DESC_LEN;
 
-/// Length of a layout record's header in bytes, the entries' offset in the
-/// record.
-pub const LAYOUT_HEADER_LEN: u32 = 32;
+/// The longest image information block a reader accepts, in bytes.
+pub const INFO_MAX_LEN: usize = 1024;
 
-/// The partition layout an app image is built for, as the image embeds it
-/// right after its app descriptor ([`LAYOUT_AT`]), with `N` entries.
+/// The type of the block's layout entry, whose value is a [`LayoutRecord`].
+pub const LAYOUT_ENTRY: u16 = 4;
+
+/// Length of a layout entry's fixed fields, before its partitions.
+pub const LAYOUT_FIXED_LEN: usize = 8;
+
+/// The partition layout an app image is built for, as the value of its
+/// image information block's layout entry ([`LAYOUT_ENTRY`]), with `N`
+/// partitions.
 ///
-/// A record is [`LAYOUT_HEADER_LEN`] bytes of header, then `N` entries of
-/// [`table::ENTRY_LEN`] bytes. The header is [`LAYOUT_MAGIC`], then the
-/// table's offset, the flash size and the number of entries (`u32`,
-/// little-endian), then four zero bytes. Each entry is a partition encoded as
-/// the partition table encodes it ([`table::encode`]), in table order. Every
-/// field is a byte array, so the record has no padding, an alignment of 1, and
-/// the same bytes on every target.
+/// The value is the table's offset and the flash size (`u32`,
+/// little-endian), then `N` entries of [`table::ENTRY_LEN`] bytes, each a
+/// partition encoded as the partition table encodes it ([`table::encode`]),
+/// in table order. Every field is a byte array, so the record has no
+/// padding, an alignment of 1, and the same bytes on every target. Unlike
+/// the block's other values, it is compared whole: a value of another
+/// length is another layout.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LayoutRecord<const N: usize> {
-    magic: [u8; 16],
     table_offset: [u8; 4],
     flash_size: [u8; 4],
-    count: [u8; 4],
-    reserved: [u8; 4],
     entries: [[u8; table::ENTRY_LEN as usize]; N],
 }
 
 impl<const N: usize> LayoutRecord<N> {
+    /// Length of the record in bytes: the layout entry's value length.
+    pub const LEN: usize = LAYOUT_FIXED_LEN + N * table::ENTRY_LEN as usize;
+
     /// The record of the table at `table_offset` on a flash of `flash_size`
     /// bytes, holding `entries`. `None` for more than [`table::MAX_ENTRIES`]
     /// entries or a label longer than 16 bytes.
@@ -441,17 +450,9 @@ impl<const N: usize> LayoutRecord<N> {
             }
             i += 1;
         }
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "N is at most MAX_ENTRIES, checked above"
-        )]
-        let count = N as u32;
         Some(Self {
-            magic: LAYOUT_MAGIC,
             table_offset: table_offset.to_le_bytes(),
             flash_size: flash_size.to_le_bytes(),
-            count: count.to_le_bytes(),
-            reserved: [0; 4],
             entries: encoded,
         })
     }
@@ -473,167 +474,134 @@ impl<const N: usize> LayoutRecord<N> {
     pub const fn entries(&self) -> &[[u8; table::ENTRY_LEN as usize]; N] {
         &self.entries
     }
-}
 
-/// The layout record an app image embeds, read from its header, from
-/// [`app_layout`]. Its entries are read from the image on request.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct AppLayout {
-    /// Offset of the first entry in the source.
-    entries: u32,
-    table_offset: u32,
-    flash_size: u32,
-    count: u32,
-    /// Offset in the source just past the last entry.
-    end: u32,
-    /// Offset in the source just past the first segment, which holds the
-    /// record.
-    segment_end: u32,
-}
-
-impl AppLayout {
-    /// Offset in the source just past the record's last entry: where the
-    /// bytes an image places after its layout record start.
-    #[must_use]
-    pub const fn end(&self) -> u32 {
-        self.end
-    }
-
-    /// Offset in the source just past the first segment, which holds the
-    /// record: the bytes from [`end`](Self::end) up to it are the rest of
-    /// that segment.
-    #[must_use]
-    pub const fn segment_end(&self) -> u32 {
-        self.segment_end
-    }
-
-    /// The table's offset the record gives.
-    #[must_use]
-    pub const fn table_offset(&self) -> u32 {
-        self.table_offset
-    }
-
-    /// The flash size the record gives, in bytes.
-    #[must_use]
-    pub const fn flash_size(&self) -> u32 {
-        self.flash_size
-    }
-
-    /// The number of entries the record holds.
-    #[must_use]
-    pub const fn entry_count(&self) -> u32 {
-        self.count
-    }
-
-    /// The 32 bytes of entry `index` of the record, read from `source`, the
-    /// image the record was read from; `None` past the last entry.
+    /// Whether the layout entry `entry` of the image in `source` equals the
+    /// record in every byte and in length: the table's offset, the flash
+    /// size and each partition, read one at a time.
     ///
     /// # Errors
     ///
     /// [`ImageError::Read`] when reading fails.
-    pub fn entry<S: Source + ?Sized>(
+    pub fn matches<S: Source + ?Sized>(
         &self,
         source: &S,
-        index: u32,
-    ) -> Result<Option<[u8; table::ENTRY_LEN as usize]>, ImageError> {
-        if index >= self.count {
-            return Ok(None);
-        }
-        // Inside the first segment, which `app_layout` checked holds every
-        // entry.
-        let at = index
-            .checked_mul(table::ENTRY_LEN)
-            .and_then(|offset| self.entries.checked_add(offset))
-            .ok_or(ImageError::PastEnd)?;
-        Ok(Some(read_array(source, at)?))
-    }
-
-    /// Whether the record equals `expected` in every byte: the table's
-    /// offset, the flash size, the number of entries and each entry, read
-    /// from `source`, the image the record was read from.
-    ///
-    /// # Errors
-    ///
-    /// [`ImageError::Read`] when reading fails.
-    pub fn matches<S: Source + ?Sized, const N: usize>(
-        &self,
-        source: &S,
-        expected: &LayoutRecord<N>,
+        entry: &InfoEntry,
     ) -> Result<bool, ImageError> {
-        let same_count = usize::try_from(self.count).is_ok_and(|count| count == N);
-        if self.table_offset != expected.table_offset()
-            || self.flash_size != expected.flash_size()
-            || !same_count
-        {
+        if usize::try_from(entry.len).ok() != Some(Self::LEN) {
             return Ok(false);
         }
-        for (index, expected) in (0..self.count).zip(expected.entries()) {
-            if self.entry(source, index)?.as_ref() != Some(expected) {
+        let fixed: [u8; LAYOUT_FIXED_LEN] = read_array(source, entry.offset)?;
+        if fixed[..4] != self.table_offset || fixed[4..] != self.flash_size {
+            return Ok(false);
+        }
+        let mut at = entry.offset.checked_add(8).ok_or(ImageError::PastEnd)?;
+        for expected in &self.entries {
+            let found: [u8; table::ENTRY_LEN as usize] = read_array(source, at)?;
+            if found != *expected {
                 return Ok(false);
             }
+            at = at
+                .checked_add(table::ENTRY_LEN)
+                .ok_or(ImageError::PastEnd)?;
         }
         Ok(true)
     }
 }
 
-/// Reads the header of the layout record the app image in `source` embeds
-/// right after its descriptor ([`LAYOUT_AT`]), checking the image's header
-/// and its first segment's header and descriptor magic, but nothing else of
-/// the image. `None` when no record lies there: the first segment ends
-/// before the record's header or entries do, or the header doesn't start
-/// with [`LAYOUT_MAGIC`], has non-zero reserved bytes, or counts more than
-/// [`table::MAX_ENTRIES`] entries. Nothing else in the image is looked at.
+/// Where an app image's image information block may lie: right after the
+/// descriptor ([`INFO_AT`]), inside the first segment, up to
+/// [`INFO_MAX_LEN`] bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InfoRoom {
+    /// Offset of the room in the source.
+    pub offset: u32,
+    /// Its length: the rest of the first segment, at most
+    /// [`INFO_MAX_LEN`].
+    pub len: u32,
+}
+
+/// Reads the room for the image information block of the app image in
+/// `source`, checking the image's header and its first segment's header and
+/// descriptor magic, but nothing else of the image.
 ///
 /// # Errors
 ///
 /// [`ImageError::Read`] when reading fails, the errors of the header and the
 /// first segment's header, and [`ImageError::MissingDescriptor`].
-pub fn app_layout<S: Source + ?Sized>(source: &S) -> Result<Option<AppLayout>, ImageError> {
+pub fn info_room<S: Source + ?Sized>(source: &S) -> Result<InfoRoom, ImageError> {
     let segment = first_segment(source)?;
     let page_size = app_page_size(source, &segment)?;
     segment.check_mapping(0, page_size)?;
-    let header_end = LAYOUT_AT + LAYOUT_HEADER_LEN;
-    if segment.len < header_end {
-        return Ok(None);
-    }
-    // Inside the segment, which holds the descriptor and the header.
-    let at = segment
-        .data
-        .checked_add(LAYOUT_AT)
-        .ok_or(ImageError::PastEnd)?;
-    let header: [u8; LAYOUT_HEADER_LEN as usize] = read_array(source, at)?;
-    let magic: [u8; 16] = field(&header, 0);
-    let table_offset = u32::from_le_bytes(field(&header, 16));
-    let flash_size = u32::from_le_bytes(field(&header, 20));
-    let count = u32::from_le_bytes(field(&header, 24));
-    let reserved: [u8; 4] = field(&header, 28);
-    // The record's end, relative to the segment's data.
-    let record_end = count
-        .checked_mul(table::ENTRY_LEN)
-        .and_then(|len| len.checked_add(header_end));
-    let fits = usize::try_from(count).is_ok_and(|count| count <= table::MAX_ENTRIES)
-        && record_end.is_some_and(|end| end <= segment.len);
-    let Some(record_end) =
-        record_end.filter(|_| magic == LAYOUT_MAGIC && reserved == [0; 4] && fits)
-    else {
-        return Ok(None);
-    };
-    let absolute = |relative: u32| {
-        segment
+    // `app_page_size` checked the segment holds the descriptor.
+    let rest = segment.len.saturating_sub(INFO_AT);
+    let max = u32::try_from(INFO_MAX_LEN).unwrap_or(u32::MAX);
+    Ok(InfoRoom {
+        offset: segment
             .data
-            .checked_add(relative)
-            .ok_or(ImageError::PastEnd)
-    };
-    Ok(Some(AppLayout {
-        entries: at
-            .checked_add(LAYOUT_HEADER_LEN)
+            .checked_add(INFO_AT)
             .ok_or(ImageError::PastEnd)?,
-        table_offset,
-        flash_size,
-        count,
-        end: absolute(record_end)?,
-        segment_end: absolute(segment.len)?,
-    }))
+        len: rest.min(max),
+    })
+}
+
+/// An entry of an image information block, as [`info_entry`] finds it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InfoEntry {
+    /// Offset of the value in the source.
+    pub offset: u32,
+    /// Length of the value, padding included.
+    pub len: u32,
+}
+
+/// What [`info_entry`] finds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InfoFound {
+    /// No block lies in the room: it is shorter than a block's header, or
+    /// its bytes don't start with [`INFO_MAGIC`], as in an image built before
+    /// blocks existed.
+    NoBlock,
+    /// A block whose framing doesn't read: its length, an entry's, or the
+    /// type sought more than once.
+    Invalid(eveningstar_records::Error),
+    /// A block without an entry of the type sought.
+    Missing,
+    /// The one entry of the type sought.
+    Entry(InfoEntry),
+}
+
+/// Finds the one entry of type `kind` in the image information block of the
+/// app image in `source`, reading the block's headers one at a time, with
+/// the rules of a held container (`eveningstar_records::Container`).
+///
+/// # Errors
+///
+/// As [`info_room`], and [`ImageError::Read`] when reading the block fails.
+pub fn info_entry<S: Source + ?Sized>(source: &S, kind: u16) -> Result<InfoFound, ImageError> {
+    let room = info_room(source)?;
+    let limit = usize::try_from(room.len).unwrap_or(0);
+    let found = eveningstar_records::streamed::find(limit, INFO_MAGIC, kind, |at, buf| {
+        let at = u32::try_from(at)
+            .ok()
+            .and_then(|at| room.offset.checked_add(at))
+            .ok_or(ImageError::PastEnd)?;
+        source.read(at, buf).map_err(ImageError::Read)
+    })?;
+    Ok(match found {
+        Err(eveningstar_records::Error::Truncated | eveningstar_records::Error::Magic { .. }) => {
+            InfoFound::NoBlock
+        }
+        Err(error) => InfoFound::Invalid(error),
+        Ok(None) => InfoFound::Missing,
+        Ok(Some(place)) => {
+            let at = |n: usize| u32::try_from(n).ok();
+            let entry = at(place.offset)
+                .and_then(|offset| room.offset.checked_add(offset))
+                .zip(at(place.len))
+                .map(|(offset, len)| InfoEntry { offset, len })
+                .ok_or(ImageError::PastEnd)?;
+            InfoFound::Entry(entry)
+        }
+    })
 }
 
 /// The `N` bytes at `at` in `bytes`; zeros where `bytes` is too short, which

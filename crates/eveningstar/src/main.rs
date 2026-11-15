@@ -51,36 +51,41 @@ const PANIC_LOG_SPINS: u32 = 10_000_000;
 // For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
 esp_bootloader_esp_idf::esp_app_desc!();
 
-/// The image's own records, in one `static` so they lie in this order: the
-/// partition layout the firmware is built for, as a layout record, then the
-/// image information block. esp-hal's linker script places the input
-/// sections `.flash.appdesc.*` right after the app descriptor's
-/// `.flash.appdesc`, at the start of the first segment, in no defined order
-/// among themselves, so there is one. Both fields are byte arrays, so the
+/// The image information block, in one `static`: the board, the
+/// configuration schemas and the trust set ([`IMAGE_INFO`]), then the layout
+/// entry, its header and the partition layout the firmware is built for as
+/// a layout record. esp-hal's linker script places the input sections
+/// `.flash.appdesc.*` right after the app descriptor's `.flash.appdesc`, at
+/// the start of the first segment. Every field is a byte array, so the
 /// alignment of 1 leaves no gap after the descriptor's 256 bytes nor between
-/// them: the record lies where `image::app_layout` reads it, and the block
-/// right after it.
+/// them: the block lies where `image::info_room` looks for it.
 #[repr(C)]
-struct ImageRecords {
-    layout: eveningstar_storage::CompiledLayoutRecord,
+struct ImageInfoBlock {
     info: [u8; eveningstar_image_info::LEN],
+    layout_header: [u8; 4],
+    layout: eveningstar_storage::CompiledLayoutRecord,
 }
 
-#[unsafe(link_section = ".flash.appdesc.layout")]
+#[unsafe(link_section = ".flash.appdesc.info")]
 #[used]
-static IMAGE_RECORDS: ImageRecords = ImageRecords {
-    layout: eveningstar_storage::LAYOUT_RECORD,
+static IMAGE_INFO_BLOCK: ImageInfoBlock = ImageInfoBlock {
     info: IMAGE_INFO,
+    layout_header: eveningstar_image_info::layout_header(LAYOUT_LEN),
+    layout: eveningstar_storage::LAYOUT_RECORD,
 };
 
-const _: () = assert!(align_of::<ImageRecords>() == 1);
+const _: () = assert!(align_of::<ImageInfoBlock>() == 1);
+
+/// Length of the layout entry's value.
+const LAYOUT_LEN: usize = eveningstar_storage::CompiledLayoutRecord::LEN;
 
 /// The oldest configuration schema the image migrates from, and its own: 0,
 /// as no configuration store exists yet.
 const CONFIG_SCHEMAS: (u32, u32) = (0, 0);
 
-/// The image information block: the board, the configuration schemas, and
-/// the trust set, which a development build signs with the development key.
+/// The image information block up to its layout entry: the board, the
+/// configuration schemas, and the trust set, which a development build signs
+/// with the development key.
 const IMAGE_INFO: [u8; eveningstar_image_info::LEN] = {
     use eveningstar_image_info::{Board, Compatibility, ImageInfo, Trust, encode};
     use eveningstar_signify::{Generation, trust};
@@ -89,11 +94,14 @@ const IMAGE_INFO: [u8; eveningstar_image_info::LEN] = {
     let compatibility = Compatibility::new(CONFIG_SCHEMAS.0, CONFIG_SCHEMAS.1);
     let trust = Trust::new(&trust::DEVELOPMENT, Generation::Development);
     match (board, compatibility, trust) {
-        (Some(board), Some(compatibility), Some(trust)) => encode(&ImageInfo {
-            board,
-            compatibility,
-            trust,
-        }),
+        (Some(board), Some(compatibility), Some(trust)) => encode(
+            &ImageInfo {
+                board,
+                compatibility,
+                trust,
+            },
+            LAYOUT_LEN,
+        ),
         _ => panic!("the board, the schemas and the trust set fit an information block"),
     }
 };

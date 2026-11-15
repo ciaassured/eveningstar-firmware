@@ -1,5 +1,5 @@
 //! The image information block: the facts an update is judged by, which an
-//! app image carries right after its layout record.
+//! app image carries right after its app descriptor.
 //!
 //! The block is a [`Container`] of the shared record encoding
 //! (`eveningstar-records`), with the magic [`MAGIC`] and at most [`MAX_LEN`]
@@ -15,11 +15,17 @@
 //!   development key. [`encode`] writes [`MAX_KEYS`] slots; a later image
 //!   may append more, and a reader reads every slot `count` names that the
 //!   value holds.
+//! - **Layout** (4): the partition layout the image is built for, a
+//!   [`LayoutRecord`], which the formats crate defines and reads. It is the
+//!   one type compared whole, byte for byte and in length, rather than read
+//!   field by field: a value that grew is another layout.
 //!
-//! A reader requires all three, skips types it doesn't know, and reads
-//! fields a value ends before as absent. [`encode`] is a `const fn`, so a
-//! firmware places its block in a `static`; [`read`] finds the block of an
-//! app image, and [`Block::parse`] reads one in place.
+//! A reader requires all four, skips types it doesn't know, and reads
+//! fields a value ends before as absent. [`encode`] is a `const fn` that
+//! writes every entry but the layout's, whose header [`layout_header`]
+//! gives, so a firmware places its block in a `static` with its layout
+//! record after it; [`read`] finds the block of an app image, and
+//! [`Block::parse`] reads one in place.
 //!
 //! The committed `registry.txt` is the registry of the last release, or of
 //! the current types before the first release; a test checks the current
@@ -27,6 +33,7 @@
 //!
 //! [`Container`]: eveningstar_records::Container
 //! [`registry::check`]: eveningstar_records::registry::check
+//! [`LayoutRecord`]: eveningstar_esp_formats::image::LayoutRecord
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
@@ -40,10 +47,10 @@ use eveningstar_records::{Container, ENTRY_HEADER_LEN, HEADER_LEN, TooShort, Val
 use eveningstar_signify::{Generation, Keynum, TrustSet, trust};
 
 /// The block's magic, `ESII` in its little-endian bytes.
-pub const MAGIC: u32 = 0x4949_5345;
+pub const MAGIC: u32 = image::INFO_MAGIC;
 
 /// The longest block a reader accepts, in bytes.
-pub const MAX_LEN: usize = 1024;
+pub const MAX_LEN: usize = image::INFO_MAX_LEN;
 
 /// The key slots [`encode`] writes, and so the most keys a [`Trust`] holds:
 /// the three release generations a trust set holds, and the development key
@@ -60,6 +67,8 @@ pub const BOARD: u16 = 1;
 pub const COMPATIBILITY: u16 = 2;
 /// The trust entry's type.
 pub const TRUST: u16 = 3;
+/// The layout entry's type.
+pub const LAYOUT: u16 = image::LAYOUT_ENTRY;
 
 /// Length of the board value: the name, then the revisions.
 const BOARD_LEN: usize = NAME_LEN + 4;
@@ -70,7 +79,7 @@ const KEY_LEN: usize = 4 + 8 + 32;
 /// Length of the trust value: signing generation, count, then the slots.
 const TRUST_LEN: usize = 8 + MAX_KEYS * KEY_LEN;
 
-/// Length of the block [`encode`] writes.
+/// Length of what [`encode`] writes: the block up to its layout entry.
 pub const LEN: usize =
     HEADER_LEN + 3 * ENTRY_HEADER_LEN + BOARD_LEN + COMPATIBILITY_LEN + TRUST_LEN;
 
@@ -187,6 +196,23 @@ pub const TYPES: &[Type] = &[
         name: "trust",
         min_len: short(TRUST_LEN),
         fields: &TRUST_FIELDS,
+    },
+    Type {
+        kind: LAYOUT,
+        name: "layout",
+        min_len: short(image::LAYOUT_FIXED_LEN),
+        fields: &[
+            Field {
+                name: "table_offset",
+                offset: 0,
+                len: 4,
+            },
+            Field {
+                name: "flash_size",
+                offset: 4,
+                len: 4,
+            },
+        ],
     },
 ];
 
@@ -507,6 +533,7 @@ pub struct Block<'b> {
     trust: Value<'b>,
     signing: Generation,
     count: usize,
+    layout: &'b [u8],
 }
 
 impl<'b> Block<'b> {
@@ -534,12 +561,14 @@ impl<'b> Block<'b> {
             .and_then(|count| usize::try_from(count).ok())
             .filter(|count| (1..=slots).contains(count))
             .ok_or(Error::Trust)?;
+        let layout = value_of(&container, LAYOUT, image::LAYOUT_FIXED_LEN)?.bytes();
         let block = Self {
             board,
             compatibility,
             trust,
             signing,
             count,
+            layout,
         };
         if (0..count).any(|index| block.key(index).is_none()) {
             return Err(Error::Trust);
@@ -575,6 +604,12 @@ impl<'b> Block<'b> {
     #[must_use]
     pub fn trusts_development_key(&self) -> bool {
         self.keys().any(|key| key.is_development())
+    }
+
+    /// The layout entry's value, to be compared whole with a layout record.
+    #[must_use]
+    pub const fn layout(&self) -> &'b [u8] {
+        self.layout
     }
 
     /// Key slot `index`; `None` when its generation is past `u16::MAX`.
@@ -616,17 +651,36 @@ const fn entry(out: &mut [u8; LEN], at: usize, kind: u16, len: usize) -> usize {
     at + ENTRY_HEADER_LEN
 }
 
-/// The block of `info`, as an image carries it: the header, then the board,
-/// compatibility and trust entries, unused key slots zero.
+/// The block of `info` up to its layout entry, as an image carries it: the
+/// header, whose total length counts a layout entry of `layout_len` bytes
+/// after what this writes, then the board, compatibility and trust entries,
+/// unused key slots zero. The layout entry, [`layout_header`] then the
+/// value, follows.
+///
+/// # Panics
+///
+/// When the block with its layout entry runs past [`MAX_LEN`]; in a
+/// `const`, that fails the build.
 #[must_use]
-pub const fn encode(info: &ImageInfo) -> [u8; LEN] {
+pub const fn encode(info: &ImageInfo, layout_len: usize) -> [u8; LEN] {
+    let total = LEN + ENTRY_HEADER_LEN + layout_len;
+    assert!(total <= MAX_LEN, "the block runs past its longest");
     let mut out = [0; LEN];
     put(&mut out, 0, &MAGIC.to_le_bytes());
-    put(&mut out, 4, &short(LEN).to_le_bytes());
+    put(&mut out, 4, &short(total).to_le_bytes());
     let at = encode_board(&mut out, HEADER_LEN, &info.board);
     let at = encode_compatibility(&mut out, at, info.compatibility);
     encode_trust(&mut out, at, &info.trust);
     out
+}
+
+/// The header of a layout entry whose value is `len` bytes long, which
+/// follows what [`encode`] writes.
+#[must_use]
+pub const fn layout_header(len: usize) -> [u8; ENTRY_HEADER_LEN] {
+    let [k0, k1] = LAYOUT.to_le_bytes();
+    let [l0, l1] = short(len).to_le_bytes();
+    [k0, k1, l0, l1]
 }
 
 /// Writes the board entry of `board` at `at` in `out`, and returns the offset
@@ -679,12 +733,11 @@ const fn encode_trust(out: &mut [u8; LEN], at: usize, trust: &Trust) {
     }
 }
 
-/// What [`read`] finds after an image's layout record.
+/// What [`read`] finds after an image's app descriptor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Found<'b> {
-    /// The image has no layout record, or no block follows it: the bytes
-    /// there don't start with [`MAGIC`], as in an image built before blocks
-    /// existed.
+    /// No block follows the descriptor: the bytes there don't start with
+    /// [`MAGIC`], as in an image built before blocks existed.
     Absent,
     /// A block's bytes, its total length long, for [`Block::parse`].
     Block(&'b [u8]),
@@ -693,8 +746,8 @@ pub enum Found<'b> {
     BadLength,
 }
 
-/// Finds the block of the app image in `source`, right after its layout
-/// record, inside the image's first segment, and reads its bytes into
+/// Finds the block of the app image in `source`, right after its app
+/// descriptor, inside the image's first segment, and reads its bytes into
 /// `buf`.
 ///
 /// # Errors
@@ -705,17 +758,14 @@ pub fn read<'b, S: Source + ?Sized>(
     source: &S,
     buf: &'b mut [u8; MAX_LEN],
 ) -> Result<Found<'b>, ImageError> {
-    let Some(layout) = image::app_layout(source)? else {
-        return Ok(Found::Absent);
-    };
-    let room = usize::try_from(layout.segment_end().saturating_sub(layout.end()))
-        .unwrap_or(usize::MAX)
-        .min(MAX_LEN);
+    let room = image::info_room(source)?;
+    let at = room.offset;
+    let room = usize::try_from(room.len).unwrap_or(0).min(MAX_LEN);
     let mut header = [0; HEADER_LEN];
     if room < HEADER_LEN {
         return Ok(Found::Absent);
     }
-    source.read(layout.end(), &mut header)?;
+    source.read(at, &mut header)?;
     let [m0, m1, m2, m3, l0, l1] = header;
     if u32::from_le_bytes([m0, m1, m2, m3]) != MAGIC {
         return Ok(Found::Absent);
@@ -727,7 +777,7 @@ pub fn read<'b, S: Source + ?Sized>(
     else {
         return Ok(Found::BadLength);
     };
-    source.read(layout.end(), block)?;
+    source.read(at, block)?;
     Ok(Found::Block(block))
 }
 

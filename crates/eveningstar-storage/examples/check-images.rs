@@ -8,8 +8,9 @@
 //!   entry to add to `known.rs` when it isn't there, and its entry's table
 //!   offset and rollback checked;
 //! - the app verified as an ESP32-C6 image of the `eveningstar` project that
-//!   fits `ota_0`, the layout record right after its descriptor equal to the
-//!   generated layout's, its size measured against [`SLOT_BUDGET_PERCENT`],
+//!   fits `ota_0`, with an image information block right after its
+//!   descriptor that reads and whose layout entry equals the generated
+//!   layout, its size measured against [`SLOT_BUDGET_PERCENT`],
 //!   and the three of them, flashed as `flash-all` writes them, reaching the
 //!   boot tier through the verification chain.
 //!
@@ -270,35 +271,46 @@ fn check_app(checks: &mut Checks, path: &Path, bytes: &[u8]) {
     );
 }
 
-/// The app's layout record, right after its descriptor, compared with the
-/// generated layout in every byte.
+/// The layout entry of the app's image information block, right after its
+/// descriptor, compared with the generated layout in every byte and in
+/// length.
 fn check_layout_record(checks: &mut Checks, bytes: &[u8]) {
-    let embedded = match image::app_layout(bytes) {
-        Ok(Some(embedded)) => embedded,
-        Ok(None) => {
+    let entry = match image::info_entry(bytes, image::LAYOUT_ENTRY) {
+        Ok(image::InfoFound::Entry(entry)) => entry,
+        Ok(found) => {
             return checks.fail(format!(
-                "no layout record at offset {:#x} of the first segment, right after the descriptor",
-                image::LAYOUT_AT
+                "no layout entry in the image information block at offset {:#x} of the first \
+                 segment, right after the descriptor: {found:?}",
+                image::INFO_AT
             ));
         }
-        Err(error) => return checks.fail(format!("no layout record: {error:?}")),
+        Err(error) => return checks.fail(format!("no layout entry: {error:?}")),
     };
+    let at = |offset: u32, len: usize| {
+        let start = usize::try_from(entry.offset + offset).unwrap_or(usize::MAX);
+        bytes.get(start..start.saturating_add(len))
+    };
+    let word = |offset| {
+        at(offset, 4)
+            .and_then(|word| word.try_into().ok())
+            .map_or(0, u32::from_le_bytes)
+    };
+    let count = entry.len.saturating_sub(8) / 32;
     let what = format!(
-        "layout record: table at {:#x}, flash of {:#x} bytes, {} entries",
-        embedded.table_offset(),
-        embedded.flash_size(),
-        embedded.entry_count()
+        "layout entry: table at {:#x}, flash of {:#x} bytes, {count} partitions",
+        word(0),
+        word(4),
     );
-    match embedded.matches(bytes, &LAYOUT_RECORD) {
+    match LAYOUT_RECORD.matches(bytes, &entry) {
         Ok(true) => checks.pass(format!("{what}, the generated layout's")),
         Ok(false) => {
             checks.fail(format!("{what}, not the generated layout's"));
             let expected = LAYOUT_RECORD.entries();
-            for index in 0..embedded.entry_count().max(len_u32(expected.len())) {
-                let found = embedded.entry(bytes, index).ok().flatten();
+            for index in 0..count.max(len_u32(expected.len())) {
+                let found = at(8 + 32 * index, 32);
                 let wanted = usize::try_from(index).ok().and_then(|i| expected.get(i));
-                if found.as_ref() != wanted {
-                    println!("        entry {index} differs");
+                if found != wanted.map(|wanted| &wanted[..]) {
+                    println!("        partition {index} differs");
                 }
             }
         }
@@ -306,8 +318,8 @@ fn check_layout_record(checks: &mut Checks, bytes: &[u8]) {
     }
 }
 
-/// The app's image information block, right after its layout record, read
-/// as a reader of the block reads it.
+/// The app's image information block, right after its descriptor, read as a
+/// reader of the block reads it.
 fn check_image_info(checks: &mut Checks, bytes: &[u8]) {
     let mut buf = [0; eveningstar_image_info::MAX_LEN];
     let block = match eveningstar_image_info::read(bytes, &mut buf) {
@@ -338,7 +350,7 @@ fn check_image_info(checks: &mut Checks, bytes: &[u8]) {
                 .map(|key| format!("{:?}", key.generation()))
                 .collect();
             checks.pass(format!(
-                "image information after the layout record: board {} (revisions {:#x}), \
+                "image information after the descriptor: board {} (revisions {:#x}), \
                  configuration schemas {} to {}, signed with {:?}, trusting {}",
                 info.board().name(),
                 info.board().revisions(),

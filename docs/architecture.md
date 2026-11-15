@@ -478,8 +478,10 @@ Each crate uses only the crates above it.
   and return an error rather than panic on any input. The otadata planners
   compute the erases and programs ESP-IDF's rules call for, and the caller
   carries them out. `ReadError::Stale` tells a read of a region written under
-  it from a failed device read. It also defines the layout record an app image
-  embeds (`LayoutRecord`) and reads one from an image (`app_layout`).
+  it from a failed device read. It also finds the image information block an
+  app image carries after its descriptor, and an entry of it (`info_entry`),
+  with the records crate's rules read one header at a time, and defines the
+  layout entry's value (`LayoutRecord`), which it compares whole.
 - `eveningstar-storage` owns the flash devices and splits them into region
   handles. It enforces bounds, protected spans, capabilities and write state,
   and reads no format beyond what the verification chain needs. It gives the
@@ -1011,7 +1013,7 @@ image with no rollback.
   the slot, and waits for the slot's check to verify the slot at that epoch:
   chip, segments, checksum and the appended SHA-256. It then requires the image
   to be exactly the bytes written, its project name to be the running app's
-  and its layout record to be the compiled layout's (`OtaError::Layout`), and
+  and its layout entry to be the compiled layout's (`OtaError::Layout`), and
   returns a `VerifiedImage` of that epoch. `verify_other` makes the same
   checks of the image already in the alternate slot, apart from the length.
 - `activate` takes only a `VerifiedImage` from the latest update, or from
@@ -1102,15 +1104,15 @@ the results kept since the last wait are logged before each.
   no entry after it, and compared with the layout by label; the bootloader
   verified and looked up in `known.rs`, with its entry's table offset and
   rollback; the app verified as an ESP32-C6 image of the `eveningstar` project,
-  with the layout record right after its descriptor equal to the generated
-  layout's in every byte and a readable image information block right after
-  the record; and the three, as `flash-all` writes them, taken
+  with a readable image information block right after its descriptor whose
+  layout entry equals the generated layout's in every byte and in length;
+  and the three, as `flash-all` writes them, taken
   through `split` to the boot tier. The `build` group runs it on the Nix
   bootloader and table and on the release app, and fails on a bootloader
   missing from `known.rs` (printing its entry), a table that isn't the layout,
-  an app without the layout record or with one that isn't the generated
-  layout's (printing which entries differ), an app without a readable image
-  information block after it, or an app over 75% of its slot.
+  an app without a readable image information block, or whose layout entry
+  isn't the generated layout's (printing which partitions differ), or an app
+  over 75% of its slot.
 - The tests of the four storage crates read fixtures built by Nix and real
   captures in `crates/eveningstar-esp-formats/testdata/` (see its README). The
   `build` group fails when the Nix-built ones are stale.
@@ -1121,9 +1123,10 @@ the results kept since the last wait are logged before each.
 - The OTA tests cut the power after any erase or program, in each way a NOR
   program can be cut, and boot a simulated bootloader afterwards, from a first
   boot, a rollback target, a pending activation and a fallback. They also
-  refuse images with no layout record, with one four bytes after the
-  descriptor, with a first segment that ends inside it and with one of another
-  layout, and take only the record right after the descriptor.
+  refuse images with no information block, with one four bytes after the
+  descriptor, with a first segment that ends inside it, with no layout entry
+  or two, and with one of another layout, and take only the block right after
+  the descriptor.
 
 ### The storage API
 

@@ -110,8 +110,8 @@ impl<'o, 'f> Update<'o, 'f> {
     /// waits for the slot's check to verify the slot at that epoch (header,
     /// chip, segments, checksum and the appended SHA-256), compares the
     /// image's length with the bytes written, its project name with the
-    /// running app's and the layout record it embeds with the compiled
-    /// layout's, and returns the [`VerifiedImage`] of that epoch.
+    /// running app's and the layout entry of its information block with the
+    /// compiled layout, and returns the [`VerifiedImage`] of that epoch.
     ///
     /// # Errors
     ///
@@ -120,7 +120,7 @@ impl<'o, 'f> Update<'o, 'f> {
     /// image doesn't verify or its descriptor doesn't read,
     /// [`OtaError::Length`] when the bytes written are more or fewer than the
     /// image, [`OtaError::Project`] when it names another project,
-    /// [`OtaError::Layout`] when it embeds no layout record or one of another
+    /// [`OtaError::Layout`] when it carries no layout entry or one of another
     /// layout, and [`OtaError::Changed`] when the slot was written again
     /// before the check kept its result, or its write state records no epoch.
     pub async fn finish(mut self) -> Result<VerifiedImage<'f>, OtaError> {
@@ -301,7 +301,7 @@ fn version_of(
     }
 }
 
-/// Whether the image `model` describes embeds the compiled layout's record,
+/// Whether the image `model` describes carries the compiled layout's entry,
 /// read at the model's epoch. Never inlined, so the reads stay out of its
 /// caller's frame.
 #[inline(never)]
@@ -327,7 +327,7 @@ fn built_for_the_layout(
 /// [`OtaError::Image`] when the image doesn't verify or its descriptor
 /// doesn't read, [`OtaError::Length`] when its length isn't the bytes
 /// written, [`OtaError::Project`] when it names another project, and
-/// [`OtaError::Layout`] when it doesn't embed the compiled layout's record.
+/// [`OtaError::Layout`] when it doesn't carry the compiled layout's entry.
 #[inline(never)]
 fn verified<'f>(
     module: &AppSlot<'_, AlternateApp>,

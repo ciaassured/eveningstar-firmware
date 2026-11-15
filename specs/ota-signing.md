@@ -382,8 +382,8 @@ whoever has it can reflash anything, by design.
 - **Replay.** Uploading a signed image again installs the same image again.
   It is harmless within the downgrade rule.
 - **Wrong board or layout.** The image's chip ID and revision range (header),
-  project name (descriptor), compiled layout (layout record) and board
-  (a new board entry, decision 8) are read from the verified bytes and
+  project name (descriptor), compiled layout (the block's layout entry) and
+  board (a new board entry, decision 8) are read from the verified bytes and
   compared. All of them are covered by the signature, because the signed
   digest covers the whole image.
 - **Endless data.** The image is bounded by the slot, the signature file by
@@ -540,7 +540,7 @@ The device accepts a subset of what signify accepts, never more:
 
 The signed message carries the image's SHA-256 directly. Version
 (`secure_version` and the version string), target (chip ID and revision range,
-project name, board entry) and layout (layout record) are bytes of the
+project name, board entry) and layout (layout entry) are bytes of the
 image, so the digest covers them; the device reads them from the image it
 verified, never from the manifest or the file name.
 
@@ -613,15 +613,14 @@ from the repository at the release's signed tag and from the release notes.
 
 ### The image's own records
 
-The firmware already places the layout record right after the app
-descriptor, through the `.flash.appdesc.*` input sections esp-hal's linker
-script puts at the start of the first segment, and reads it from a fixed
-offset (`image::app_layout`). The other facts an update is judged by follow
-it in one block, the image information, at the offset right after the
-layout record. esp-hal's `.flash.appdesc` output section keeps the
-`.flash.appdesc.*` input sections in no defined order, so the layout record
-and the block are one `static` in one input section, the record first;
-`check-images` checks both offsets.
+The facts an update is judged by lie in one block, the image information,
+right after the app descriptor, through the `.flash.appdesc.*` input
+sections esp-hal's linker script puts at the start of the first segment.
+The compiled partition layout is one of its entries (decided 2026-11-15: it
+was a record of its own, at the same place, before the block existed). The
+block is one `static` in one input section, as the output section keeps
+input sections in no defined order; `check-images` reads it where a reader
+looks for it.
 
 The block's problem is the configuration's: an older firmware reads the
 block of a newer image. So it uses one encoding that never changes and grows
@@ -666,8 +665,19 @@ The types now:
 As built (`eveningstar-image-info`, 2026-11-15):
 
 - The magic is `0x4949_5345` (`ESII`), and the types are 1 (board), 2
-  (compatibility) and 3 (trust). The crate's `registry.txt` is the committed
-  registry.
+  (compatibility), 3 (trust) and 4 (layout). The crate's `registry.txt` is
+  the committed registry.
+- **Layout:** the table's offset and the flash size, then each partition in
+  the ESP-IDF table's 32-byte encoding, in table order
+  (`eveningstar_esp_formats::image::LayoutRecord`; the compiled one is
+  `eveningstar_storage::LAYOUT_RECORD`). It is the one type exempt from "a
+  value only grows": it is compared whole, byte for byte and in length, as
+  any difference is another layout, so a value that grew is refused. The
+  registry describes its two fixed fields; the partitions are the rest of the
+  value. The layout check reads it with the block's headers one at a time
+  (`image::info_entry`, the records crate's `streamed::find`, which gives a
+  held container's verdict, pinned by a property test and the records fuzz
+  target), so it needs no buffer for the block.
 - **Board:** a 16-byte name, `[a-z0-9-]` zero-padded, then the revisions as a
   32-bit set (bit `n` for revision `n`). The board crate gives the name
   (`eveningstar`) and the revision (2, the only one; earlier revisions were
@@ -685,15 +695,16 @@ As built (`eveningstar-image-info`, 2026-11-15):
 - A key is the development key when its public key is the development key's,
   whatever generation the block states, as "Development and release keys"
   requires; the stated generation is only reported.
-- The firmware places the layout record and the block in one `static` of
-  `#[repr(C)]` byte arrays, so they lie in that order with no gap, and
-  `check-images` reads the release build's block where a reader looks for it.
+- The firmware places the block in one `static` of `#[repr(C)]` byte arrays:
+  what `encode` writes (the header, whose total length counts the layout
+  entry, then the board, compatibility and trust), the layout entry's header,
+  then the compiled layout record, with no gap.
 - Readers find the block with `read`, which reports no block (an image built
   before blocks existed), a block too long for its room, or the block's
   bytes, and parse it in place with `Block::parse`, which copies none of it.
 
-The layout record stays as it is: it is compared byte for byte, and it can
-never change over OTA anyway.
+The layout can never change over OTA anyway; its entry is required, and a
+missing, duplicated or different one refuses the image (`OtaError::Layout`).
 
 The block is bytes of the image, so the signed digest covers it: the running
 firmware reads it from the uploaded image as the slot's check verified it,
@@ -991,7 +1002,7 @@ Three operations:
    update replaces firmware that has none); if it no longer loads, the
    bootloader falls back anyway. After confirmation the target must also
    pass the ESP image check (the slot check's result at the slot's current
-   epoch), the project name, the layout record and the board entry, a
+   epoch), the project name, the layout entry and the board entry, a
    missing board entry reading as unknown and refused; a corrupted image
    is refused, as the bootloader would refuse it. No signature or trust set
    is checked: the image was verified when it arrived, and its signature
@@ -1135,7 +1146,7 @@ is confirmed, the firmware retires such an image.
 What an update has to be compatible with is on the flash, and none of it is
 the signature's business:
 
-- **Layout:** fixed; the layout record is compared at upload.
+- **Layout:** fixed; the layout entry is compared at upload.
 - **Board:** the board entry, compared at upload (decision 8).
 - **Configuration:** each image carries the migrations from every schema it
   still supports to its own, and runs them in its trial boot from the
@@ -1239,12 +1250,11 @@ every past schema to the current one.
 4. **First verification.** The slot is read at E through a snapshot, with
    the held first word laid over its first 4 bytes: header, segments,
    checksum, appended SHA-256, the file SHA-256 (accelerator), the
-   descriptor, the layout record and the image information block; then the
-   signature region at S, parsed and verified under the running trust set;
-   then
-   the matching manifest line's digest compared with the file SHA-256. Every
-   byte verified is read back from the flash at E, except those 4, which are
-   the exact bytes programmed next. Nothing else from the HTTP body is
+   descriptor and the image information block, its layout entry included;
+   then the signature region at S, parsed and verified under the running
+   trust set; then the matching manifest line's digest compared with the
+   file SHA-256. Every byte verified is read back from the flash at E,
+   except those 4, which are the exact bytes programmed next. Nothing else from the HTTP body is
    trusted. The slot's own check, which also sees epoch E, finds no image
    there; the update's result isn't kept as the slot's verdict.
 5. **Policy.** On that result `finish` checks the length written, the
@@ -1690,9 +1700,11 @@ first proposed, so earlier references hold; 38 isn't used.
    recovers.
 8. **Board entry.** In the image information block (board name and the
    revisions the image supports), checked like the layout.
-9. **The image's own records.** One image information block after the
-   layout record: magic and length, then type-length-value entries; unknown
-   types skipped, values only grow, meanings never change.
+9. **The image's own records.** One image information block right after
+   the app descriptor: magic and length, then type-length-value entries;
+   unknown types skipped, values only grow, meanings never change. The
+   partition layout is its layout entry, the one value compared whole
+   (decided 2026-11-15).
 10. **Trust sets per build.** Development builds trust the development key
     and N to N+2, so a board flashed with one by mistake updates over the air
     to a release; release builds trust N to N+2 only.

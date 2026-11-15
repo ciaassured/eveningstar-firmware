@@ -64,13 +64,13 @@ and update it when a design decision changes.
   the Nix bootloader, the Nix table and the release build's app image run
   through the storage crate's `check-images` example, which fails on a
   bootloader missing from `known.rs`, printing its entry, a table that isn't the
-  layout or that the bootloader would refuse, an app without the layout record
-  right after its descriptor or with one that isn't the generated layout, an
-  app without a readable image information block after the record, or an app
-  over 75% of its slot) and `nix run .#checks -- test` (tests of the crates
-  that also build on the host, run on the host target, and the web UI's tests)
-  run one group. `lint` and `test` are each two finer groups, `rust-lint` and
-  `web-lint`, `rust-test` and `web-test`, which CI runs as separate jobs.
+  layout or that the bootloader would refuse, an app without a readable image
+  information block right after its descriptor or whose layout entry isn't
+  the generated layout, or an app over 75% of its slot) and
+  `nix run .#checks -- test` (tests of the crates that also build on the host,
+  run on the host target, and the web UI's tests) run one group. `lint` and
+  `test` are each two finer groups, `rust-lint` and `web-lint`, `rust-test`
+  and `web-test`, which CI runs as separate jobs.
   `nix run .#checks -- fuzz` runs each fuzz target for a minute; it is a CI
   job, not a default group or a hook. The
   crates that also build on the host are listed in `host_crates` in
@@ -152,11 +152,11 @@ design and what is left.
 - A layout change goes through `nix/board.nix`, then `storage-layout` (rewrites
   `crates/eveningstar-storage/src/layout.rs`) and `storage-testdata` (rewrites
   the fixtures in `crates/eveningstar-esp-formats/testdata/`). The layout can't
-  change over OTA: every app image embeds the compiled layout as a layout record
-  right after its descriptor, and `Update::finish` and `Ota::verify_other` (so
-  `roll_back` too) refuse an image whose record is missing or differs
-  (`OtaError::Layout`). Once boards ship, changing the layout needs the user's
-  approval.
+  change over OTA: every app image carries the compiled layout as the layout
+  entry of its image information block, right after its descriptor, and
+  `Update::finish` and `Ota::verify_other` (so `roll_back` too) refuse an image
+  whose entry is missing or differs (`OtaError::Layout`). Once boards ship,
+  changing the layout needs the user's approval.
 - A new bootloader needs an entry in `crates/eveningstar-storage/src/known.rs`,
   with its table offset and rollback support, which the `build` group prints
   when it is missing. The list only grows once boards have shipped.

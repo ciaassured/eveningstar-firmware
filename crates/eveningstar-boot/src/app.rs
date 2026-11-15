@@ -382,7 +382,7 @@ impl<'f, R: AppRole> AppSlot<'f, R> {
         verdict(image::app_descriptor(&snapshot))
     }
 
-    /// How the layout record of the image `model` describes compares with
+    /// How the layout entry of the image `model` describes compares with
     /// the compiled layout ([`LAYOUT_RECORD`]), read again at the model's
     /// epoch.
     ///
@@ -426,28 +426,30 @@ impl<R: AppRole> fmt::Debug for AppSlot<'_, R> {
     }
 }
 
-/// How an app image's layout record compares with the compiled layout
-/// ([`LAYOUT_RECORD`]).
+/// How the layout entry of an app image's information block compares with
+/// the compiled layout ([`LAYOUT_RECORD`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Layout {
-    /// The record equals the compiled layout in every byte.
+    /// The entry equals the compiled layout in every byte and in length.
     Compiled,
-    /// The record describes another layout.
+    /// The entry describes another layout.
     Other,
-    /// No record lies right after the image's descriptor.
+    /// No block lies right after the image's descriptor, the block's framing
+    /// doesn't read, or it holds no layout entry or more than one.
     Missing,
 }
 
-/// How the layout record of the image `source` reads compares with the
+/// How the layout entry of the image `source` reads compares with the
 /// compiled layout.
 fn compare_layout<S: Source + ?Sized>(source: &S) -> Result<Layout, ImageError> {
-    let Some(layout) = image::app_layout(source)? else {
-        return Ok(Layout::Missing);
-    };
-    if layout.matches(source, &LAYOUT_RECORD)? {
-        Ok(Layout::Compiled)
-    } else {
-        Ok(Layout::Other)
+    match image::info_entry(source, image::LAYOUT_ENTRY)? {
+        image::InfoFound::Entry(entry) if LAYOUT_RECORD.matches(source, &entry)? => {
+            Ok(Layout::Compiled)
+        }
+        image::InfoFound::Entry(_) => Ok(Layout::Other),
+        image::InfoFound::NoBlock | image::InfoFound::Invalid(_) | image::InfoFound::Missing => {
+            Ok(Layout::Missing)
+        }
     }
 }
 

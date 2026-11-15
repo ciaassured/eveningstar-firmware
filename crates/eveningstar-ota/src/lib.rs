@@ -23,10 +23,11 @@
 //! the one running, or an activated one with its rollback armed. Nothing in the
 //! crate reboots: activating and rolling back take effect at the next boot.
 //!
-//! An image verifies only when it embeds the record of the compiled partition
-//! layout right after its descriptor ([`LAYOUT_RECORD`]): nothing here writes
-//! the partition table or the bootloader, so an image built for another layout
-//! would run on a layout it doesn't describe.
+//! An image verifies only when its information block, right after its
+//! descriptor, holds the compiled partition layout as its layout entry
+//! ([`LAYOUT_RECORD`]): nothing here writes the partition table or the
+//! bootloader, so an image built for another layout would run on a layout it
+//! doesn't describe.
 //!
 //! [`Ota`] is ready ([`Ota::readiness`]) once the running app's image
 //! verifies and its descriptor reads, which gives the project name an update

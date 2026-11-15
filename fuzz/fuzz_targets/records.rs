@@ -3,7 +3,7 @@
 
 #![no_main]
 
-use eveningstar_records::{Container, Error, Value, Writer};
+use eveningstar_records::{Container, Error, Value, Writer, streamed};
 use libfuzzer_sys::fuzz_target;
 
 const MAGIC: u32 = 0x4F46_4E49;
@@ -11,7 +11,29 @@ const MAGIC: u32 = 0x4F46_4E49;
 fuzz_target!(|data: &[u8]| {
     read(data);
     round_trip(data);
+    streamed_agrees(data);
 });
+
+/// Finding each type with the container read through a callback gives what
+/// the held container gives.
+fn streamed_agrees(data: &[u8]) {
+    for kind in 0..8 {
+        let read = |at: usize, buf: &mut [u8]| -> Result<(), ()> {
+            buf.copy_from_slice(data.get(at..at + buf.len()).ok_or(())?);
+            Ok(())
+        };
+        let found =
+            streamed::find(data.len(), MAGIC, kind, read).expect("reads stay inside the limit");
+        let held = Container::parse(data, MAGIC).and_then(|container| container.find(kind));
+        let held = held.map(|entry| {
+            entry.map(|entry| streamed::Place {
+                offset: entry.value.as_ptr() as usize - data.as_ptr() as usize,
+                len: entry.value.len(),
+            })
+        });
+        assert_eq!(found, held);
+    }
+}
 
 /// Reads `data` as a container, as every accessor allows.
 fn read(data: &[u8]) {
