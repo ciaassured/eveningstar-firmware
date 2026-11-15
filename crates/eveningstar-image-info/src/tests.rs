@@ -1,4 +1,6 @@
-use eveningstar_esp_formats::test_support::{APP, board_layout_record, with_layout};
+use eveningstar_esp_formats::test_support::{
+    APP, app_image_with_layout, board_layout_record, with_layout,
+};
 use eveningstar_records::Writer;
 use eveningstar_records::registry;
 use eveningstar_signify::{Purpose, TrustedKey};
@@ -18,7 +20,7 @@ const fn release(generation: u16, byte: u8) -> TrustedKey {
 /// What the fixture holds: a board, schemas 0 to 0, and a development
 /// build that also trusts three release generations.
 const KEYS: &[TrustedKey] = &[
-    eveningstar_signify::trust::DEVELOPMENT_KEY,
+    trust::DEVELOPMENT_KEY,
     release(1, 0x11),
     release(2, 0x22),
     release(3, 0x33),
@@ -79,10 +81,9 @@ fn the_released_fixture_reads_and_is_what_encode_writes() {
     assert_eq!(&encode(&sample())[..], FIXTURE);
 }
 
-#[test]
-fn a_future_block_reads_as_the_same_facts() {
-    // A newer image: an unknown type first, and every value longer than
-    // this reader knows, in another order.
+/// A newer image's block: an unknown type first, and every value longer
+/// than this reader knows, in another order.
+fn future() -> Vec<u8> {
     let block = encode(&sample());
     let container = Container::parse(&block, MAGIC).unwrap();
     let mut buf = [0; MAX_LEN];
@@ -93,8 +94,16 @@ fn a_future_block_reads_as_the_same_facts() {
         longer.extend_from_slice(&[0xCD; 8]);
         writer.push(kind, &longer).unwrap();
     }
-    let future = writer.finish();
-    assert_eq!(parse(future), Ok(sample()));
+    writer.finish().to_vec()
+}
+
+/// [`future`], committed, so a change of the encoder can't change it.
+const FUTURE: &[u8] = include_bytes!("../testdata/block-future.bin");
+
+#[test]
+fn a_future_block_reads_as_the_same_facts() {
+    assert_eq!(future(), FUTURE);
+    assert_eq!(parse(FUTURE), Ok(sample()));
 }
 
 #[test]
@@ -153,12 +162,50 @@ fn values_outside_their_rules_are_refused() {
     assert_eq!(parse(&no_revision), Err(Error::Board));
     let backwards = with_value(COMPATIBILITY, |value| value[0] = 1);
     assert_eq!(parse(&backwards), Err(Error::Compatibility));
-    let many = with_value(TRUST, |value| value[4] = 5);
-    assert_eq!(parse(&many), Err(Error::Trust));
     let big = with_value(TRUST, |value| {
         value[8..12].copy_from_slice(&0x1_0000_u32.to_le_bytes());
     });
     assert_eq!(parse(&big), Err(Error::Trust));
+}
+
+#[test]
+fn slots_appended_after_the_fourth_are_read() {
+    // A later image with a fifth slot, appended after the ones `encode`
+    // writes: the development key, under generation 0.
+    let five = with_value(TRUST, |value| {
+        value[4] = 5;
+        value.extend_from_slice(&0_u32.to_le_bytes());
+        value.extend_from_slice(trust::DEVELOPMENT_KEY.keynum());
+        value.extend_from_slice(trust::DEVELOPMENT_KEY.public_key());
+    });
+    let block = Block::parse(&five).unwrap();
+    assert_eq!(block.keys().count(), 5);
+    assert!(block.keys().nth(4).unwrap().is_development());
+    // A count past the slots the value holds, and a count of 0.
+    let past = with_value(TRUST, |value| value[4] = 5);
+    assert_eq!(parse(&past), Err(Error::Trust));
+    let none = with_value(TRUST, |value| value[4] = 0);
+    assert_eq!(parse(&none), Err(Error::Trust));
+}
+
+#[test]
+fn the_development_key_is_known_by_its_bytes() {
+    // The development key's bytes under generation 7, and a release key's
+    // under generation 0.
+    let relabelled = with_value(TRUST, |value| {
+        value[8] = 7;
+        value[8 + KEY_LEN] = 0;
+    });
+    let block = Block::parse(&relabelled).unwrap();
+    let keys: Vec<Key> = block.keys().collect();
+    assert_eq!(keys[0].generation(), Generation::Release(7));
+    assert!(keys[0].is_development());
+    assert_eq!(keys[1].generation(), Generation::Development);
+    assert!(!keys[1].is_development());
+    assert!(block.trusts_development_key());
+    // Without the development key's bytes, no key is the development key.
+    let without = with_value(TRUST, |value| value[20..52].fill(0x99));
+    assert!(!Block::parse(&without).unwrap().trusts_development_key());
 }
 
 #[test]
@@ -228,5 +275,33 @@ fn an_image_s_block_is_read_after_its_layout_record() {
     let mut long = block;
     long[4..6].copy_from_slice(&u16::try_from(MAX_LEN + 4).unwrap().to_le_bytes());
     let image = with_layout(APP, &[&record[..], &long[..]].concat());
-    assert_eq!(read(&image[..], &mut buf), Ok(Found::TooLong));
+    assert_eq!(read(&image[..], &mut buf), Ok(Found::BadLength));
+
+    // A header whose length is shorter than the header itself.
+    let mut short = block;
+    short[4..6].copy_from_slice(&3_u16.to_le_bytes());
+    let image = with_layout(APP, &[&record[..], &short[..]].concat());
+    assert_eq!(read(&image[..], &mut buf), Ok(Found::BadLength));
+}
+
+#[test]
+fn a_block_is_read_only_inside_the_first_segment() {
+    // A first segment that ends 100 bytes after the layout record.
+    let record = board_layout_record();
+    let at = 256 + record.len();
+    let header = |len: u16| {
+        let mut builder = app_image_with_layout();
+        let first = &mut builder.segments[0].1;
+        first.truncate(at + 100);
+        first[at..at + 4].copy_from_slice(&MAGIC.to_le_bytes());
+        first[at + 4..at + 6].copy_from_slice(&len.to_le_bytes());
+        builder.build()
+    };
+    let mut buf = [0; MAX_LEN];
+    assert_eq!(read(&header(101)[..], &mut buf), Ok(Found::BadLength));
+    let image = header(100);
+    let Ok(Found::Block(block)) = read(&image[..], &mut buf) else {
+        panic!("a block that fills the rest of the segment is read");
+    };
+    assert_eq!(block.len(), 100);
 }

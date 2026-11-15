@@ -11,8 +11,10 @@
 //!   migrates from, and its own.
 //! - **Trust** (3): the generation the image is signed with, and the keys
 //!   its trust set holds, each with its generation, keynum and public key,
-//!   in [`MAX_KEYS`] slots of which the first `count` are used. A
-//!   generation is 0 for the development key.
+//!   in slots of which the first `count` are used. A generation is 0 for the
+//!   development key. [`encode`] writes [`MAX_KEYS`] slots; a later image
+//!   may append more, and a reader reads every slot `count` names that the
+//!   value holds.
 //!
 //! A reader requires all three, skips types it doesn't know, and reads
 //! fields a value ends before as absent. [`encode`] is a `const fn`, so a
@@ -35,7 +37,7 @@ use eveningstar_esp_formats::Source;
 use eveningstar_esp_formats::image::{self, ImageError};
 use eveningstar_records::registry::{Field, Type};
 use eveningstar_records::{Container, ENTRY_HEADER_LEN, HEADER_LEN, TooShort, Value};
-use eveningstar_signify::{Generation, Keynum, TrustSet};
+use eveningstar_signify::{Generation, Keynum, TrustSet, trust};
 
 /// The block's magic, `ESII` in its little-endian bytes.
 pub const MAGIC: u32 = 0x4949_5345;
@@ -43,9 +45,10 @@ pub const MAGIC: u32 = 0x4949_5345;
 /// The longest block a reader accepts, in bytes.
 pub const MAX_LEN: usize = 1024;
 
-/// The most keys a trust entry holds: the three release generations a
-/// trust set holds, and the development key a development build trusts
-/// beside them.
+/// The key slots [`encode`] writes, and so the most keys a [`Trust`] holds:
+/// the three release generations a trust set holds, and the development key
+/// a development build trusts beside them. A block may hold more slots,
+/// appended after these.
 pub const MAX_KEYS: usize = 4;
 
 /// The longest board name, in bytes.
@@ -329,7 +332,11 @@ pub struct Key {
 }
 
 impl Key {
-    /// The key's generation.
+    /// The key's generation, as the block states it. Whether a key is the
+    /// development key is decided by its public key ([`is_development`]),
+    /// not by this.
+    ///
+    /// [`is_development`]: Self::is_development
     #[must_use]
     pub const fn generation(&self) -> Generation {
         self.generation
@@ -345,6 +352,13 @@ impl Key {
     #[must_use]
     pub const fn public_key(&self) -> &[u8; 32] {
         &self.ed25519
+    }
+
+    /// Whether the key is the development key: whether its public key is the
+    /// development key's, whatever generation the block states.
+    #[must_use]
+    pub fn is_development(&self) -> bool {
+        self.ed25519 == *trust::DEVELOPMENT_KEY.public_key()
     }
 }
 
@@ -365,12 +379,12 @@ const NO_KEY: Key = Key {
 
 impl Trust {
     /// An image that trusts the keys of `set` and is signed with a key of
-    /// generation `signing`. `None` for more than [`MAX_KEYS`] keys, or a
-    /// release generation 0, which would read as the development key.
+    /// generation `signing`. `None` for no key or more than [`MAX_KEYS`], or
+    /// a release generation 0, which would read as the development key.
     #[must_use]
     pub const fn new(set: &TrustSet, signing: Generation) -> Option<Self> {
         let keys = set.keys();
-        if keys.len() > MAX_KEYS || generation_number(signing).is_none() {
+        if keys.is_empty() || keys.len() > MAX_KEYS || generation_number(signing).is_none() {
             return None;
         }
         let mut slots = [NO_KEY; MAX_KEYS];
@@ -409,9 +423,7 @@ impl Trust {
     /// Whether the image trusts the development key.
     #[must_use]
     pub fn trusts_development_key(&self) -> bool {
-        self.keys()
-            .iter()
-            .any(|key| key.generation == Generation::Development)
+        self.keys().iter().any(Key::is_development)
     }
 }
 
@@ -463,7 +475,7 @@ pub enum Error {
     /// The oldest schema is past the image's own.
     Compatibility,
     /// The signing generation or a key's generation is past `u16::MAX`, or
-    /// the count is past [`MAX_KEYS`].
+    /// the count is 0 or names more slots than the value holds.
     Trust,
 }
 
@@ -514,10 +526,13 @@ impl<'b> Block<'b> {
             Compatibility::parse(&value_of(&container, COMPATIBILITY, COMPATIBILITY_LEN)?)?;
         let trust = value_of(&container, TRUST, TRUST_LEN)?;
         let signing = trust.u32(0).and_then(generation_of).ok_or(Error::Trust)?;
+        // Every slot the count names must lie in the value; slots appended
+        // after the ones `encode` writes are read too.
+        let slots = trust.bytes().len().saturating_sub(8) / KEY_LEN;
         let count = trust
             .u32(4)
             .and_then(|count| usize::try_from(count).ok())
-            .filter(|count| *count <= MAX_KEYS)
+            .filter(|count| (1..=slots).contains(count))
             .ok_or(Error::Trust)?;
         let block = Self {
             board,
@@ -559,8 +574,7 @@ impl<'b> Block<'b> {
     /// Whether the image trusts the development key.
     #[must_use]
     pub fn trusts_development_key(&self) -> bool {
-        self.keys()
-            .any(|key| key.generation == Generation::Development)
+        self.keys().any(|key| key.is_development())
     }
 
     /// Key slot `index`; `None` when its generation is past `u16::MAX`.
@@ -674,9 +688,9 @@ pub enum Found<'b> {
     Absent,
     /// A block's bytes, its total length long, for [`Block::parse`].
     Block(&'b [u8]),
-    /// A header that starts with [`MAGIC`] and gives a total length past
-    /// [`MAX_LEN`] or past the image's first segment.
-    TooLong,
+    /// A header that starts with [`MAGIC`] and gives a total length shorter
+    /// than the header, or past [`MAX_LEN`] or the image's first segment.
+    BadLength,
 }
 
 /// Finds the block of the app image in `source`, right after its layout
@@ -707,8 +721,11 @@ pub fn read<'b, S: Source + ?Sized>(
         return Ok(Found::Absent);
     }
     let total = usize::from(u16::from_le_bytes([l0, l1]));
-    let Some(block) = buf.get_mut(..total).filter(|_| total <= room) else {
-        return Ok(Found::TooLong);
+    let Some(block) = buf
+        .get_mut(..total)
+        .filter(|_| (HEADER_LEN..=room).contains(&total))
+    else {
+        return Ok(Found::BadLength);
     };
     source.read(layout.end(), block)?;
     Ok(Found::Block(block))

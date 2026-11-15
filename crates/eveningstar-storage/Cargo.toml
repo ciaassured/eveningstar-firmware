@@ -19,6 +19,7 @@ critical-section = { workspace = true, features = ["std"] }
 eveningstar-esp-formats = { workspace = true, features = ["test-support"] }
 # The image information block `check-images` reads.
 eveningstar-image-info.workspace = true
+eveningstar-signify.workspace = true
 
 [features]
 # A NOR flash in RAM and the handles over it, for tests in this crate and in

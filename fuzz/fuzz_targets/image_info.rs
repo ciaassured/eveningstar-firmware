@@ -3,7 +3,7 @@
 
 #![no_main]
 
-use eveningstar_image_info::{Block, MAX_KEYS, NAME_LEN};
+use eveningstar_image_info::{Block, MAX_LEN, NAME_LEN};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
@@ -15,7 +15,12 @@ fuzz_target!(|data: &[u8]| {
     assert_ne!(board.revisions(), 0);
     let compatibility = block.compatibility();
     assert!(compatibility.oldest_schema() <= compatibility.schema());
-    assert!(block.keys().count() <= MAX_KEYS);
+    // Each key is a 44-byte slot inside the block.
+    let keys = block.keys().count();
+    assert!(keys >= 1 && keys * 44 <= MAX_LEN);
     let _ = block.signing();
-    let _ = block.trusts_development_key();
+    assert_eq!(
+        block.trusts_development_key(),
+        block.keys().any(|key| key.is_development())
+    );
 });
