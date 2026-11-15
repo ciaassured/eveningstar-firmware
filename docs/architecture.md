@@ -19,7 +19,7 @@ The workspace's crates live flat under `crates/`.
 | `eveningstar-system`      | Reboots, reboot holds and the task watchdog supervisor               |
 | `eveningstar-records`     | The record encoding firmware versions share, and its type registry   |
 | `eveningstar-signify`     | signify's signed manifests, verified under compiled trust sets       |
-| `eveningstar-image-info`  | The image information block an app image carries after its layout    |
+| `eveningstar-image-info`  | The block after an app image's descriptor: layout, board, trust      |
 | `eveningstar`             | The firmware: services, transports, drivers and watchdogs            |
 
 `eveningstar-board` and `eveningstar` build for the ESP32-C6 only; the others
@@ -1130,7 +1130,8 @@ the results kept since the last wait are logged before each.
   boot, a rollback target, a pending activation and a fallback. They also
   refuse images with no information block, with one four bytes after the
   descriptor, with a first segment that ends inside it, with no layout entry
-  or two, and with one of another layout, and take only the block right after
+  or two, with a matching layout entry followed by an entry that doesn't
+  read, and with one of another layout, and take only the block right after
   the descriptor.
 
 ### The storage API
