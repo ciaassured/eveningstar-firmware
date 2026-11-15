@@ -5,7 +5,7 @@ use core::fmt;
 use core::marker::PhantomData;
 
 use super::Reader;
-use super::handle::{Extent, read_chunked};
+use super::handle::{Window, read_chunked};
 use super::snapshot::read_checked;
 use crate::roles::is_sensitive;
 use crate::roles::{Internal, Publishable};
@@ -16,9 +16,9 @@ use crate::{ReadError, Span};
 /// Length of the buffer the sanitized spans are checked through.
 const CHECK_BUF_LEN: usize = 256;
 
-/// Whether every byte of `span`, relative to `extent`'s span, is `0xFF` at
+/// Whether every byte of `span`, relative to `window`'s span, is `0xFF` at
 /// `epoch`, read in steps of [`CHECK_BUF_LEN`] bytes.
-fn erased(extent: &Extent<'_>, epoch: Epoch, span: Span) -> Result<bool, PublishError> {
+fn erased(window: &Window<'_>, epoch: Epoch, span: Span) -> Result<bool, PublishError> {
     let mut buf = [0; CHECK_BUF_LEN];
     let end = span.end().ok_or(PublishError::SanitizedOutOfRange)?;
     let mut at = span.offset;
@@ -28,7 +28,7 @@ fn erased(extent: &Extent<'_>, epoch: Epoch, span: Span) -> Result<bool, Publish
             .unwrap_or(CHECK_BUF_LEN)
             .min(CHECK_BUF_LEN);
         let chunk = buf.get_mut(..step).unwrap_or_default();
-        read_checked(extent, epoch, at, chunk).map_err(|error| match error {
+        read_checked(window, epoch, at, chunk).map_err(|error| match error {
             ReadError::Stale => PublishError::Stale,
             ReadError::Device => PublishError::Device,
             ReadError::OutOfRange => PublishError::SanitizedOutOfRange,
@@ -86,14 +86,11 @@ impl<R: Publishable<Device = Internal>> Reader<'_, R> {
         if self.write_state() != WriteState::Stable(epoch) {
             return Err(PublishError::Stale);
         }
-        let extent = Extent {
-            span: absolute,
-            ..self.extent
-        };
+        let window = self.extent.window(absolute);
         let mut kept = [Span::default(); MAX_SANITIZED];
         let mut count = 0;
         for inner in sanitized {
-            if !erased(&extent, epoch, *inner)?
+            if !erased(&window, epoch, *inner)?
                 && let Some(slot) = kept.get_mut(count)
             {
                 *slot = *inner;
@@ -102,7 +99,7 @@ impl<R: Publishable<Device = Internal>> Reader<'_, R> {
         }
         Ok(Published {
             view: PublicView {
-                extent,
+                window,
                 span,
                 epoch,
                 sanitized: kept,
@@ -167,7 +164,7 @@ impl<R: Publishable<Device = Internal>> PublicRead for Published<'_, R> {
 pub struct PublicView<'r> {
     /// The flash and the view's absolute span. The region's physical spans
     /// are the epoch's.
-    extent: Extent<'r>,
+    window: Window<'r>,
     /// The view's span, relative to the region.
     span: Span,
     epoch: Epoch,
@@ -206,7 +203,7 @@ impl PublicRead for PublicView<'_> {
     /// epoch already.
     async fn read(&self, offset: u32, buf: &mut [u8]) -> Result<(), ViewError> {
         read_chunked(self.span.len, offset, buf, |at, chunk| {
-            read_checked(&self.extent, self.epoch, at, chunk)
+            read_checked(&self.window, self.epoch, at, chunk)
         })
         .await?;
         let len = u32::try_from(buf.len()).map_err(|_| ViewError::OutOfRange)?;

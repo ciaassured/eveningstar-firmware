@@ -744,6 +744,42 @@ fn a_view_serves_the_region_at_its_epoch() {
 }
 
 #[test]
+fn a_view_over_several_spans_fails_when_any_is_written() {
+    let flash = flash();
+    let mut otadata: Writer<'_, Otadata> = flash.writer(Span::from(layout::OTADATA), Slot::Ota0);
+    // A found app from the otadata into the first slot, and a view of it
+    // inside the first slot alone.
+    let found: Reader<'_, FoundApp> = flash.reader(Span::new(0xB000, 0x6000));
+    let epoch = stable(found.write_state());
+    let view = found.publish(epoch, Span::new(0x5000, 4), &[]).unwrap();
+    read_view(&view).unwrap();
+    // A write in the otadata, outside the view's span but inside the found
+    // app's, fails the view.
+    write_word(&mut otadata, 0x1000);
+    assert_eq!(read_view(&view), Err(ViewError::Stale));
+}
+
+#[test]
+fn publish_fails_when_another_span_is_written_while_it_checks_a_sanitized_span() {
+    let flash = flash();
+    let mut otadata: Writer<'static, Otadata> =
+        flash.writer(Span::from(layout::OTADATA), Slot::Ota0);
+    let found: Reader<'_, FoundApp> = flash.reader(Span::new(0xB000, 0x6000));
+    let epoch = stable(found.write_state());
+    // The sanitized span lies in the first slot; the otadata is written
+    // during its check's read.
+    flash
+        .device()
+        .before_call(0, move || write_word(&mut otadata, 0x1000));
+    assert_eq!(
+        found
+            .publish(epoch, Span::new(0x5000, 8), &[Span::new(0, 4)])
+            .unwrap_err(),
+        PublishError::Stale
+    );
+}
+
+#[test]
 fn a_view_reads_in_4_kib_steps() {
     let flash = flash();
     let (reader, _) = alternate(&flash);
