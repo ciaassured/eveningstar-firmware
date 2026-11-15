@@ -619,7 +619,7 @@ Each role below gives its span, its class and its handles.
 - `CurrentSignature`: the current slot's signature region. Publishable. Reader
   in the layout and boot tiers.
 - `AlternateSignature`: the alternate slot's signature region. Publishable.
-  Writer in the boot tier.
+  Reader in the layout and boot tiers; writer in the boot tier.
 - `Diag`: `diag`. Sensitive. Writer in the layout and boot tiers.
 - `Factory`: `factory`. Sensitive. No handle.
 - `Chip`: the whole flash. Sensitive. No handle.
@@ -913,8 +913,8 @@ below the boot tier.
 - `Layout`
   - Reached when: steps 2 to 6 pass, with the table found by the search or a
     known bootloader without rollback.
-  - Handles: the unverified tier's, and readers of the slots and the otadata;
-    writers of the configurations and `diag`.
+  - Handles: the unverified tier's, and readers of the slots, their signature
+    regions and the otadata; writers of the configurations and `diag`.
 - `Boot`
   - Reached when: steps 2 to 6 pass, with the table located by a known
     bootloader that supports rollback.

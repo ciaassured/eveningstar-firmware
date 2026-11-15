@@ -34,13 +34,13 @@
 //!   - Reached when: steps 2 to 6 pass, the table found by the search or a
 //!     known bootloader without rollback.
 //!   - Handles: [`Storage::bootloader`], [`Storage::partition_table`],
-//!     [`LayoutHandles`]: readers of the slots and the otadata, writers of the
-//!     configurations and `diag`.
+//!     [`LayoutHandles`]: readers of the slots, their signature regions and
+//!     the otadata, writers of the configurations and `diag`.
 //! - [`Tier::Boot`]
 //!   - Reached when: steps 2 to 6 pass, the table located by a known
 //!     bootloader that supports rollback.
 //!   - Handles: the layout tier's, and [`BootWriters`]: writers of the
-//!     alternate slot and the otadata.
+//!     alternate slot, its signature region and the otadata.
 //!
 //! No reader of a role located at runtime ([`Located`]) is made over a span
 //! that shares a byte with `factory`, a configuration or `diag` of the
@@ -370,6 +370,8 @@ pub struct LayoutHandles<'f> {
     pub alternate_config: Writer<'f, AlternateConfig>,
     /// The current slot's signature region.
     pub current_signature: Reader<'f, CurrentSignature>,
+    /// The alternate slot's signature region.
+    pub alternate_signature: Reader<'f, AlternateSignature>,
     /// The diagnostics partition.
     pub diag: Writer<'f, Diag>,
 }
@@ -839,6 +841,7 @@ fn layout_handles<'f>(
         current_config: Writer::of_partition(device, state, &slot.config(), slot),
         alternate_config: Writer::of_partition(device, state, &slot.other().config(), slot),
         current_signature: Reader::within(device, state, reader(slot.signature())),
+        alternate_signature: Reader::within(device, state, reader(slot.other().signature())),
         diag: Writer::of_partition(device, state, &layout::DIAG, slot),
     }
 }

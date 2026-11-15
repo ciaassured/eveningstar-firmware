@@ -180,6 +180,10 @@ fn layout_consistent(handles: &LayoutHandles<'_>, slot: Slot) {
         handles.current_signature.span(),
         Span::of(&slot.signature())
     );
+    assert_eq!(
+        handles.alternate_signature.span(),
+        Span::of(&slot.other().signature())
+    );
     assert_eq!(handles.diag.span(), Span::of(&DIAG));
 }
 
@@ -291,6 +295,7 @@ fn a_board_running_from_ota_1_hands_out_the_other_slot_s_regions() {
     assert_eq!(handles.alternate_config.span(), Span::of(&CONFIG_0));
     assert_eq!(writers.alternate_app.span(), Span::of(&OTA_0));
     assert_eq!(handles.current_signature.span(), Span::of(&layout::SIG_1));
+    assert_eq!(handles.alternate_signature.span(), Span::of(&layout::SIG_0));
     assert_eq!(writers.alternate_signature.span(), Span::of(&layout::SIG_0));
     assert_eq!(writers.slot(), Slot::Ota1);
 }
