@@ -507,7 +507,7 @@ work.
     image: `checking`, `empty`, `invalid` with the failure code, or
     `verified` with size, the validation hash (the stored SHA-256), the file
     SHA-256, the app descriptor (project, version, date, time, IDF version,
-    secure version, ELF SHA-256) and the layout record's comparison.
+    secure version, ELF SHA-256) and the layout entry's comparison.
   - `boot`: from the otadata: the slot selected for the next boot, its OTA
     state, whether the alternate slot is a rollback target.
   - `confirmation`: whether the running image awaits it, the reboot

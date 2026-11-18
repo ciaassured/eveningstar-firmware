@@ -8,8 +8,9 @@
 //! SHA-256 of everything before it. The checksum is the XOR of every segment
 //! data byte, seeded with `0xEF`. The first segment's data starts with the
 //! image's descriptor: `esp_app_desc_t` in an app, `esp_bootloader_desc_t` in
-//! a bootloader. In an app, a [`LayoutRecord`] of the partition layout the
-//! app is built for may follow the descriptor ([`app_layout`]).
+//! a bootloader. In an app, the image information block may follow the
+//! descriptor ([`info_room`]); its layout entry ([`info_entry`]) is a
+//! [`LayoutRecord`] of the partition layout the app is built for.
 //!
 //! The source is the partition: offsets are relative to its start, and the
 //! image has to lie inside it. The check of where mapped segments lie uses

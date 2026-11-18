@@ -994,6 +994,15 @@ fn the_layout_entry_is_found_among_others_and_only_once() {
     );
     let block = info_block(&[(1, &[1; 20])]);
     assert_eq!(found(&with_block(&block)), InfoFound::Missing);
+    // A matching layout entry, then an entry whose length isn't a multiple
+    // of 4: the whole block is read, so it is invalid.
+    let mut block = info_block(&[(LAYOUT_ENTRY, record), (1, &[1; 8])]);
+    let later = 6 + 4 + record.len();
+    block[later + 2..later + 4].copy_from_slice(&6_u16.to_le_bytes());
+    assert!(matches!(
+        found(&with_block(&block)),
+        InfoFound::Invalid(eveningstar_records::Error::EntryPadding { .. })
+    ));
 }
 
 #[test]

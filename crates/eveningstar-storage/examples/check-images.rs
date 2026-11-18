@@ -325,7 +325,7 @@ fn check_image_info(checks: &mut Checks, bytes: &[u8]) {
     let block = match eveningstar_image_info::read(bytes, &mut buf) {
         Ok(Found::Block(block)) => block,
         Ok(Found::Absent) => {
-            return checks.fail("no image information block after the layout record");
+            return checks.fail("no image information block after the descriptor");
         }
         Ok(Found::BadLength) => {
             return checks

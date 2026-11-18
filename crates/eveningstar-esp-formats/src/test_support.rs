@@ -436,7 +436,8 @@ pub fn with_layout(image: &[u8], record: &[u8]) -> Vec<u8> {
     })
 }
 
-/// [`app_image`] with the board's layout record after its descriptor.
+/// [`app_image`] with an information block holding the board's layout entry
+/// after its descriptor.
 pub fn app_image_with_layout() -> ImageBuilder {
     let mut builder = app_image();
     let record = board_layout_record();
