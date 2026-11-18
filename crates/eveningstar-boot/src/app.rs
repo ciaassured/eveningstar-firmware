@@ -19,6 +19,22 @@
 //! verified at; [`AppSlot::verdict`] gives the result at a given epoch once
 //! the check has kept it, so no image is hashed twice for one epoch.
 //!
+//! A slot made with its signature region ([`AppSlot::signed`], the current
+//! and the alternate slot) also judges the region's file under a trust set
+//! for the image's file SHA-256, once the image verifies, and keeps that
+//! [`Signature`] in the model with the region's epoch ([`SlotSignature`]).
+//! A model is whole while both regions are stable at its epochs: a new epoch
+//! of the signature region alone judges the signature again without hashing
+//! the image, and [`AppSlot::model`] and [`AppSlot::verdict`] give only whole
+//! models. The check reads the region through the caller's buffer.
+//!
+//! An update's first verification ([`AppSlot::verify_overlaid`]) runs the
+//! same check over the alternate slot with the image's first word, which the
+//! update holds back, laid over the slot's, and returns its model instead of
+//! keeping it. It judges the signature with the signature region at the epoch
+//! the update's write of the signature file ended at ([`Held`]), refuses any
+//! other, and never waits for a session to end.
+//!
 //! The image's descriptor ([`AppSlot::descriptor`]) and how its layout
 //! record compares with the compiled layout ([`AppSlot::layout`]) are read
 //! again on request, through a snapshot at the model's epoch.
@@ -50,6 +66,8 @@
 //!     AppModel { image: Err(ImageFailure::Magic), ..model }
 //! }
 //! ```
+//!
+//! [`Signature`]: crate::signature::Signature
 
 use core::cell::RefCell;
 use core::fmt;
@@ -63,12 +81,16 @@ use embassy_sync::waitqueue::MultiWakerRegistration;
 use eveningstar_esp_formats::hash::Sha256Hasher;
 use eveningstar_esp_formats::image::{self, AppDescriptor, Header, ImageError};
 use eveningstar_esp_formats::pace::Pace;
-use eveningstar_storage::nor::{Published, Reader, Snapshot};
-use eveningstar_storage::roles::{AlternateApp, CurrentApp, FoundApp, Internal, Publishable};
-use eveningstar_storage::{Epoch, LAYOUT_RECORD, Source, Span, WriteState};
+use eveningstar_signify::TrustSet;
+use eveningstar_storage::nor::{Published, Reader, Snapshot, WORD_SIZE};
+use eveningstar_storage::roles::{
+    AlternateApp, AlternateSignature, CurrentApp, CurrentSignature, FoundApp, Internal, Publishable,
+};
+use eveningstar_storage::{Epoch, LAYOUT_RECORD, ReadError, Source, Span, WriteState};
 
-use crate::error::{ImageFailure, LoadError, Unpublished, at, failure, publish, verdict, whole};
+use crate::error::{ImageFailure, LoadError, Unpublished, at, failure, publish, verdict};
 use crate::pace::{Paced, Progress};
+use crate::signature::{FileBuf, SignatureRegion, SlotSignature};
 
 mod sealed {
     /// Implemented by the app roles only.
@@ -89,6 +111,9 @@ impl AppRole for FoundApp {}
 /// The most tasks waiting for one slot's result at once. Registering one
 /// more wakes every task held, each of which registers again when polled.
 const WAITERS: usize = 4;
+
+/// Length of the image's first word, which an update holds back.
+const WORD: usize = WORD_SIZE as usize;
 
 /// An app image that verified.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -131,6 +156,10 @@ impl VerifiedApp {
 pub struct AppModel<R> {
     epoch: Epoch,
     image: Result<VerifiedApp, ImageFailure>,
+    signature: Option<SlotSignature>,
+    /// The first word laid over the slot's, for an update's first
+    /// verification ([`AppSlot::verify_overlaid`]).
+    overlay: Option<[u8; WORD]>,
     role: PhantomData<fn() -> R>,
 }
 
@@ -152,6 +181,20 @@ impl<R> AppModel<R> {
             Err(failure) => Err(*failure),
         }
     }
+
+    /// The image's signature: `None` for a slot without a signature region,
+    /// or an image that doesn't verify.
+    #[must_use]
+    pub const fn signature(&self) -> Option<&SlotSignature> {
+        self.signature.as_ref()
+    }
+
+    /// Whether the model is of the slot with its first word replaced, from
+    /// [`AppSlot::verify_overlaid`], and not of the bytes the slot holds.
+    #[must_use]
+    pub const fn is_overlaid(&self) -> bool {
+        self.overlay.is_some()
+    }
 }
 
 impl<R> Clone for AppModel<R> {
@@ -164,7 +207,10 @@ impl<R> Copy for AppModel<R> {}
 
 impl<R> PartialEq for AppModel<R> {
     fn eq(&self, other: &Self) -> bool {
-        self.epoch == other.epoch && self.image == other.image
+        self.epoch == other.epoch
+            && self.image == other.image
+            && self.signature == other.signature
+            && self.overlay == other.overlay
     }
 }
 
@@ -175,8 +221,115 @@ impl<R> fmt::Debug for AppModel<R> {
         f.debug_struct("AppModel")
             .field("epoch", &self.epoch)
             .field("image", &self.image)
+            .field("signature", &self.signature)
+            .field("overlaid", &self.overlay.is_some())
             .finish()
     }
+}
+
+/// A slot's signature region.
+#[derive(Clone, Copy)]
+enum Region<'f> {
+    Current(&'f SignatureRegion<'f, CurrentSignature>),
+    Alternate(&'f SignatureRegion<'f, AlternateSignature>),
+}
+
+impl Region<'_> {
+    /// The region's write state now.
+    fn write_state(self) -> WriteState {
+        match self {
+            Self::Current(region) => region.write_state(),
+            Self::Alternate(region) => region.write_state(),
+        }
+    }
+
+    /// Completes once a session on the region ends at a new epoch, from
+    /// the region's state when called.
+    fn changed<'a>(self) -> impl Future<Output = ()> + 'a
+    where
+        Self: 'a,
+    {
+        let (current, alternate) = match self {
+            Self::Current(region) => (Some(region.changed()), None),
+            Self::Alternate(region) => (None, Some(region.changed())),
+        };
+        async move {
+            if let Some(changed) = current {
+                changed.await;
+            } else if let Some(changed) = alternate {
+                changed.await;
+            }
+        }
+    }
+
+    /// Completes once no session is open on the region.
+    async fn settle(self) {
+        loop {
+            // Taken before the look, so a session that ends after the look
+            // completes it.
+            let changed = self.changed();
+            if self.write_state().is_stable() {
+                return;
+            }
+            changed.await;
+        }
+    }
+
+    /// The region's signature under `trust` for the image with the SHA-256
+    /// `file_sha256`, read through `buf`, at the region's epoch now.
+    fn judge(
+        self,
+        trust: &TrustSet,
+        file_sha256: &[u8; 32],
+        buf: &mut FileBuf,
+    ) -> Result<SlotSignature, LoadError> {
+        match self {
+            Self::Current(region) => judge(region, trust, file_sha256, buf),
+            Self::Alternate(region) => judge(region, trust, file_sha256, buf),
+        }
+    }
+}
+
+/// `region`'s signature under `trust` for the image with the SHA-256
+/// `file_sha256`, read through `buf`, at the region's epoch now. Never
+/// inlined, so the models stay out of the callers' frames.
+#[inline(never)]
+fn judge<R: crate::signature::SignatureRole>(
+    region: &SignatureRegion<'_, R>,
+    trust: &TrustSet,
+    file_sha256: &[u8; 32],
+    buf: &mut FileBuf,
+) -> Result<SlotSignature, LoadError> {
+    region.load(buf)?;
+    let model = region.model().ok_or(LoadError::Stale)?;
+    region.check(&model, trust, file_sha256, buf)
+}
+
+impl fmt::Debug for Region<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Current(region) => region.fmt(f),
+            Self::Alternate(region) => region.fmt(f),
+        }
+    }
+}
+
+/// A slot's signature region and the trust set its signature is judged
+/// under.
+#[derive(Clone, Copy, Debug)]
+struct Signed<'f> {
+    region: Region<'f>,
+    trust: &'static TrustSet,
+}
+
+/// What a slot's result kept lacks for an epoch.
+enum Needs {
+    /// Nothing: the result is whole.
+    Nothing,
+    /// The signature of the image with this whole-file SHA-256.
+    Signature([u8; 32]),
+    /// The image's verification.
+    Image,
 }
 
 /// What a slot keeps: the last result and the tasks waiting for one.
@@ -185,23 +338,199 @@ struct Kept<R> {
     waiters: MultiWakerRegistration<WAITERS>,
 }
 
+impl<R> Kept<R> {
+    /// What a slot keeps before its first check: no result, no task waiting.
+    const fn empty() -> CriticalSectionMutex<RefCell<Self>> {
+        CriticalSectionMutex::new(RefCell::new(Self {
+            model: None,
+            waiters: MultiWakerRegistration::new(),
+        }))
+    }
+}
+
 /// The content module of one app region, with role `R`.
 pub struct AppSlot<'f, R: AppRole> {
     reader: Reader<'f, R>,
+    signed: Option<Signed<'f>>,
     kept: CriticalSectionMutex<RefCell<Kept<R>>>,
 }
 
+impl<'f> AppSlot<'f, CurrentApp> {
+    /// The module of the slot that booted, which `reader` reads, whose
+    /// image's signature is the file in `region`, judged under `trust`;
+    /// nothing is verified yet.
+    #[must_use]
+    pub const fn signed(
+        reader: Reader<'f, CurrentApp>,
+        region: &'f SignatureRegion<'f, CurrentSignature>,
+        trust: &'static TrustSet,
+    ) -> Self {
+        Self::with(
+            reader,
+            Some(Signed {
+                region: Region::Current(region),
+                trust,
+            }),
+        )
+    }
+}
+
+impl<'f> AppSlot<'f, AlternateApp> {
+    /// The module of the other slot, which `reader` reads, whose image's
+    /// signature is the file in `region`, judged under `trust`; nothing is
+    /// verified yet.
+    #[must_use]
+    pub const fn signed(
+        reader: Reader<'f, AlternateApp>,
+        region: &'f SignatureRegion<'f, AlternateSignature>,
+        trust: &'static TrustSet,
+    ) -> Self {
+        Self::with(
+            reader,
+            Some(Signed {
+                region: Region::Alternate(region),
+                trust,
+            }),
+        )
+    }
+
+    /// The verification of the slot at `held.epoch` with its first word
+    /// replaced by `held.first`, the word an update holds back, and its
+    /// signature judged with the signature region at `held.signature_epoch`,
+    /// the epoch the update's write of the signature file ended at: an
+    /// update's first verification. Hashes with `sha` and paces as
+    /// [`check`](Self::check) does.
+    ///
+    /// The result is returned, never kept as the slot's: the slot's own
+    /// check, at the same epoch, sees the bytes the slot holds. Its
+    /// descriptor and layout entry ([`descriptor`](Self::descriptor),
+    /// [`layout`](Self::layout)) read the slot with the same word laid over
+    /// it, and it publishes nothing ([`published`](Self::published)). An
+    /// image that verifies has a signature in the result, judged at
+    /// `held.signature_epoch`; one that doesn't has none.
+    ///
+    /// # Errors
+    ///
+    /// [`LoadError::Stale`] when the slot isn't stable at `held.epoch`, now
+    /// or while it is read, or the signature region isn't stable at
+    /// `held.signature_epoch` when the signature is judged;
+    /// [`LoadError::Busy`] while a session is open on either. It never waits
+    /// for a session to end.
+    pub async fn verify_overlaid<H, P, G>(
+        &self,
+        held: Held,
+        sha: H,
+        pace: &mut P,
+        progress: &mut G,
+        buf: &mut FileBuf,
+    ) -> Result<AppModel<AlternateApp>, LoadError>
+    where
+        H: Sha256Hasher,
+        P: Pace,
+        G: Progress,
+    {
+        let snapshot = at(&self.reader, held.epoch)?;
+        let source = Overlaid {
+            snapshot: &snapshot,
+            first: Some(held.first),
+        };
+        let verified = verify(&source, sha, Paced::new(pace, progress)).await;
+        self.overlaid_model(&held, &verified, buf)
+    }
+
+    /// The model of the overlaid verification `verified` of `held`. Never
+    /// inlined, so the model is assembled outside the verification's frame.
+    ///
+    /// # Errors
+    ///
+    /// As [`verify_overlaid`](Self::verify_overlaid) gives them.
+    #[inline(never)]
+    fn overlaid_model(
+        &self,
+        held: &Held,
+        verified: &Result<image::App, ImageError>,
+        buf: &mut FileBuf,
+    ) -> Result<AppModel<AlternateApp>, LoadError> {
+        let Some(image) = image_of(verified) else {
+            return Err(LoadError::Stale);
+        };
+        let mut model = AppModel {
+            epoch: held.epoch,
+            image,
+            signature: None,
+            overlay: Some(held.first),
+            role: PhantomData,
+        };
+        if let Ok(image) = &model.image {
+            model.signature = self.signature_at(&image.file_sha256, held.signature_epoch, buf)?;
+        }
+        Ok(model)
+    }
+
+    /// The signature of the image whose whole file has the SHA-256
+    /// `file_sha256`, judged with the signature region at `epoch`, without
+    /// waiting: `None` for a slot without a signature region. Never inlined,
+    /// so the judgement stays out of the caller's frame.
+    ///
+    /// # Errors
+    ///
+    /// [`LoadError::Busy`] while a session is open on the region, and
+    /// [`LoadError::Stale`] when it is stable at another epoch, or leaves
+    /// `epoch` while it is read.
+    #[inline(never)]
+    fn signature_at(
+        &self,
+        file_sha256: &[u8; 32],
+        epoch: Epoch,
+        buf: &mut FileBuf,
+    ) -> Result<Option<SlotSignature>, LoadError> {
+        let Some(signed) = self.signed else {
+            return Ok(None);
+        };
+        match signed.region.write_state() {
+            WriteState::Writing(_) => return Err(LoadError::Busy),
+            WriteState::Stable(now) if now != epoch => return Err(LoadError::Stale),
+            WriteState::Stable(_) => {}
+        }
+        let judged = signed.region.judge(signed.trust, file_sha256, buf)?;
+        if judged.epoch() == epoch {
+            Ok(Some(judged))
+        } else {
+            Err(LoadError::Stale)
+        }
+    }
+}
+
+/// What an update holds while it verifies the image it wrote to the
+/// alternate slot: the slot's epoch after the write, the signature region's
+/// epoch after the write of the signature file, and the image's first word,
+/// which the slot doesn't hold yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Held {
+    /// The alternate slot's epoch after the update's write.
+    pub epoch: Epoch,
+    /// The alternate signature region's epoch after the update's write of
+    /// the signature file.
+    pub signature_epoch: Epoch,
+    /// The image's first word.
+    pub first: [u8; WORD],
+}
+
 impl<'f, R: AppRole> AppSlot<'f, R> {
-    /// The module of the app region `reader` reads; nothing is verified
-    /// yet.
+    /// The module of the app region `reader` reads, without a signature
+    /// region; nothing is verified yet.
     #[must_use]
     pub const fn new(reader: Reader<'f, R>) -> Self {
+        Self::with(reader, None)
+    }
+
+    /// The module of the app region `reader` reads, whose image's signature
+    /// is judged as `signed` says.
+    const fn with(reader: Reader<'f, R>, signed: Option<Signed<'f>>) -> Self {
         Self {
             reader,
-            kept: CriticalSectionMutex::new(RefCell::new(Kept {
-                model: None,
-                waiters: MultiWakerRegistration::new(),
-            })),
+            signed,
+            kept: Kept::empty(),
         }
     }
 
@@ -217,17 +546,34 @@ impl<'f, R: AppRole> AppSlot<'f, R> {
         self.reader.write_state()
     }
 
-    /// The last result, while the region is stable at its epoch. Never
-    /// inlined, so its copies stay out of the callers' frames.
+    /// The last result, while the region is stable at its epoch and, for an
+    /// image with a signature, the signature region at the signature's.
+    /// Never inlined, so its copies stay out of the callers' frames.
     #[must_use]
     #[inline(never)]
     pub fn model(&self) -> Option<AppModel<R>> {
         let model = self.kept.lock(|kept| kept.borrow().model)?;
-        (self.reader.write_state() == WriteState::Stable(model.epoch)).then_some(model)
+        (self.reader.write_state() == WriteState::Stable(model.epoch) && self.is_whole(&model))
+            .then_some(model)
+    }
+
+    /// Whether `model`, a model of the slot's epoch, needs no signature
+    /// judged again: the slot has no signature region, its image doesn't
+    /// verify, or its signature is of the region's epoch now.
+    #[inline(never)]
+    fn is_whole(&self, model: &AppModel<R>) -> bool {
+        match (&self.signed, &model.image, &model.signature) {
+            (None, ..) | (Some(_), Err(_), _) => true,
+            (Some(signed), Ok(_), Some(signature)) => {
+                signed.region.write_state() == WriteState::Stable(signature.epoch())
+            }
+            (Some(_), Ok(_), None) => false,
+        }
     }
 
     /// The result of the check at `epoch`: the model of the region as of
-    /// `epoch`, once the slot's check has verified it.
+    /// `epoch`, once the slot's check has verified it and judged its
+    /// signature at the signature region's epoch now.
     ///
     /// It completes at once when the result is kept, and otherwise once the
     /// check keeps it, so it waits for a check to run: [`App::run`] or
@@ -253,13 +599,7 @@ impl<'f, R: AppRole> AppSlot<'f, R> {
         changed: Pin<&mut impl Future<Output = ()>>,
         cx: &mut Context<'_>,
     ) -> Poll<Result<AppModel<R>, LoadError>> {
-        // Registered before the result is looked at, in one critical section
-        // with the look, so a result kept after it wakes the task.
-        let kept = self.kept.lock(|kept| {
-            let mut kept = kept.borrow_mut();
-            kept.waiters.register(cx.waker());
-            kept.model
-        });
+        let kept = self.registered(epoch, cx);
         // Completes only once the region left `epoch` for good, which the
         // look at the state below then sees, so it is never polled again
         // after it completes.
@@ -268,21 +608,41 @@ impl<'f, R: AppRole> AppSlot<'f, R> {
             return Poll::Ready(Err(LoadError::Stale));
         }
         match kept {
-            Some(model) if model.epoch == epoch => Poll::Ready(Ok(model)),
-            _ => Poll::Pending,
+            Some(model) => Poll::Ready(Ok(model)),
+            None => Poll::Pending,
         }
     }
 
+    /// Registers the task of `cx` for the next result kept, and gives the
+    /// result kept, when it is of `epoch` and whole. Registered before the
+    /// result is looked at, in one critical section with the look, so a
+    /// result kept after it wakes the task. Never inlined, so its copies stay
+    /// out of the caller's frame.
+    #[inline(never)]
+    fn registered(&self, epoch: Epoch, cx: &Context<'_>) -> Option<AppModel<R>> {
+        self.kept
+            .lock(|kept| {
+                let mut kept = kept.borrow_mut();
+                kept.waiters.register(cx.waker());
+                kept.model
+            })
+            .filter(|model| model.epoch == epoch && self.is_whole(model))
+    }
+
     /// Verifies the slot unless the result kept is of the region's epoch
-    /// now, and keeps the result. Hashes with a clone of `sha`, a hash not
-    /// yet fed, and after each KiB hashed calls `progress`, then `pace`.
+    /// now, judges its image's signature unless the one kept is of the
+    /// signature region's epoch now, and keeps the result. Hashes with a
+    /// clone of `sha`, a hash not yet fed, and after each KiB hashed calls
+    /// `progress`, then `pace`. Reads the signature region through `buf`.
     ///
-    /// While a session is open on the region, it calls `progress`'s
-    /// [`idle`](Progress::idle) and waits for the session to end. When a
-    /// session writes the region during the verification, the verification
-    /// keeps no result and runs again at the new epoch. It completes once a
-    /// result of the region's epoch is kept.
-    pub async fn check<H, P, G>(&self, sha: &H, pace: &mut P, progress: &mut G)
+    /// While a session is open on the region or on its signature region, it
+    /// calls `progress`'s [`idle`](Progress::idle) and waits for the session
+    /// to end. When a session writes the region during the verification, the
+    /// verification keeps no result and runs again at the new epoch; a new
+    /// epoch of the signature region alone judges the signature again,
+    /// without hashing the image. It completes once a result of the
+    /// region's epoch is kept.
+    pub async fn check<H, P, G>(&self, sha: &H, pace: &mut P, progress: &mut G, buf: &mut FileBuf)
     where
         H: Sha256Hasher,
         P: Pace,
@@ -294,18 +654,86 @@ impl<'f, R: AppRole> AppSlot<'f, R> {
                     progress.idle();
                     self.settle().await;
                 }
-                WriteState::Stable(epoch) => {
-                    if self.has(epoch) {
-                        return;
+                WriteState::Stable(epoch) => match self.needs(epoch) {
+                    Needs::Nothing => return,
+                    Needs::Signature(file_sha256) => {
+                        let signature = self.judged(&file_sha256, progress, buf).await;
+                        self.keep_signature(epoch, signature);
                     }
-                    // Refused only while a session is open, which the next
-                    // round waits out.
-                    if let Ok(snapshot) = whole(&self.reader) {
-                        let verified =
-                            verify(&snapshot, sha.clone(), Paced::new(pace, progress)).await;
-                        self.keep(&snapshot, &verified);
+                    Needs::Image => {
+                        // A result of another epoch, or none when a read
+                        // found the region written: the next round looks
+                        // again.
+                        let _ = self.verify_at(epoch, sha.clone(), pace, progress).await;
                     }
-                }
+                },
+            }
+        }
+    }
+
+    /// What the result kept lacks for `epoch`. Never inlined, so the model
+    /// stays out of the check's frame.
+    #[inline(never)]
+    fn needs(&self, epoch: Epoch) -> Needs {
+        let Some(model) = self.kept(epoch) else {
+            return Needs::Image;
+        };
+        if self.is_whole(&model) {
+            return Needs::Nothing;
+        }
+        match model.image {
+            Ok(image) => Needs::Signature(image.file_sha256),
+            // An image that doesn't verify has no signature to judge, so its
+            // model is whole.
+            Err(_) => Needs::Nothing,
+        }
+    }
+
+    /// Verifies the image at `epoch`, hashing with `sha` and pacing as
+    /// [`check`](Self::check) does, and keeps the result without a
+    /// signature, which a slot with a signature region then still needs.
+    /// Returns whether it kept one.
+    async fn verify_at<H, P, G>(&self, epoch: Epoch, sha: H, pace: &mut P, progress: &mut G) -> bool
+    where
+        H: Sha256Hasher,
+        P: Pace,
+        G: Progress,
+    {
+        // Refused only while a session is open, which the next round waits
+        // out.
+        let Ok(snapshot) = at(&self.reader, epoch) else {
+            return false;
+        };
+        let source = Overlaid {
+            snapshot: &snapshot,
+            first: None,
+        };
+        let verified = verify(&source, sha, Paced::new(pace, progress)).await;
+        self.keep_image(epoch, &verified)
+    }
+
+    /// The signature of the image whose whole file has the SHA-256
+    /// `file_sha256` under the slot's trust set, judged at the signature
+    /// region's epoch, once no session is open on it: `None` for a slot
+    /// without a signature region.
+    async fn judged<G: Progress>(
+        &self,
+        file_sha256: &[u8; 32],
+        progress: &mut G,
+        buf: &mut FileBuf,
+    ) -> Option<SlotSignature> {
+        let signed = self.signed?;
+        loop {
+            if !signed.region.write_state().is_stable() {
+                progress.idle();
+                signed.region.settle().await;
+            }
+            match signed.region.judge(signed.trust, file_sha256, buf) {
+                Ok(signature) => return Some(signature),
+                // A session opened or ended meanwhile: the next round waits
+                // it out, or reads the new epoch.
+                Err(LoadError::Busy | LoadError::Stale) => {}
+                Err(LoadError::Absent) => return None,
             }
         }
     }
@@ -323,37 +751,42 @@ impl<'f, R: AppRole> AppSlot<'f, R> {
         }
     }
 
-    /// Whether the result kept is of `epoch`.
-    #[inline(never)]
-    fn has(&self, epoch: Epoch) -> bool {
-        self.kept.lock(|kept| {
-            kept.borrow()
-                .model
-                .is_some_and(|model| model.epoch == epoch)
-        })
+    /// Completes once a session on the region or on its signature region
+    /// ends at a new epoch, from their states when called.
+    fn changed(&self) -> impl Future<Output = ()> + '_ {
+        let slot = self.reader.changed();
+        let signature = self.signed.map(|signed| signed.region.changed());
+        async move {
+            match signature {
+                Some(signature) => either(slot, signature).await,
+                None => slot.await,
+            }
+        }
     }
 
-    /// Keeps the result of the image `snapshot` reads, which verified as
-    /// `verified` says, and wakes the tasks waiting for one; nothing when a
-    /// read found the region written, as that is no result for the epoch.
-    /// Never inlined, so the model is assembled outside the check's frame.
+    /// The result kept, when it is of `epoch`.
     #[inline(never)]
-    fn keep(&self, snapshot: &Snapshot<'_, R>, verified: &Result<image::App, ImageError>) {
-        let image = match verified {
-            Ok(app) => Ok(VerifiedApp {
-                header: *app.header(),
-                size: app.size(),
-                digest: *app.digest(),
-                file_sha256: *app.file_sha256(),
-            }),
-            Err(error) => match failure(*error) {
-                Ok(failure) => Err(failure),
-                Err(_) => return,
-            },
+    fn kept(&self, epoch: Epoch) -> Option<AppModel<R>> {
+        self.kept
+            .lock(|kept| kept.borrow().model)
+            .filter(|model| model.epoch == epoch)
+    }
+
+    /// Keeps the result of the verification `verified` at `epoch`, without a
+    /// signature, and wakes the tasks waiting for a result; nothing when a
+    /// read found the region written, as that is no result for the epoch.
+    /// Returns whether it kept one. Never inlined, so the model is assembled
+    /// outside the check's frame.
+    #[inline(never)]
+    fn keep_image(&self, epoch: Epoch, verified: &Result<image::App, ImageError>) -> bool {
+        let Some(image) = image_of(verified) else {
+            return false;
         };
         let model = AppModel {
-            epoch: snapshot.epoch(),
+            epoch,
             image,
+            signature: None,
+            overlay: None,
             role: PhantomData,
         };
         self.kept.lock(|kept| {
@@ -361,10 +794,25 @@ impl<'f, R: AppRole> AppSlot<'f, R> {
             kept.model = Some(model);
             kept.waiters.wake();
         });
+        true
+    }
+
+    /// Adds `signature` to the result kept, when it is of `epoch`, and
+    /// wakes the tasks waiting for a result. Never inlined, so the model
+    /// stays out of the check's frame.
+    #[inline(never)]
+    fn keep_signature(&self, epoch: Epoch, signature: Option<SlotSignature>) {
+        self.kept.lock(|kept| {
+            let mut kept = kept.borrow_mut();
+            if let Some(model) = kept.model.as_mut().filter(|model| model.epoch == epoch) {
+                model.signature = signature;
+                kept.waiters.wake();
+            }
+        });
     }
 
     /// The descriptor of the image `model` describes, read again at the
-    /// model's epoch.
+    /// model's epoch, with its overlaid word.
     ///
     /// # Errors
     ///
@@ -379,12 +827,16 @@ impl<'f, R: AppRole> AppSlot<'f, R> {
             return Ok(Err(failure));
         }
         let snapshot = at(&self.reader, model.epoch)?;
-        verdict(image::app_descriptor(&snapshot))
+        let source = Overlaid {
+            snapshot: &snapshot,
+            first: model.overlay,
+        };
+        verdict(image::app_descriptor(&source))
     }
 
     /// How the layout entry of the image `model` describes compares with
     /// the compiled layout ([`LAYOUT_RECORD`]), read again at the model's
-    /// epoch.
+    /// epoch, with its overlaid word.
     ///
     /// # Errors
     ///
@@ -397,7 +849,11 @@ impl<'f, R: AppRole> AppSlot<'f, R> {
             return Ok(Err(failure));
         }
         let snapshot = at(&self.reader, model.epoch)?;
-        verdict(compare_layout(&snapshot))
+        let source = Overlaid {
+            snapshot: &snapshot,
+            first: model.overlay,
+        };
+        verdict(compare_layout(&source))
     }
 
     /// The view of the image `model` describes, the digest included: the
@@ -405,12 +861,13 @@ impl<'f, R: AppRole> AppSlot<'f, R> {
     ///
     /// # Errors
     ///
-    /// [`Unpublished::Unverified`] when the image doesn't verify,
+    /// [`Unpublished::Unverified`] when the image doesn't verify, or the
+    /// model is of an overlaid slot, whose bytes the slot doesn't hold;
     /// [`Unpublished::Stale`] once the region isn't stable at the model's
     /// epoch, and [`Unpublished::Refused`] for the storage crate's other
     /// refusals.
     pub fn published(&self, model: &AppModel<R>) -> Result<Published<'_, R>, Unpublished> {
-        let Ok(image) = &model.image else {
+        let (Ok(image), None) = (&model.image, model.overlay) else {
             return Err(Unpublished::Unverified);
         };
         publish(&self.reader, model.epoch, Span::new(0, image.size), &[]).map_err(Unpublished::from)
@@ -421,8 +878,54 @@ impl<R: AppRole> fmt::Debug for AppSlot<'_, R> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AppSlot")
             .field("reader", &self.reader)
+            .field("signed", &self.signed)
             .field("model", &self.kept.lock(|kept| kept.borrow().model))
             .finish()
+    }
+}
+
+/// A slot read through a snapshot, with its first word replaced by `first`
+/// when given.
+struct Overlaid<'s, 'r, R: AppRole> {
+    snapshot: &'s Snapshot<'r, R>,
+    first: Option<[u8; WORD]>,
+}
+
+impl<R: AppRole> Source for Overlaid<'_, '_, R> {
+    fn size(&self) -> u32 {
+        self.snapshot.size()
+    }
+
+    fn read(&self, offset: u32, buf: &mut [u8]) -> Result<(), ReadError> {
+        self.snapshot.read(offset, buf)?;
+        if let Some(first) = &self.first {
+            let start = usize::try_from(offset).unwrap_or(usize::MAX);
+            for (at, byte) in buf.iter_mut().enumerate() {
+                match start.checked_add(at).and_then(|at| first.get(at)) {
+                    Some(word_byte) => *byte = *word_byte,
+                    None => break,
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The image of the verification `verified`, without the values read when
+/// it doesn't verify; `None` when a read found the region written, as that
+/// is no result for the snapshot's epoch.
+#[inline(never)]
+fn image_of(
+    verified: &Result<image::App, ImageError>,
+) -> Option<Result<VerifiedApp, ImageFailure>> {
+    match verified {
+        Ok(app) => Some(Ok(VerifiedApp {
+            header: *app.header(),
+            size: app.size(),
+            digest: *app.digest(),
+            file_sha256: *app.file_sha256(),
+        })),
+        Err(error) => failure(*error).ok().map(Err),
     }
 }
 
@@ -453,14 +956,14 @@ fn compare_layout<S: Source + ?Sized>(source: &S) -> Result<Layout, ImageError> 
     }
 }
 
-/// Verifies the image `snapshot` reads, hashing with `sha` and pausing with
+/// Verifies the image `source` reads, hashing with `sha` and pausing with
 /// `paced`.
-async fn verify<R: AppRole, P: Pace>(
-    snapshot: &Snapshot<'_, R>,
+async fn verify<S: Source + ?Sized, P: Pace>(
+    source: &S,
     sha: impl Sha256Hasher,
     mut paced: P,
 ) -> Result<image::App, ImageError> {
-    image::verify_app_with(snapshot, sha, &mut paced).await
+    image::verify_app_with(source, sha, &mut paced).await
 }
 
 /// The slots of a tier.
@@ -532,13 +1035,14 @@ impl<'a, 'f> App<'a, 'f> {
 
     /// The checks of every slot, for good: verifies each slot
     /// ([`AppSlot::check`]), the current one first, then waits until a
-    /// session on one of them ends at a new epoch, and verifies again.
-    /// Hashes with clones of `sha`, a hash not yet fed, and after each KiB
-    /// hashed calls `progress`, then `pace`. Before each wait, for a change
+    /// session on one of them or on its signature region ends at a new
+    /// epoch, and checks again. Hashes with clones of `sha`, a hash not yet
+    /// fed, and after each KiB hashed calls `progress`, then `pace`; reads
+    /// the signature regions through `buf`. Before each wait, for a change
     /// or for an open session to end, it calls `progress`'s
     /// [`idle`](Progress::idle): once every slot's result of its epoch is
     /// kept, and with no slot, at once.
-    pub async fn run<H, P, G>(&self, sha: H, pace: &mut P, progress: &mut G) -> !
+    pub async fn run<H, P, G>(&self, sha: H, pace: &mut P, progress: &mut G, buf: &mut FileBuf) -> !
     where
         H: Sha256Hasher,
         P: Pace,
@@ -549,16 +1053,16 @@ impl<'a, 'f> App<'a, 'f> {
                 Slots::Layout { current, alternate } => {
                     // Taken before the checks, so a session that ends during
                     // them completes the wait.
-                    let current_changed = current.reader.changed();
-                    let alternate_changed = alternate.reader.changed();
-                    current.check(&sha, pace, progress).await;
-                    alternate.check(&sha, pace, progress).await;
+                    let current_changed = current.changed();
+                    let alternate_changed = alternate.changed();
+                    current.check(&sha, pace, progress, buf).await;
+                    alternate.check(&sha, pace, progress, buf).await;
                     progress.idle();
                     either(current_changed, alternate_changed).await;
                 }
                 Slots::Found(Some(found)) => {
-                    let changed = found.reader.changed();
-                    found.check(&sha, pace, progress).await;
+                    let changed = found.changed();
+                    found.check(&sha, pace, progress, buf).await;
                     progress.idle();
                     changed.await;
                 }

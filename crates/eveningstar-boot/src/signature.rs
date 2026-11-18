@@ -57,6 +57,7 @@
 
 use core::cell::Cell;
 use core::fmt;
+use core::future::Future;
 use core::marker::PhantomData;
 
 use embassy_sync::blocking_mutex::CriticalSectionMutex;
@@ -272,6 +273,18 @@ impl<'f, R: SignatureRole> SignatureRegion<'f, R> {
     #[must_use]
     pub const fn span(&self) -> Span {
         self.reader.span()
+    }
+
+    /// The region's write state now.
+    #[must_use]
+    pub fn write_state(&self) -> WriteState {
+        self.reader.write_state()
+    }
+
+    /// Completes once a session on the region ends at a new epoch, from its
+    /// state when called ([`Reader::changed`]).
+    pub(crate) fn changed(&self) -> impl Future<Output = ()> + '_ {
+        self.reader.changed()
     }
 
     /// The model last parsed, while the region is stable at its epoch.

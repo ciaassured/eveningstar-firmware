@@ -37,7 +37,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_time::Instant;
 use esp_hal::peripherals::{FLASH, SPI0};
 use esp_storage::{FlashStorage, FlashStorageError};
-use eveningstar_boot::{App, AppSlot, Bootloader, Otadata, PartitionTable};
+use eveningstar_boot::{App, AppSlot, Bootloader, Otadata, PartitionTable, SignatureRegion};
 use eveningstar_esp_formats::pace::Yield;
 use eveningstar_ota::{Ota, SelfCheck, SelfChecks};
 use eveningstar_storage::chain::{
@@ -45,7 +45,8 @@ use eveningstar_storage::chain::{
 };
 use eveningstar_storage::nor::{Flash, NorDevice, Reader, Writer};
 use eveningstar_storage::roles::{
-    self, AlternateApp, AlternateConfig, CurrentApp, FoundApp, FoundTable,
+    self, AlternateApp, AlternateConfig, AlternateSignature, CurrentApp, CurrentSignature,
+    FoundApp, FoundTable,
 };
 use eveningstar_storage::{DeviceError, SECTOR_SIZE, Span, WriteState};
 use static_cell::StaticCell;
@@ -276,12 +277,10 @@ fn place_located(located: Located<'static>) -> Placed {
 #[inline(never)]
 fn place_layout(handles: LayoutHandles<'static>, writers: Option<BootWriters<'static>>) -> Placed {
     static OTADATA: StaticCell<Otadata<'static>> = StaticCell::new();
-    static CURRENT: StaticCell<AppSlot<'static, CurrentApp>> = StaticCell::new();
-    static ALTERNATE: StaticCell<AppSlot<'static, AlternateApp>> = StaticCell::new();
 
     let otadata = init(&OTADATA, handles.otadata, Otadata::compiled);
-    let current = init(&CURRENT, handles.current_app, AppSlot::new);
-    let alternate = init(&ALTERNATE, handles.alternate_app, AppSlot::new);
+    let current = place_current(handles.current_app, handles.current_signature);
+    let alternate = place_alternate(handles.alternate_app, handles.alternate_signature);
     Placed {
         found_table: None,
         otadata: Some(otadata),
@@ -295,6 +294,38 @@ fn place_layout(handles: LayoutHandles<'static>, writers: Option<BootWriters<'st
             otadata,
         }),
     }
+}
+
+/// The module of the slot that booted, over `app`, signed by the file in its
+/// signature region, over `signature`, under the firmware's trust set.
+/// Never inlined, so the modules pass through a frame of their own.
+#[inline(never)]
+fn place_current(
+    app: Reader<'static, CurrentApp>,
+    signature: Reader<'static, CurrentSignature>,
+) -> &'static AppSlot<'static, CurrentApp> {
+    static SIGNATURE: StaticCell<SignatureRegion<'static, CurrentSignature>> = StaticCell::new();
+    static SLOT: StaticCell<AppSlot<'static, CurrentApp>> = StaticCell::new();
+    let signature = init(&SIGNATURE, signature, SignatureRegion::new);
+    SLOT.init(AppSlot::<CurrentApp>::signed(app, signature, &crate::TRUST))
+}
+
+/// The module of the other slot, over `app`, signed by the file in its
+/// signature region, over `signature`, under the firmware's trust set.
+/// Never inlined, so the modules pass through a frame of their own.
+#[inline(never)]
+fn place_alternate(
+    app: Reader<'static, AlternateApp>,
+    signature: Reader<'static, AlternateSignature>,
+) -> &'static AppSlot<'static, AlternateApp> {
+    static SIGNATURE: StaticCell<SignatureRegion<'static, AlternateSignature>> = StaticCell::new();
+    static SLOT: StaticCell<AppSlot<'static, AlternateApp>> = StaticCell::new();
+    let signature = init(&SIGNATURE, signature, SignatureRegion::new);
+    SLOT.init(AppSlot::<AlternateApp>::signed(
+        app,
+        signature,
+        &crate::TRUST,
+    ))
 }
 
 /// The self-checks a confirmation of the running image waits for, besides

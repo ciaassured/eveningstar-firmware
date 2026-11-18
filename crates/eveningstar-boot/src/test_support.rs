@@ -4,12 +4,20 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
+use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
+use core::fmt::Write as _;
 use core::future::Future;
 use core::pin::pin;
 use core::task::{Context, Poll, Waker};
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
+use ed25519_dalek::Signer as _;
 use eveningstar_esp_formats::pace::Pace;
 use eveningstar_esp_formats::test_support::{APP, BOOTLOADER, OTADATA_FIRST_BOOT, TABLE};
+use eveningstar_signify::{Generation, Purpose, TrustSet, TrustedKey};
 use eveningstar_storage::nor::{Flash, NorDevice};
 use eveningstar_storage::test_support::{RamNor, run};
 use eveningstar_storage::{DeviceError, Storage, layout, split};
@@ -101,4 +109,61 @@ pub(crate) fn drive<B: Future, F: Future>(background: B, foreground: F) -> F::Ou
 /// Polls `future` once with a waker that does nothing.
 pub(crate) fn poll_once<F: Future + ?Sized>(future: core::pin::Pin<&mut F>) -> Poll<F::Output> {
     future.poll(&mut Context::from_waker(Waker::noop()))
+}
+
+/// The keynum of the test signing key.
+pub(crate) const KEYNUM: eveningstar_signify::Keynum = [1, 2, 3, 4, 5, 6, 7, 8];
+
+/// The comment of the signature files [`signed_file`] writes.
+pub(crate) const COMMENT: &str = "verify with eveningstar-1-fw.pub";
+
+/// The test signing key.
+pub(crate) fn signing_key() -> ed25519_dalek::SigningKey {
+    ed25519_dalek::SigningKey::from_bytes(&[7; 32])
+}
+
+/// The keys of [`trust`]: the test signing key, as release generation 1.
+pub(crate) static KEYS: std::sync::LazyLock<&'static [TrustedKey]> =
+    std::sync::LazyLock::new(|| {
+        Box::leak(Box::new([TrustedKey::for_tests(
+            Purpose::Firmware,
+            Generation::Release(1),
+            KEYNUM,
+            signing_key().verifying_key().to_bytes(),
+        )]))
+    });
+
+/// A trust set holding the test signing key alone.
+pub(crate) fn trust() -> &'static TrustSet {
+    static TRUST: std::sync::LazyLock<TrustSet> =
+        std::sync::LazyLock::new(|| TrustSet::for_tests(Purpose::Firmware, &KEYS));
+    &TRUST
+}
+
+/// `bytes` as lowercase hex.
+pub(crate) fn hex(bytes: &[u8]) -> String {
+    bytes.iter().fold(String::new(), |mut out, byte| {
+        write!(out, "{byte:02x}").unwrap();
+        out
+    })
+}
+
+/// The manifest line of a file `name` holding `data`.
+pub(crate) fn manifest_line(name: &str, data: &[u8]) -> String {
+    format!("SHA256 ({name}) = {}\n", hex(&sha256(data)))
+}
+
+/// A signature file over `message` as `signify -S -e` writes it, naming
+/// `keynum`, signed by the test key.
+pub(crate) fn signed_file(keynum: eveningstar_signify::Keynum, message: &str) -> Vec<u8> {
+    let mut decoded = b"Ed".to_vec();
+    decoded.extend_from_slice(&keynum);
+    decoded.extend_from_slice(&signing_key().sign(message.as_bytes()).to_bytes());
+    let mut file = format!(
+        "untrusted comment: {COMMENT}\n{}\n",
+        STANDARD.encode(&decoded)
+    )
+    .into_bytes();
+    file.extend_from_slice(message.as_bytes());
+    file
 }

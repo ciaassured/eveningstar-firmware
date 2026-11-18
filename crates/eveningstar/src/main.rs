@@ -83,16 +83,21 @@ const LAYOUT_LEN: usize = eveningstar_storage::CompiledLayoutRecord::LEN;
 /// as no configuration store exists yet.
 const CONFIG_SCHEMAS: (u32, u32) = (0, 0);
 
+/// The keys the firmware trusts: the image information block's trust entry,
+/// and the set the slots' signatures are judged under. A development build
+/// trusts the development key alone.
+pub(crate) const TRUST: eveningstar_signify::TrustSet = eveningstar_signify::trust::DEVELOPMENT;
+
 /// The image information block up to its layout entry: the board, the
 /// configuration schemas, and the trust set, which a development build signs
 /// with the development key.
 const IMAGE_INFO: [u8; eveningstar_image_info::LEN] = {
     use eveningstar_image_info::{Board, Compatibility, ImageInfo, Trust, encode};
-    use eveningstar_signify::{Generation, trust};
+    use eveningstar_signify::Generation;
 
     let board = Board::new(eveningstar_board::NAME, &[eveningstar_board::REVISION]);
     let compatibility = Compatibility::new(CONFIG_SCHEMAS.0, CONFIG_SCHEMAS.1);
-    let trust = Trust::new(&trust::DEVELOPMENT, Generation::Development);
+    let trust = Trust::new(&TRUST, Generation::Development);
     match (board, compatibility, trust) {
         (Some(board), Some(compatibility), Some(trust)) => encode(
             &ImageInfo {

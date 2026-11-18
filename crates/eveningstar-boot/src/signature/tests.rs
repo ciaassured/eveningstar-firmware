@@ -1,10 +1,3 @@
-use core::fmt::Write as _;
-use std::sync::LazyLock;
-
-use base64::Engine as _;
-use base64::engine::general_purpose::STANDARD;
-use ed25519_dalek::{Signer as _, SigningKey};
-use eveningstar_signify::{Generation, Purpose};
 use eveningstar_storage::test_support::{RamNor, TestFlash, run};
 use eveningstar_storage::{PublicRead, Slot, ViewError};
 
@@ -15,55 +8,13 @@ use eveningstar_storage::nor::{Flash, NorDevice};
 use eveningstar_storage::{DeviceError, split};
 
 use super::*;
-use crate::test_support::{nix_board, sha256};
+use crate::test_support::{
+    COMMENT, KEYNUM, KEYS, manifest_line as line, nix_board, sha256, signed_file as file_with,
+    trust,
+};
 
-const KEYNUM: Keynum = [1, 2, 3, 4, 5, 6, 7, 8];
 const OTHER_KEYNUM: Keynum = [9; 8];
 const IMAGE: &[u8] = b"an image";
-const COMMENT: &str = "verify with eveningstar-1-fw.pub";
-
-fn signing_key() -> SigningKey {
-    SigningKey::from_bytes(&[7; 32])
-}
-
-static KEYS: LazyLock<&'static [TrustedKey]> = LazyLock::new(|| {
-    Box::leak(Box::new([TrustedKey::for_tests(
-        Purpose::Firmware,
-        Generation::Release(1),
-        KEYNUM,
-        signing_key().verifying_key().to_bytes(),
-    )]))
-});
-
-fn trust() -> TrustSet {
-    TrustSet::for_tests(Purpose::Firmware, &KEYS)
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().fold(String::new(), |mut out, byte| {
-        write!(out, "{byte:02x}").unwrap();
-        out
-    })
-}
-
-fn line(name: &str, data: &[u8]) -> String {
-    format!("SHA256 ({name}) = {}\n", hex(&sha256(data)))
-}
-
-/// A signature file over `message` as `signify -S -e` writes it, naming
-/// `keynum`, signed by the test key.
-fn file_with(keynum: Keynum, message: &str) -> Vec<u8> {
-    let mut decoded = b"Ed".to_vec();
-    decoded.extend_from_slice(&keynum);
-    decoded.extend_from_slice(&signing_key().sign(message.as_bytes()).to_bytes());
-    let mut file = format!(
-        "untrusted comment: {COMMENT}\n{}\n",
-        STANDARD.encode(&decoded)
-    )
-    .into_bytes();
-    file.extend_from_slice(message.as_bytes());
-    file
-}
 
 /// The release's file: the image and its ELF.
 fn good() -> Vec<u8> {
@@ -97,7 +48,7 @@ fn check<R: SignatureRole>(region: &SignatureRegion<'_, R>, image: &[u8]) -> Sig
     let model = load(region);
     let mut buf = [0; FILE_MAX];
     let judged = region
-        .check(&model, &trust(), &sha256(image), &mut buf)
+        .check(&model, trust(), &sha256(image), &mut buf)
         .unwrap();
     assert_eq!(judged.epoch(), model.epoch(), "judged at the model's epoch");
     *judged.signature()
@@ -308,14 +259,14 @@ fn a_write_makes_the_model_stale() {
         let _session = writer.begin();
         assert_eq!(region.load(&mut buf), Err(LoadError::Busy));
         assert_eq!(
-            region.check(&model, &trust(), &sha256(IMAGE), &mut buf),
+            region.check(&model, trust(), &sha256(IMAGE), &mut buf),
             Err(LoadError::Busy)
         );
     }
     run(writer.begin().wipe()).unwrap();
     assert_eq!(region.model(), None);
     assert_eq!(
-        region.check(&model, &trust(), &sha256(IMAGE), &mut buf),
+        region.check(&model, trust(), &sha256(IMAGE), &mut buf),
         Err(LoadError::Stale)
     );
     assert_eq!(region.published(&model).err(), Some(Unpublished::Stale));
@@ -412,7 +363,7 @@ fn a_read_the_device_fails_is_tried_again() {
     assert!(matches!(model.content(), Content::File(_)));
     device.failing.store(READ_ATTEMPTS - 1, Ordering::SeqCst);
     let judged = region
-        .check(&model, &trust(), &sha256(IMAGE), &mut buf)
+        .check(&model, trust(), &sha256(IMAGE), &mut buf)
         .unwrap();
     assert!(matches!(judged.signature(), Signature::Verified { .. }));
 
