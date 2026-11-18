@@ -1959,6 +1959,11 @@ Each step is a PR on a stack, each passing `nix run .#checks`.
   Linux) give the same bytes; until shown, the release notes name the host
   platform the release reproduces on.
 - The stack frame of `verify_strict` on the 32-bit backend under the
-  `large_stack_frames` lint, and its time on the ESP32-C6.
+  `large_stack_frames` lint. Its time on the ESP32-C6 is measured (2026-11-18,
+  CPU at its maximum clock): 29.5 ms per verification of a one-line manifest,
+  the same over 8 runs; parsing the same file without the cryptography takes
+  0.2 ms. The verification runs without yielding, so it holds the executor
+  for that long, once per slot at boot, once per write of a signature region,
+  and once per update.
 - Code size of ed25519-dalek and curve25519-dalek in the image.
 - Whether the web UI's update page takes both files in one drop.
