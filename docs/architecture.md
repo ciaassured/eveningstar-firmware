@@ -859,8 +859,9 @@ and which carry the epoch they were parsed at, and published views.
   - Model: no file (every byte `0xFF`), a signature file that parsed (length,
     keynum, comment), or why the region holds neither. The file ends at the
     first `0xFF` after a `\n`, and every byte after it must be `0xFF`.
-    Whether the file verifies under a trust set and lists an image's SHA-256
-    (`Signature`), on request, read again at the model's epoch.
+    Whether the file verifies under a trust set and lists an image's SHA-256,
+    on request, read again at the model's epoch and returned with it
+    (`SlotSignature`); a read the device fails is tried three times.
   - Published view: the file, once it parsed, whatever key signed it, its
     comment's text sanitized.
 

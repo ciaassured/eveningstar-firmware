@@ -397,10 +397,16 @@ whoever has it can reflash anything, by design.
   three generations from `signing` that aren't `lost` or `compromised`.
 - **Unsigned untrusted comment.** The device never reads it: it doesn't pick
   the key, isn't stored apart from the signature file, and isn't shown. The
-  signature view serves its bytes as `0xFF`, so a file uploaded with an
-  edited comment can't make the device serve text someone else chose. The
-  release instructions always pass `-p`, so the desktop doesn't use it
-  either.
+  signature view serves its bytes as `0xFF`, so an edited comment can't make
+  the device serve text someone else chose. That holds for the comment
+  only: the view also serves the file's manifest names (up to 128 bytes of
+  `[A-Za-z0-9._+-]` each, within a 2048-byte message) and its signature
+  line, and serves a file that parsed whatever key signed it. Over the
+  network only a file that verifies under the running trust set reaches a
+  region, so names come from a trusted key's holder; on a development
+  build that is anyone, as the development key's secret key is public. The
+  release instructions always pass `-p`, so the desktop doesn't use the
+  comment either.
 - **Taking the board from its owner.** Firmware that runs can burn eFuses:
   enable secure boot with its own key, enable flash encryption, or disable
   download mode or USB Serial/JTAG, each permanently. Our releases contain no
@@ -1319,12 +1325,20 @@ every past schema to the current one.
 
 The signature is checked against the signature file and the file SHA-256 as
 read from the flash, at the epoch the activation also requires. A refusal at
-step 4, 5 or 7, or an upload abandoned before `finish` (a dropped
-connection, a client timeout), leaves the slot's first word erased, so
-nothing in the slot loads. The first sector is then erased so the API shows
-the slot empty (decision 15); the request handler does it, as `Update`'s
-`Drop` can't wait for an erase. A power cut between steps 6 and 7 leaves an
-image that loads and passed the first verification but isn't installed.
+step 4 or 5, or an upload abandoned before step 6 (a dropped connection, a
+client timeout), leaves the slot's first word erased, so nothing in the slot
+loads. A refusal at step 7, or an upload abandoned while step 7 waits for the
+slot's check, comes after step 6 programmed the first word: the image loads,
+though no otadata entry selects it. In every case the first sector is then
+erased, which also shows the slot empty in the API (decision 15). The update
+task erases it, not the request handler: the task owns the `Ota` and outlives
+any request, so a dropped request can't skip the erase, and `Update`'s `Drop`
+can't wait for one. Until the erase runs, and after a power cut between steps
+6 and 8, the slot holds an image that loads but isn't installed. The
+bootloader starts it only if the running image fails to load; it passed the
+first verification over the same bytes but the held word, and the bootloader
+checks its SHA-256 before starting it. No boot-time sweep erases it, as an
+image written to the slot over USB looks the same.
 
 The update's verification over the overlaid snapshot is a new entry point of
 the slot's content module, beside its check: same code, a source that
