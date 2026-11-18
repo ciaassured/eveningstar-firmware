@@ -64,6 +64,20 @@ in
             fi
           }
 
+          # The firmware's dependency graph enables no `test-support` feature:
+          # those features add constructors that tests choose freely, trusted
+          # keys among them. Clippy's runs enable every feature of the host
+          # crates, so this checks the firmware's own graph instead.
+          # shellcheck disable=SC2329 # run through run_check
+          check_firmware_features() {
+            local tree
+            tree="$(cargo tree --edges normal,build,features --package eveningstar)" || return 1
+            if grep 'feature "test-support"' <<<"$tree"; then
+              echo "the firmware's dependency graph enables a test-support feature" >&2
+              return 1
+            fi
+          }
+
           # The storage crate's layout module is generated from nix/board.nix, and
           # the committed file has to equal what the board generates.
           # shellcheck disable=SC2329 # run through run_check
@@ -181,6 +195,7 @@ in
               rust-lint)
                 run_check "rustfmt" cargo fmt --all -- --check
                 run_check "storage layout" check_storage_layout
+                run_check "firmware features" check_firmware_features
                 run_check "trust sets" trust-sets --check
                 run_check "secret keys" secret-key-scan --index
                 run_check "secret key scan fixtures" nix build --no-link .#secret-key-scan-test
