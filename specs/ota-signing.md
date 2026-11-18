@@ -1,8 +1,8 @@
 # OTA updates with signed images
 
-Status: proposed 2026-11-07, revised 2026-11-08; every decision is taken
-(listed under "Decisions"). No code is written until the user approves the
-spec.
+Status: approved, and being built in steps ("Order of work"). Proposed
+2026-11-07, revised 2026-11-08; every decision is taken (listed under
+"Decisions").
 Builds on `specs/storage-v2.md` ("OTA") and on `eveningstar-ota` as merged
 (`Update::finish`, `VerifiedImage`, `Ota::activate`, `Ota::verify_other`,
 `Ota::roll_back`).
@@ -1465,8 +1465,9 @@ impl Update<'_, '_> {
   region `0xFF`), `stale` (a signature that verifies under a trusted key but
   lists no digest of the image in the slot, as a USB flash leaves behind, or
   a refused upload's that verifies, beside a slot that holds none),
-  `unknown_key`, `invalid`
-  (with a reason: format, signature), `checking`.
+  `unknown_key`, `invalid` (with a reason: format, signature, or ambiguous,
+  a verified manifest that lists the image's digest on more than one line),
+  `checking`.
 - `update.state`: `idle`, `signature_held`, `receiving` (bytes written),
   `verifying`, `refused` (reason), `activated` (next boot).
 - `PUT /firmware/update/signature`, `PUT /firmware/update/image` (upload,
@@ -1904,6 +1905,39 @@ first proposed, so earlier references hold; 38 isn't used.
     required before confirmation, so a release whose own verifier is broken
     rolls back instead of being confirmed into a state where it can't take
     the fix; the image's own signature is advisory.
+
+## Order of work
+
+Each step is a PR on a stack, each passing `nix run .#checks`.
+
+1. **Done:** the record encoding (`eveningstar-records`), `eveningstar-signify`
+   and its fuzz target, the development key, the trust sets and the secret
+   key scan, the signature regions and their roles, the image information
+   block with its layout entry.
+2. **Signature content module** (`eveningstar-boot`): the region parser, the
+   `signature` view with its comment sanitized, and `Signature`, judged under
+   a trust set for an image's SHA-256. `eveningstar-signify` gains `parse`,
+   which reads a file without a key.
+3. **The app check's signature:** each slot's check judges its signature
+   region at the slot's epoch and keeps `Signature` in the model; the
+   overlaid first word as a new entry point of the check.
+4. **`Session::end` and `Ended`** in `eveningstar-storage`.
+5. **The signed update** in `eveningstar-ota`: `Update` holds the first word
+   and the signature file, `finish` runs steps 3 to 7 of "Byte path" and the
+   policy, and gives `Signed`; `VerifiedImage` and `Ota::activate` go away.
+6. **Switching and retiring:** `Installed`, `Installed::switch`,
+   `Ota::retire_below_floor`; `Ota::verify_other` and `Ota::roll_back` go
+   away.
+7. **Self-checks:** OTA readiness and the known-answer check as required
+   checks, the development key as an advisory one, the trial extension.
+8. **Firmware and API:** the update task, `GET /api/v1/firmware`, the
+   signature and image uploads, switch, confirm and extend.
+9. **Web UI:** the update page, the slots' signatures and the development key
+   banner.
+10. **Release tooling:** `nix/release.nix`, the `release` package and
+    `release-check`.
+11. **Verification:** the model check, the differential tests against
+    signify, mutation testing, and the board runs of "On the board".
 
 ## Left open
 

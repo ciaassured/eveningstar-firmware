@@ -464,8 +464,8 @@ eveningstar-esp-formats   images, partition table, otadata: parsers and write pl
         ↑
 eveningstar-storage       devices, roles, write state, handles, snapshots, publication,
         ↑                 layout, known bootloaders, verification chain, split
-eveningstar-boot          content modules: bootloader, partition table, otadata, app slots
-        ↑
+eveningstar-boot          content modules: bootloader, partition table, otadata, app slots,
+        ↑                 signature regions
 eveningstar-ota           updates, activation, confirmation, rollback
         ↑
 eveningstar               the internal flash's device, the app check task, the services
@@ -855,6 +855,14 @@ and which carry the epoch they were parsed at, and published views.
   - Model: header, length, stored digest, file SHA-256, per epoch; the
     descriptor and the layout entry's comparison on request.
   - Published view: the image, once verified at the region's epoch now.
+- `SignatureRegion` owns one signature region: current or alternate.
+  - Model: no file (every byte `0xFF`), a signature file that parsed (length,
+    keynum, comment), or why the region holds neither. The file ends at the
+    first `0xFF` after a `\n`, and every byte after it must be `0xFF`.
+    Whether the file verifies under a trust set and lists an image's SHA-256
+    (`Signature`), on request, read again at the model's epoch.
+  - Published view: the file, once it parsed, whatever key signed it, its
+    comment's text sanitized.
 
 - Every module is `Sync` and takes `&self`, so it lives in a `static` and is
   shared between tasks. Results that cost a hash are kept behind a
