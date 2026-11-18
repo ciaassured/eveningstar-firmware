@@ -852,8 +852,10 @@ and which carry the epoch they were parsed at, and published views.
   - Model: both entries, the active one, the boot state.
   - Published view: each entry its parser pins down (compiled only).
 - `AppSlot` owns one app region: current, alternate or found.
-  - Model: header, length, stored digest, file SHA-256, per epoch; the
-    descriptor and the layout entry's comparison on request.
+  - Model: header, length, stored digest, file SHA-256, per epoch; for the
+    current and the alternate slot, the signature judged under the firmware's
+    trust set at the signature region's epoch; the descriptor and the layout
+    entry's comparison on request.
   - Published view: the image, once verified at the region's epoch now.
 - `SignatureRegion` owns one signature region: current or alternate.
   - Model: no file (every byte `0xFF`), a signature file that parsed (length,
@@ -881,6 +883,17 @@ and which carry the epoch they were parsed at, and published views.
   the new epoch. `AppSlot::verdict` waits for a slot's result at a given epoch
   and fails `Stale` once the slot leaves it, so a slot is hashed once per epoch
   and OTA never hashes it itself.
+- A slot made with its signature region (`AppSlot::signed`) judges the
+  region's file for the image's file SHA-256 once the image verifies, and keeps
+  the `Signature` with the region's epoch. A model is whole while both regions
+  are stable at its epochs; `model` and `verdict` give only whole ones. A new
+  epoch of the signature region alone judges the signature again without
+  hashing the image. `App::run` also waits on the signature regions, and reads
+  them through the caller's 4 KiB buffer (a static in the firmware).
+- `AppSlot::verify_overlaid` is an update's first verification: the same check
+  over the alternate slot with the first word the update holds back laid over
+  the slot's, returned instead of kept. Its descriptor and layout entry read
+  the slot with the same word laid over it, and it publishes nothing.
 - Long jobs take the caller's hasher (`Sha256Hasher`), pace (`Pace`) and
   progress hook (`Progress`): the hook is called and the pace run after each KiB
   hashed, and `Progress::idle` is called before each wait for a change only
