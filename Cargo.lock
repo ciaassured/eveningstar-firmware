@@ -1179,9 +1179,12 @@ dependencies = [
 name = "eveningstar-boot"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "critical-section",
+ "ed25519-dalek",
  "embassy-sync 0.8.0",
  "eveningstar-esp-formats",
+ "eveningstar-signify",
  "eveningstar-storage",
  "sha2",
 ]

@@ -9,12 +9,17 @@ publish.workspace = true
 [dependencies]
 embassy-sync.workspace = true
 eveningstar-esp-formats.workspace = true
+eveningstar-signify.workspace = true
 eveningstar-storage.workspace = true
 
 [dev-dependencies]
+base64 = { workspace = true, features = ["alloc"] }
 # A critical-section implementation for the host.
 critical-section = { workspace = true, features = ["std"] }
+# Signs the signature files of the tests.
+ed25519-dalek.workspace = true
 eveningstar-esp-formats = { workspace = true, features = ["test-support"] }
+eveningstar-signify = { workspace = true, features = ["test-support"] }
 eveningstar-storage = { workspace = true, features = ["test-support"] }
 sha2.workspace = true
 

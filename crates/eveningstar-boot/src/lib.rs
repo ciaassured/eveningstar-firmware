@@ -29,6 +29,11 @@
 //!   - Model: header, length, stored digest, file SHA-256, per epoch; the
 //!     descriptor on request.
 //!   - Published: the image, once verified at the region's epoch now.
+//! - [`SignatureRegion`] owns one signature region.
+//!   - Model: no file, a signature file that parsed (its length, keynum and
+//!     comment), or why the region holds neither; whether the file verifies
+//!     under a trust set and lists an image's SHA-256, on request.
+//!   - Published: the file, once it parsed, its comment's text sanitized.
 //!
 //! [`App`] refers to the slots of a tier and runs their checks in the
 //! background; [`AppSlot::verdict`] waits for a slot's result at an epoch.
@@ -64,6 +69,7 @@ mod digest;
 mod error;
 pub mod otadata;
 mod pace;
+pub mod signature;
 pub mod table;
 #[cfg(test)]
 mod test_support;
@@ -74,4 +80,5 @@ pub use digest::{Digest, PAUSE_INTERVAL, digest};
 pub use error::{ImageFailure, LoadError, Unpublished};
 pub use otadata::Otadata;
 pub use pace::Progress;
+pub use signature::SignatureRegion;
 pub use table::PartitionTable;
