@@ -17,6 +17,11 @@ use eveningstar_storage::{PublicRead, SECTOR_SIZE, Slot, ViewError, layout};
 use super::*;
 use crate::digest;
 use crate::test_support::{Counting, drive, nix_board, poll_once, sha256, split_board};
+use eveningstar_signify::FILE_MAX;
+use eveningstar_storage::roles::AlternateSignature;
+
+use crate::signature::{Signature, SignatureRegion};
+use crate::test_support::{KEYNUM, KEYS, manifest_line, signed_file, trust};
 
 fn sha() -> sha2::Sha256 {
     sha2::Sha256::default()
@@ -44,7 +49,7 @@ impl Progress for Recorder<'_> {
 
 /// Runs `slot`'s check to completion.
 fn check<R: AppRole>(slot: &AppSlot<'_, R>) {
-    run(slot.check(&sha(), &mut Yield, &mut || {}));
+    run(slot.check(&sha(), &mut Yield, &mut || {}, &mut [0; FILE_MAX]));
 }
 
 /// A small app image of the firmware's project.
@@ -358,7 +363,8 @@ fn the_check_waits_out_an_open_session() {
     run(session.erase(0, SECTOR_SIZE)).unwrap();
     let events = RefCell::new(Vec::new());
     let (sha, mut pace, mut progress) = (sha(), Yield, Recorder(&events));
-    let mut check = pin!(slot.check(&sha, &mut pace, &mut progress));
+    let mut buf = [0; FILE_MAX];
+    let mut check = pin!(slot.check(&sha, &mut pace, &mut progress, &mut buf));
     for _ in 0..10 {
         assert!(poll_once(check.as_mut()).is_pending());
     }
@@ -383,7 +389,12 @@ fn the_check_advances_and_never_idles_while_it_hashes() {
     let image = image();
     let (slot, _writer, _flash) = alternate_over(&image);
     let events = RefCell::new(Vec::new());
-    run(slot.check(&sha(), &mut Counting::default(), &mut Recorder(&events)));
+    run(slot.check(
+        &sha(),
+        &mut Counting::default(),
+        &mut Recorder(&events),
+        &mut [0; FILE_MAX],
+    ));
     let events = events.into_inner();
     assert_eq!(events.len(), (image.len() - 32) / 1024);
     assert!(events.iter().all(|&event| event == Event::Advance));
@@ -400,7 +411,7 @@ fn a_session_during_the_check_keeps_no_result_and_checks_again() {
         run(writer.begin().program(past, &[0; 4])).unwrap();
     });
     let mut pace = Counting::default();
-    run(slot.check(&sha(), &mut pace, &mut || {}));
+    run(slot.check(&sha(), &mut pace, &mut || {}, &mut [0; FILE_MAX]));
     let model = slot.model().unwrap();
     assert_eq!(model.epoch(), slot.reader.write_state().epoch());
     assert_eq!(model.image().unwrap().file_sha256(), &sha256(&image));
@@ -414,11 +425,11 @@ fn the_check_paces_and_reports_progress_per_kib() {
     let (slot, _writer, _flash) = alternate_over(&image);
     let mut pace = Counting::default();
     let mut advanced = 0;
-    run(slot.check(&sha(), &mut pace, &mut || advanced += 1));
+    run(slot.check(&sha(), &mut pace, &mut || advanced += 1, &mut [0; FILE_MAX]));
     assert_eq!(pace.pauses, (image.len() - 32) / 1024);
     assert_eq!(advanced, pace.pauses);
     // Checked once: a second check finds the result kept.
-    run(slot.check(&sha(), &mut pace, &mut || advanced += 1));
+    run(slot.check(&sha(), &mut pace, &mut || advanced += 1, &mut [0; FILE_MAX]));
     assert_eq!(advanced, pace.pauses);
     assert_eq!(pace.pauses, (image.len() - 32) / 1024);
 }
@@ -444,7 +455,8 @@ fn run_checks_every_slot_and_again_after_a_write() {
     let mut pace = Yield;
     let events = RefCell::new(Vec::new());
     let mut progress = Recorder(&events);
-    let (before, after) = drive(app.run(sha(), &mut pace, &mut progress), async {
+    let mut buf = [0; FILE_MAX];
+    let (before, after) = drive(app.run(sha(), &mut pace, &mut progress, &mut buf), async {
         let epoch = current.reader.write_state().epoch();
         let current = current.verdict(epoch).await.unwrap();
         assert_eq!(current.image().unwrap().file_sha256(), &sha256(&first));
@@ -488,7 +500,8 @@ fn run_with_no_slot_waits_for_good() {
     let mut pace = Yield;
     let events = RefCell::new(Vec::new());
     let mut progress = Recorder(&events);
-    let mut run = pin!(app.run(sha(), &mut pace, &mut progress));
+    let mut buf = [0; FILE_MAX];
+    let mut run = pin!(app.run(sha(), &mut pace, &mut progress, &mut buf));
     for _ in 0..10 {
         assert!(poll_once(run.as_mut()).is_pending());
     }
@@ -501,4 +514,248 @@ fn the_modules_can_be_shared_from_a_static() {
     fn shared<T: Sync + Send>() {}
     shared::<App<'static, 'static>>();
     shared::<AppSlot<'static, AlternateApp>>();
+}
+
+/// The SHA-256 of the image in `bytes`, as a release's manifest lists it.
+fn file_sha256_of(bytes: &[u8]) -> [u8; 32] {
+    *run(image::verify_app(bytes)).unwrap().file_sha256()
+}
+
+/// The release's signature file of the image in `bytes`.
+fn release_file(bytes: &[u8]) -> Vec<u8> {
+    let size = run(image::verify_app(bytes)).unwrap().size() as usize;
+    signed_file(
+        KEYNUM,
+        &manifest_line("eveningstar-1.2.3-esp32c6.bin", &bytes[..size]),
+    )
+}
+
+/// A flash holding `bytes` at the start of `ota_1` and `file` at the start
+/// of `sig_1`, the alternate slot's module over them, signed under
+/// [`trust`], and writers of both while the app runs from `ota_0`.
+fn signed_alternate(
+    bytes: &[u8],
+    file: &[u8],
+) -> (
+    &'static AppSlot<'static, AlternateApp>,
+    Writer<'static, AlternateApp>,
+    Writer<'static, AlternateSignature>,
+) {
+    let device = RamNor::with(
+        layout::FLASH_SIZE,
+        &[(layout::OTA_1.offset, bytes), (layout::SIG_1.offset, file)],
+    );
+    let flash = TestFlash::new(device);
+    let slot = Span::from(layout::OTA_1);
+    let signature = Span::from(layout::SIG_1);
+    let region: &'static SignatureRegion<'static, AlternateSignature> =
+        Box::leak(Box::new(SignatureRegion::new(flash.reader(signature))));
+    let module = Box::leak(Box::new(AppSlot::<AlternateApp>::signed(
+        flash.reader(slot),
+        region,
+        trust(),
+    )));
+    (
+        module,
+        flash.writer(slot, Slot::Ota0),
+        flash.writer(signature, Slot::Ota0),
+    )
+}
+
+#[test]
+fn a_signed_slot_keeps_its_signature_with_the_regions_epoch() {
+    let bytes = image();
+    let (slot, _, signature) = signed_alternate(&bytes, &release_file(&bytes));
+    check(slot);
+    let model = slot.model().unwrap();
+    let judged = model.signature().unwrap();
+    assert_eq!(
+        *judged.signature(),
+        Signature::Verified {
+            key: &KEYS[0],
+            line: 0
+        }
+    );
+    assert_eq!(WriteState::Stable(judged.epoch()), signature.write_state());
+    assert!(!model.is_overlaid());
+    assert!(slot.published(&model).is_ok());
+
+    // A file that lists another image is stale.
+    let other = other_image();
+    let (slot, _, _) = signed_alternate(&bytes, &release_file(&other));
+    check(slot);
+    assert_eq!(
+        *slot.model().unwrap().signature().unwrap().signature(),
+        Signature::Stale { key: &KEYS[0] }
+    );
+}
+
+#[test]
+fn an_unsigned_slot_and_a_slot_without_an_image() {
+    let bytes = image();
+    let (slot, _, _) = signed_alternate(&bytes, &[]);
+    check(slot);
+    assert_eq!(
+        *slot.model().unwrap().signature().unwrap().signature(),
+        Signature::Unsigned
+    );
+
+    // No image, so no digest to judge the file for.
+    let (slot, _, _) = signed_alternate(&[], &release_file(&bytes));
+    check(slot);
+    let model = slot.model().unwrap();
+    assert!(model.image().is_err());
+    assert_eq!(model.signature(), None);
+
+    // A slot made without a signature region judges none.
+    let (slot, _, _) = alternate_over(&bytes);
+    check(&slot);
+    assert_eq!(slot.model().unwrap().signature(), None);
+}
+
+#[test]
+fn a_new_signature_epoch_judges_again_without_hashing() {
+    let bytes = image();
+    let (slot, _, mut signature) = signed_alternate(&bytes, &release_file(&bytes));
+    let mut pace = Counting::default();
+    let mut buf = [0; FILE_MAX];
+    run(slot.check(&sha(), &mut pace, &mut || {}, &mut buf));
+    assert!(pace.pauses > 0);
+    let before = slot.model().unwrap();
+
+    run(signature.begin().wipe()).unwrap();
+    assert_eq!(slot.model(), None, "the signature is of an old epoch");
+    let mut pace = Counting::default();
+    run(slot.check(&sha(), &mut pace, &mut || {}, &mut buf));
+    assert_eq!(pace.pauses, 0, "the image isn't hashed again");
+    let after = slot.model().unwrap();
+    assert_eq!(after.epoch(), before.epoch());
+    assert_eq!(after.image(), before.image());
+    assert_eq!(*after.signature().unwrap().signature(), Signature::Unsigned);
+    assert_ne!(
+        after.signature().unwrap().epoch(),
+        before.signature().unwrap().epoch()
+    );
+}
+
+#[test]
+fn a_verdict_waits_for_the_signature_of_the_regions_epoch() {
+    let bytes = image();
+    let (slot, writer, mut signature) = signed_alternate(&bytes, &release_file(&bytes));
+    check(slot);
+    let epoch = writer.write_state().epoch();
+
+    let mut session = signature.begin();
+    run(session.wipe()).unwrap();
+    let mut verdict = pin!(slot.verdict(epoch));
+    assert!(poll_once(verdict.as_mut()).is_pending());
+    drop(session);
+    // The kept signature is of the old epoch until a check judges it again.
+    assert!(poll_once(verdict.as_mut()).is_pending());
+    check(slot);
+    let Poll::Ready(Ok(model)) = poll_once(verdict.as_mut()) else {
+        panic!("no verdict after the check");
+    };
+    assert_eq!(*model.signature().unwrap().signature(), Signature::Unsigned);
+    assert_eq!(
+        WriteState::Stable(model.signature().unwrap().epoch()),
+        signature.write_state()
+    );
+}
+
+#[test]
+fn the_check_waits_out_a_session_on_the_signature_region() {
+    let bytes = image();
+    let (slot, _, mut signature) = signed_alternate(&bytes, &release_file(&bytes));
+    check(slot);
+    let events = RefCell::new(Vec::new());
+    let mut progress = Recorder(&events);
+    let mut buf = [0; FILE_MAX];
+    let mut session = signature.begin();
+    run(session.wipe()).unwrap();
+    {
+        let (sha, mut pace) = (sha(), Yield);
+        let mut check = pin!(slot.check(&sha, &mut pace, &mut progress, &mut buf));
+        for _ in 0..10 {
+            assert!(poll_once(check.as_mut()).is_pending());
+        }
+        drop(session);
+        run(check);
+    }
+    assert_eq!(*events.borrow(), [Event::Idle], "idle, and nothing hashed");
+    assert_eq!(
+        *slot.model().unwrap().signature().unwrap().signature(),
+        Signature::Unsigned
+    );
+}
+
+#[test]
+fn run_checks_again_after_a_write_to_a_signature_region() {
+    let bytes = image();
+    let (alternate, writer, mut signature) = signed_alternate(&bytes, &release_file(&bytes));
+    let flash = TestFlash::new(RamNor::with(
+        layout::FLASH_SIZE,
+        &[(layout::OTA_0.offset, &bytes)],
+    ));
+    let current = AppSlot::new(flash.reader::<CurrentApp>(Span::from(layout::OTA_0)));
+    let app = App::layout(&current, alternate);
+    let epoch = writer.write_state().epoch();
+    let mut buf = [0; FILE_MAX];
+    let (before, after) = drive(app.run(sha(), &mut Yield, &mut || {}, &mut buf), async {
+        let before = alternate.verdict(epoch).await.unwrap();
+        signature.begin().wipe().await.unwrap();
+        let after = alternate.verdict(epoch).await.unwrap();
+        (before, after)
+    });
+    assert!(matches!(
+        before.signature().unwrap().signature(),
+        Signature::Verified { .. }
+    ));
+    assert_eq!(*after.signature().unwrap().signature(), Signature::Unsigned);
+}
+
+#[test]
+fn an_overlaid_verification_is_returned_and_never_kept() {
+    let bytes = image();
+    let mut held = bytes.clone();
+    let first: [u8; 4] = held[..4].try_into().unwrap();
+    held[..4].fill(0xFF);
+    let (slot, mut writer, _) = signed_alternate(&held, &release_file(&bytes));
+
+    // The slot's own check sees the erased first word.
+    check(slot);
+    let kept = slot.model().unwrap();
+    assert!(kept.image().is_err());
+    assert_eq!(kept.signature(), None);
+
+    let epoch = writer.write_state().epoch();
+    let mut buf = [0; FILE_MAX];
+    let model =
+        run(slot.verify_overlaid(epoch, first, sha(), &mut Yield, &mut || {}, &mut buf)).unwrap();
+    assert!(model.is_overlaid());
+    assert_eq!(
+        model.image().unwrap().file_sha256(),
+        &file_sha256_of(&bytes)
+    );
+    assert!(matches!(
+        model.signature().unwrap().signature(),
+        Signature::Verified { .. }
+    ));
+    let descriptor = slot.descriptor(&model).unwrap().unwrap();
+    assert_eq!(descriptor.project_name().to_str(), Some("eveningstar"));
+    assert!(slot.layout(&model).unwrap().is_ok());
+    assert_eq!(slot.published(&model).err(), Some(Unpublished::Unverified));
+    assert_eq!(slot.model(), Some(kept), "the slot's own result is kept");
+
+    // A word other than the image's doesn't verify.
+    let model =
+        run(slot.verify_overlaid(epoch, [0; 4], sha(), &mut Yield, &mut || {}, &mut buf)).unwrap();
+    assert!(model.image().is_err());
+
+    // Nor once the slot left the epoch.
+    run(writer.begin().erase(0, SECTOR_SIZE)).unwrap();
+    assert_eq!(
+        run(slot.verify_overlaid(epoch, first, sha(), &mut Yield, &mut || {}, &mut buf)),
+        Err(LoadError::Stale)
+    );
 }
