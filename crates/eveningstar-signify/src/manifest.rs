@@ -90,6 +90,16 @@ pub(crate) fn read<'s>(
     message: &'s [u8],
     key: &'static TrustedKey,
 ) -> Result<Verified<'s>, SigError> {
+    check(message)?;
+    Ok(Verified { key, message })
+}
+
+/// Checks that every line of `message` reads as a SHA256 line.
+///
+/// # Errors
+///
+/// [`SigError::Manifest`] with the first line that doesn't.
+pub(crate) fn check(message: &[u8]) -> Result<(), SigError> {
     let mut rest = message;
     let mut number = 0;
     while !rest.is_empty() {
@@ -98,7 +108,7 @@ pub(crate) fn read<'s>(
         parse_line(line).ok_or(SigError::Manifest { line: number })?;
         rest = after;
     }
-    Ok(Verified { key, message })
+    Ok(())
 }
 
 /// The line `SHA256 (<name>) = <64 lowercase hex>`, with single spaces and
