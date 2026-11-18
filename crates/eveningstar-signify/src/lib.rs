@@ -19,6 +19,8 @@
 //! verify under it with ed25519-dalek's `verify_strict`, which, unlike
 //! signify's, refuses a scalar of `L` or more and small-order points. A
 //! [`Verified`] file then gives the [`Line`] whose digest is an image's.
+//! [`parse`] reads a file the same way without a key ([`Parsed`]), for a file
+//! kept and shown whatever key signed it.
 //!
 //! [`TrustSet`]s and their [`TrustedKey`]s have no public constructor: only
 //! this crate makes them, and, with the `test-support` feature, tests. The
@@ -36,7 +38,7 @@ mod key;
 mod manifest;
 pub mod trust;
 
-pub use file::{FILE_MAX, MESSAGE_MAX, SigError, verify};
+pub use file::{FILE_MAX, MESSAGE_MAX, Parsed, SigError, parse, verify};
 pub use key::{Generation, KeyError, Keynum, Purpose, TrustSet, TrustedKey, check_key, public_key};
 pub use manifest::{Line, ManifestError, Verified};
 

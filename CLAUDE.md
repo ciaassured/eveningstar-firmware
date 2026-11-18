@@ -178,7 +178,9 @@ generations and the key ceremony.
   fails when either is out of date. Changing which keys are trusted needs the
   user's approval.
 - Trust sets have no constructor outside the signify crate, and nothing at run
-  time adds a key; don't add a route that does.
+  time adds a key; don't add a route that does. Its constructors for tests
+  are behind the `test-support` feature, and the `lint` group fails when the
+  firmware's dependency graph enables any `test-support` feature.
 - Only the development key's secret key (`keys/eveningstar-dev-fw.sec`) is
   committed. Release secret keys never come near the repository.
   `secret-key-scan` (`nix/secret-key-scan.sh`) finds any other signify secret

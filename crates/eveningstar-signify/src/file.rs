@@ -4,7 +4,7 @@ use core::fmt;
 
 use ed25519_dalek::{Signature, VerifyingKey};
 
-use crate::key::{Keynum, TrustSet, comment_line, decode_exact, split_line};
+use crate::key::{COMMENT_HEADER, Keynum, TrustSet, comment_line, decode_exact, split_line};
 use crate::manifest::{self, Verified};
 
 /// The largest signature file accepted, in bytes.
@@ -74,7 +74,7 @@ impl fmt::Display for SigError {
 /// The first [`SigError`] found, in that order.
 pub fn verify<'s>(file: &'s [u8], trust: &TrustSet) -> Result<Verified<'s>, SigError> {
     let mut decoded = [0u8; SIGNATURE_LEN];
-    let message = parse(file, &mut decoded)?;
+    let message = form(file, &mut decoded)?;
     let (keynum, signature) = split_signature(&decoded);
     let key = trust.find(&keynum).ok_or(SigError::UnknownKey { keynum })?;
     if !ed25519(key.public_key(), message, signature) {
@@ -83,11 +83,58 @@ pub fn verify<'s>(file: &'s [u8], trust: &TrustSet) -> Result<Verified<'s>, SigE
     manifest::read(message, key)
 }
 
+/// A signature file whose form and manifest lines read, from [`parse`]. Its
+/// signature isn't verified, so it says nothing of who signed the file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Parsed {
+    keynum: Keynum,
+    comment_len: usize,
+}
+
+impl Parsed {
+    /// The keynum of the key the file names.
+    #[must_use]
+    pub const fn keynum(&self) -> &Keynum {
+        &self.keynum
+    }
+
+    /// Where the comment's text lies in the file: after
+    /// `untrusted comment: `, up to the line's newline.
+    #[must_use]
+    pub const fn comment(&self) -> core::ops::Range<usize> {
+        COMMENT_HEADER.len()..COMMENT_HEADER.len() + self.comment_len
+    }
+}
+
+/// Reads the signature file `file` as [`verify`] does, without a key: its
+/// form, then every line of the message as a SHA256 line. A file that parses
+/// may be signed by a key no trust set holds, or not verify.
+///
+/// # Errors
+///
+/// The first [`SigError`] found, in that order; never
+/// [`SigError::UnknownKey`] or [`SigError::Signature`].
+pub fn parse(file: &[u8]) -> Result<Parsed, SigError> {
+    let mut decoded = [0u8; SIGNATURE_LEN];
+    let message = form(file, &mut decoded)?;
+    manifest::check(message)?;
+    let (keynum, _) = split_signature(&decoded);
+    // The form checked the comment line, so its newline is there.
+    let comment_len = file
+        .get(COMMENT_HEADER.len()..)
+        .and_then(|rest| rest.iter().position(|byte| *byte == b'\n'))
+        .ok_or(SigError::Comment)?;
+    Ok(Parsed {
+        keynum,
+        comment_len,
+    })
+}
+
 /// The message of the signature file `file`, once its form is checked, with
 /// the signature line's 74 bytes decoded into `decoded`. Never inlined, so
-/// the decoding stays out of [`verify`]'s frame.
+/// the decoding stays out of [`verify`]'s and [`parse`]'s frames.
 #[inline(never)]
-fn parse<'s>(file: &'s [u8], decoded: &mut [u8; SIGNATURE_LEN]) -> Result<&'s [u8], SigError> {
+fn form<'s>(file: &'s [u8], decoded: &mut [u8; SIGNATURE_LEN]) -> Result<&'s [u8], SigError> {
     if file.len() > FILE_MAX {
         return Err(SigError::TooLong);
     }

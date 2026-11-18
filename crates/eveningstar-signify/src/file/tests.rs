@@ -6,7 +6,7 @@ use base64::engine::general_purpose::STANDARD;
 use ed25519_dalek::{Signer, SigningKey};
 use sha2::{Digest, Sha256};
 
-use super::{SigError, ed25519, verify};
+use super::{SigError, ed25519, parse, verify};
 use crate::key::{Generation, Keynum, Purpose, TrustSet, TrustedKey};
 use crate::manifest::ManifestError;
 
@@ -225,6 +225,61 @@ fn every_bit_flip_of_a_good_file_outside_the_comment_is_refused() {
         } else {
             assert!(verdict.is_err(), "bit {bit} flipped still verifies");
         }
+    }
+}
+
+/// What [`parse`] has to give for a file [`verify`] gives `verdict` for: a
+/// parse for a file that verifies; for one signed by an unknown key, or whose
+/// signature doesn't verify, a parse or, as `verify` reads the lines only
+/// after the signature, a line that doesn't read; and otherwise the same
+/// error.
+fn parse_agrees(file: &[u8], verdict: &Result<crate::Verified<'_>, SigError>) {
+    let parsed = parse(file);
+    match (verdict, parsed) {
+        (Ok(_) | Err(SigError::UnknownKey { .. } | SigError::Signature), Ok(parsed)) => {
+            let comment = parsed.comment();
+            assert_eq!(&file[..comment.start], b"untrusted comment: ");
+            assert_eq!(file[comment.end], b'\n');
+            assert!(!file[comment].contains(&b'\n'));
+        }
+        (
+            Err(SigError::UnknownKey { .. } | SigError::Signature),
+            Err(SigError::Manifest { .. }),
+        ) => {}
+        (Err(error), Err(parsed)) => assert_eq!(parsed, *error),
+        (verdict, parsed) => panic!("verify gave {verdict:?}, parse {parsed:?}"),
+    }
+}
+
+#[test]
+fn parse_reads_what_verify_reads_without_a_key() {
+    let file = good();
+    let parsed = parse(&file).unwrap();
+    assert_eq!(parsed.keynum(), &KEYNUM);
+    assert_eq!(&file[parsed.comment()], b"verify with test.pub");
+
+    let message = manifest_line("a.bin", IMAGE);
+    let signature = signing_key().sign(message.as_bytes()).to_bytes();
+    let unknown = file_with("x", OTHER_KEYNUM, &signature, message.as_bytes());
+    assert_eq!(parse(&unknown).unwrap().keynum(), &OTHER_KEYNUM);
+    let forged = file_with("x", KEYNUM, &[0; 64], message.as_bytes());
+    assert_eq!(parse(&forged).unwrap().keynum(), &KEYNUM);
+
+    // The lines are read without a key: a line that doesn't read fails the
+    // parse whoever signed the file.
+    let bad_line = file_with("x", OTHER_KEYNUM, &[0; 64], b"SHA256 (a.bin) = 00\n");
+    assert_eq!(
+        parse(&bad_line).unwrap_err(),
+        SigError::Manifest { line: 1 }
+    );
+
+    for bit in 0..file.len() * 8 {
+        let mut flipped = file.clone();
+        flipped[bit / 8] ^= 1 << (bit % 8);
+        parse_agrees(&flipped, &verify(&flipped, &TRUST));
+    }
+    for len in 0..file.len() {
+        parse_agrees(&file[..len], &verify(&file[..len], &TRUST));
     }
 }
 
