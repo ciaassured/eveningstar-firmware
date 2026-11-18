@@ -20,6 +20,7 @@ use crate::test_support::{Counting, drive, nix_board, poll_once, sha256, split_b
 use eveningstar_signify::FILE_MAX;
 use eveningstar_storage::roles::AlternateSignature;
 
+use super::Held;
 use crate::signature::{Signature, SignatureRegion};
 use crate::test_support::{KEYNUM, KEYS, manifest_line, signed_file, trust};
 
@@ -714,13 +715,29 @@ fn run_checks_again_after_a_write_to_a_signature_region() {
     assert_eq!(*after.signature().unwrap().signature(), Signature::Unsigned);
 }
 
+/// Runs an update's first verification of `slot` for `held`.
+fn overlaid(
+    slot: &AppSlot<'_, AlternateApp>,
+    held: Held,
+) -> Result<AppModel<AlternateApp>, LoadError> {
+    let mut buf = [0; FILE_MAX];
+    run(slot.verify_overlaid(held, sha(), &mut Yield, &mut || {}, &mut buf))
+}
+
+/// The image in the slot without its first word, as an update leaves it
+/// before its first verification, and the word held back.
+fn held_back(bytes: &[u8]) -> (Vec<u8>, [u8; 4]) {
+    let mut held = bytes.to_vec();
+    let first: [u8; 4] = held[..4].try_into().unwrap();
+    held[..4].fill(0xFF);
+    (held, first)
+}
+
 #[test]
 fn an_overlaid_verification_is_returned_and_never_kept() {
     let bytes = image();
-    let mut held = bytes.clone();
-    let first: [u8; 4] = held[..4].try_into().unwrap();
-    held[..4].fill(0xFF);
-    let (slot, mut writer, _) = signed_alternate(&held, &release_file(&bytes));
+    let (in_slot, first) = held_back(&bytes);
+    let (slot, mut writer, signature) = signed_alternate(&in_slot, &release_file(&bytes));
 
     // The slot's own check sees the erased first word.
     check(slot);
@@ -728,34 +745,82 @@ fn an_overlaid_verification_is_returned_and_never_kept() {
     assert!(kept.image().is_err());
     assert_eq!(kept.signature(), None);
 
-    let epoch = writer.write_state().epoch();
-    let mut buf = [0; FILE_MAX];
-    let model =
-        run(slot.verify_overlaid(epoch, first, sha(), &mut Yield, &mut || {}, &mut buf)).unwrap();
+    let held = Held {
+        epoch: writer.write_state().epoch(),
+        signature_epoch: signature.write_state().epoch(),
+        first,
+    };
+    let model = overlaid(slot, held).unwrap();
     assert!(model.is_overlaid());
     assert_eq!(
         model.image().unwrap().file_sha256(),
         &file_sha256_of(&bytes)
     );
-    assert!(matches!(
-        model.signature().unwrap().signature(),
-        Signature::Verified { .. }
-    ));
+    let judged = model.signature().unwrap();
+    assert!(matches!(judged.signature(), Signature::Verified { .. }));
+    assert_eq!(judged.epoch(), held.signature_epoch);
     let descriptor = slot.descriptor(&model).unwrap().unwrap();
     assert_eq!(descriptor.project_name().to_str(), Some("eveningstar"));
     assert!(slot.layout(&model).unwrap().is_ok());
     assert_eq!(slot.published(&model).err(), Some(Unpublished::Unverified));
     assert_eq!(slot.model(), Some(kept), "the slot's own result is kept");
 
-    // A word other than the image's doesn't verify.
-    let model =
-        run(slot.verify_overlaid(epoch, [0; 4], sha(), &mut Yield, &mut || {}, &mut buf)).unwrap();
+    // A word other than the image's doesn't verify, and has no signature.
+    let model = overlaid(
+        slot,
+        Held {
+            first: [0; 4],
+            ..held
+        },
+    )
+    .unwrap();
     assert!(model.image().is_err());
+    assert_eq!(model.signature(), None);
 
     // Nor once the slot left the epoch.
     run(writer.begin().erase(0, SECTOR_SIZE)).unwrap();
-    assert_eq!(
-        run(slot.verify_overlaid(epoch, first, sha(), &mut Yield, &mut || {}, &mut buf)),
-        Err(LoadError::Stale)
-    );
+    assert_eq!(overlaid(slot, held), Err(LoadError::Stale));
+}
+
+#[test]
+fn an_overlaid_verification_judges_the_signature_at_the_epoch_given() {
+    let bytes = image();
+    let (in_slot, first) = held_back(&bytes);
+    let (slot, writer, mut signature) = signed_alternate(&in_slot, &release_file(&bytes));
+    let written = signature.write_state().epoch();
+    let held = Held {
+        epoch: writer.write_state().epoch(),
+        signature_epoch: written,
+        first,
+    };
+
+    // A session open on the signature region: refused at once, not waited
+    // for.
+    {
+        let mut session = signature.begin();
+        run(session.wipe()).unwrap();
+        assert_eq!(overlaid(slot, held), Err(LoadError::Busy));
+    }
+
+    // The region was written after the epoch given: refused, even though a
+    // file that verifies is put back.
+    let mut file = release_file(&bytes);
+    file.resize(file.len().next_multiple_of(4), 0xFF);
+    run(signature.begin().program(0, &file)).unwrap();
+    assert_ne!(signature.write_state().epoch(), written);
+    assert_eq!(overlaid(slot, held), Err(LoadError::Stale));
+
+    // At the region's epoch now, it verifies.
+    let now = Held {
+        signature_epoch: signature.write_state().epoch(),
+        ..held
+    };
+    assert!(matches!(
+        overlaid(slot, now)
+            .unwrap()
+            .signature()
+            .unwrap()
+            .signature(),
+        Signature::Verified { .. }
+    ));
 }

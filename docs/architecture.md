@@ -892,8 +892,11 @@ and which carry the epoch they were parsed at, and published views.
   them through the caller's 4 KiB buffer (a static in the firmware).
 - `AppSlot::verify_overlaid` is an update's first verification: the same check
   over the alternate slot with the first word the update holds back laid over
-  the slot's, returned instead of kept. Its descriptor and layout entry read
-  the slot with the same word laid over it, and it publishes nothing.
+  the slot's, returned instead of kept. It judges the signature with the
+  signature region at the epoch the update's write of the signature file
+  ended at (`Held`), refuses any other (`Stale`, or `Busy` while a session is
+  open), and never waits. Its descriptor and layout entry read the slot with
+  the same word laid over it, and it publishes nothing.
 - Long jobs take the caller's hasher (`Sha256Hasher`), pace (`Pace`) and
   progress hook (`Progress`): the hook is called and the pace run after each KiB
   hashed, and `Progress::idle` is called before each wait for a change only
