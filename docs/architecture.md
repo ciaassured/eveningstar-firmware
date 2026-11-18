@@ -665,6 +665,15 @@ keeps no old copies elsewhere. A session of a role that programs is an
 for a store's own format. It erases one sector per device call and programs at
 most 4 KiB per call, yielding after each.
 
+`Session::end` ends a session and returns a `nor::Ended`: the epoch the region
+ended at, with the writer still mutably borrowed. No session is open, so the
+region's readers can take snapshots of it at that epoch, while nothing else can
+write it for as long as the `Ended` lives; `Ended::begin` opens a session again,
+giving it up. A value that holds the `Ended` of each region it wrote, as an
+update does from writing the image to activating it, knows they still hold
+what it wrote without reading them again. `end` fails (`Exhausted`) only when
+the region's write counter ran out, so it has no epoch.
+
 Every erase and program checks its absolute range against the protected spans
 before it reaches the device: everything below the first partition (the
 bootloader and the table's sector), `factory`, `reserved`, the current slot and

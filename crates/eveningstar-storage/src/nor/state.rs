@@ -109,6 +109,13 @@ impl State {
         self.waiters.wake();
     }
 
+    /// Leaves the words of `spans` exhausted, for the tests of a region
+    /// whose write counter ran out.
+    #[cfg(test)]
+    pub(crate) fn exhaust(&self, spans: Spans) {
+        state::exhaust(&self.words, spans);
+    }
+
     /// The tasks waiting for a region to change.
     pub(crate) const fn waiters(&self) -> &Waiters {
         &self.waiters

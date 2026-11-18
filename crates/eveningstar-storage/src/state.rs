@@ -258,6 +258,15 @@ pub(crate) fn end(words: &[Word], spans: Spans, written: bool) {
     }
 }
 
+/// Leaves the word of each span of `spans` exhausted, as a counter that ran
+/// out leaves it, for the tests of what such a region gives.
+#[cfg(test)]
+pub(crate) fn exhaust(words: &[Word], spans: Spans) {
+    for word in spans.indices().filter_map(|index| words.get(index)) {
+        word.0.store(EXHAUSTED, Ordering::SeqCst);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

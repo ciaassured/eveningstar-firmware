@@ -464,6 +464,13 @@ impl TestFlash {
         self.device
     }
 
+    /// Leaves the write counter of `span`, absolute, exhausted, as one that
+    /// ran out leaves it.
+    #[cfg(test)]
+    pub(crate) fn exhaust(&self, span: Span) {
+        self.flash.state().exhaust(nor::State::spans_of(span));
+    }
+
     /// A reader of `span`, absolute, with role `R`. Panics unless the span
     /// lies inside the device.
     pub fn reader<R: Role<Device = Internal>>(&self, span: Span) -> nor::Reader<'static, R> {

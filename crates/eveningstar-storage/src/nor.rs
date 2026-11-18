@@ -267,7 +267,7 @@ mod published;
 mod snapshot;
 mod state;
 
-pub use handle::{Reader, Session, Writer};
+pub use handle::{Ended, Exhausted, Reader, Session, Writer};
 pub use published::{PublicView, Published};
 pub use snapshot::Snapshot;
 pub use state::Flash;
