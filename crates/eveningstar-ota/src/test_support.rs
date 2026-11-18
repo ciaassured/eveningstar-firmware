@@ -9,6 +9,7 @@ use core::future::Future;
 use core::pin::pin;
 use core::task::{Context, Poll, Waker};
 
+use eveningstar_boot::signature::FileBuf;
 use eveningstar_boot::{App, AppSlot, Otadata};
 use eveningstar_esp_formats::pace::Yield;
 use eveningstar_storage::chain::{BootWriters, Handles};
@@ -58,8 +59,9 @@ impl<'f> Checks<'f> {
     /// ([`App::run`]) polled beside it.
     pub(crate) fn run<F: Future>(self, future: F) -> F::Output {
         let app = self.app;
+        let mut buf: FileBuf = [0; 4096];
         drive(
-            app.run(sha2::Sha256::default(), &mut Yield, &mut || {}),
+            app.run(sha2::Sha256::default(), &mut Yield, &mut || {}, &mut buf),
             future,
         )
     }
@@ -68,11 +70,12 @@ impl<'f> Checks<'f> {
     /// now.
     pub(crate) fn settle(self) {
         let sha = sha2::Sha256::default();
+        let mut buf: FileBuf = [0; 4096];
         if let Some(current) = self.app.current() {
-            run(current.check(&sha, &mut Yield, &mut || {}));
+            run(current.check(&sha, &mut Yield, &mut || {}, &mut buf));
         }
         if let Some(alternate) = self.app.alternate() {
-            run(alternate.check(&sha, &mut Yield, &mut || {}));
+            run(alternate.check(&sha, &mut Yield, &mut || {}, &mut buf));
         }
     }
 

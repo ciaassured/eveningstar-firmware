@@ -11,16 +11,21 @@
 //! a timer, so a check that hangs while the rest of the system runs is
 //! caught. The handle is paused while the checks wait for a slot to change.
 //! Before each wait, the results kept since the last one are logged.
+//!
+//! Each slot's check also judges its signature region under the firmware's
+//! trust set ([`crate::TRUST`]), read through a static buffer.
 
 use core::future::Future;
 
 use defmt::info;
 use embassy_time::{Duration, Instant, Timer};
+use eveningstar_boot::signature::FileBuf;
 use eveningstar_boot::{App, Progress};
 use eveningstar_esp_formats::pace::Pace;
-use eveningstar_storage::{Epoch, Slot};
+use eveningstar_storage::Slot;
+use static_cell::ConstStaticCell;
 
-use super::log;
+use super::log::{self, LoggedEpochs};
 use crate::sha::Sha;
 use crate::wd;
 use eveningstar_system::watchdog::WatchdogHandle;
@@ -45,13 +50,17 @@ pub(super) async fn task(
     sha: Sha,
     wd: WatchdogHandle<wd::AppCheck>,
 ) -> ! {
+    // The signature regions are read through it, outside the task's frame.
+    static BUF: ConstStaticCell<FileBuf> = ConstStaticCell::new([0; eveningstar_signify::FILE_MAX]);
+
     let mut progress = Supervised {
         wd,
         app,
         running,
         logged: Logged::default(),
     };
-    app.run(sha.sha256(), &mut Background, &mut progress).await
+    app.run(sha.sha256(), &mut Background, &mut progress, BUF.take())
+        .await
 }
 
 /// Paces a check as a background job: a [`PAUSE`] after each KiB hashed.
@@ -66,9 +75,9 @@ impl Pace for Background {
 /// The epochs whose results were logged last, per slot.
 #[derive(Default)]
 struct Logged {
-    current: Option<Epoch>,
-    alternate: Option<Epoch>,
-    found: Option<Epoch>,
+    current: Option<LoggedEpochs>,
+    alternate: Option<LoggedEpochs>,
+    found: Option<LoggedEpochs>,
 }
 
 /// The checks' progress hook: feeds the task's watchdog after each KiB

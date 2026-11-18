@@ -387,20 +387,21 @@ async fn project_name(current: &AppSlot<'_, CurrentApp>) -> Result<Text<32>, Una
     let WriteState::Stable(epoch) = current.write_state() else {
         return Err(Unavailable::Unstable);
     };
-    let model = current
-        .verdict(epoch)
-        .await
-        .map_err(|_| Unavailable::Unstable)?;
-    named(current, &model)
+    let verdict = current.verdict(epoch).await;
+    named(current, &verdict)
 }
 
-/// The project name the descriptor of the image `model` describes names.
-/// Never inlined, so the descriptor stays out of its caller's frame.
+/// The project name the descriptor of the image `verdict`, the slot's
+/// result, describes names. Never inlined, so the model and the descriptor
+/// stay out of its caller's frame.
 #[inline(never)]
 fn named(
     current: &AppSlot<'_, CurrentApp>,
-    model: &AppModel<CurrentApp>,
+    verdict: &Result<AppModel<CurrentApp>, LoadError>,
 ) -> Result<Text<32>, Unavailable> {
+    let Ok(model) = verdict else {
+        return Err(Unavailable::Unstable);
+    };
     match current.descriptor(model) {
         Ok(Ok(descriptor)) => Ok(descriptor.project_name()),
         Ok(Err(failure)) => Err(Unavailable::Descriptor(failure)),

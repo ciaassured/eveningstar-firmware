@@ -6,6 +6,7 @@
 use defmt::{Debug2Format, Format, Formatter, info, warn};
 use eveningstar_boot::app::AppRole;
 use eveningstar_boot::bootloader::BootloaderModel;
+use eveningstar_boot::signature::{Signature, SlotSignature};
 use eveningstar_boot::table::{Coverage, PartitionRow, TableModel, Valid};
 use eveningstar_boot::{AppSlot, Bootloader, LoadError, Otadata, PartitionTable};
 use eveningstar_ota::{Ota, SelfChecks};
@@ -401,25 +402,30 @@ pub(super) fn boot_state(state: &BootState) {
     }
 }
 
+/// The epochs a slot's result was logged at: the slot's, and its signature
+/// region's when the result has a signature.
+pub(super) type LoggedEpochs = (Epoch, Option<Epoch>);
+
 /// Logs the result kept for `slot`, an app slot in `role`, with the slot it
-/// is in the layout, `None` for the app the unverified tier located, unless
-/// it is of `logged`, the epoch logged last, which it then replaces. Nothing
-/// when no result of the slot's epoch now is kept. Returns whether it
-/// logged.
+/// is in the layout, `None` for the app the unverified tier located, and its
+/// signature, unless it is of `logged`, the epochs logged last, which it
+/// then replaces. Nothing when no result of the slot's epoch now is kept.
+/// Returns whether it logged.
 #[inline(never)]
 pub(super) fn app_slot<R: AppRole>(
     slot: &AppSlot<'_, R>,
     role: &str,
     layout: Option<Slot>,
-    logged: &mut Option<Epoch>,
+    logged: &mut Option<LoggedEpochs>,
 ) -> bool {
     let Some(model) = slot.model() else {
         return false;
     };
-    if *logged == Some(model.epoch()) {
+    let epochs = (model.epoch(), model.signature().map(SlotSignature::epoch));
+    if *logged == Some(epochs) {
         return false;
     }
-    *logged = Some(model.epoch());
+    *logged = Some(epochs);
     let label = layout.map_or("no slot", |slot| slot.partition().label);
     let offset = slot.span().offset;
     match model.image() {
@@ -440,7 +446,38 @@ pub(super) fn app_slot<R: AppRole>(
             Debug2Format(&failure),
         ),
     }
+    if let Some(signed) = model.signature() {
+        signature(role, signed.signature());
+    }
     true
+}
+
+/// Logs `signature`, the signature of the image in the slot in `role`.
+fn signature(role: &str, signature: &Signature) {
+    match signature {
+        Signature::Verified { key, line } => info!(
+            "Signature of {=str}: verified, key {}, manifest line {=usize}",
+            role,
+            Debug2Format(&key.generation()),
+            line + 1,
+        ),
+        Signature::Stale { key } => warn!(
+            "Signature of {=str}: stale, key {}, lists no digest of the image",
+            role,
+            Debug2Format(&key.generation()),
+        ),
+        Signature::UnknownKey { keynum } => warn!(
+            "Signature of {=str}: signed by a key that isn't trusted, keynum {=[u8]:02x}",
+            role,
+            &keynum[..],
+        ),
+        Signature::Unsigned => info!("Signature of {=str}: unsigned", role),
+        Signature::Invalid(invalid) => warn!(
+            "Signature of {=str}: invalid: {}",
+            role,
+            Debug2Format(invalid)
+        ),
+    }
 }
 
 /// Logs the OTA mechanism's readiness and the boot state it reads.
