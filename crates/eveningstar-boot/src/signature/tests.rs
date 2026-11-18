@@ -8,8 +8,14 @@ use eveningstar_signify::{Generation, Purpose};
 use eveningstar_storage::test_support::{RamNor, TestFlash, run};
 use eveningstar_storage::{PublicRead, Slot, ViewError};
 
+use core::sync::atomic::{AtomicUsize, Ordering};
+
+use eveningstar_storage::chain::Handles;
+use eveningstar_storage::nor::{Flash, NorDevice};
+use eveningstar_storage::{DeviceError, split};
+
 use super::*;
-use crate::test_support::sha256;
+use crate::test_support::{nix_board, sha256};
 
 const KEYNUM: Keynum = [1, 2, 3, 4, 5, 6, 7, 8];
 const OTHER_KEYNUM: Keynum = [9; 8];
@@ -90,9 +96,11 @@ fn content_of(bytes: &[u8]) -> Content {
 fn check<R: SignatureRole>(region: &SignatureRegion<'_, R>, image: &[u8]) -> Signature {
     let model = load(region);
     let mut buf = [0; FILE_MAX];
-    region
+    let judged = region
         .check(&model, &trust(), &sha256(image), &mut buf)
-        .unwrap()
+        .unwrap();
+    assert_eq!(judged.epoch(), model.epoch(), "judged at the model's epoch");
+    *judged.signature()
 }
 
 fn read_all(view: &impl PublicRead) -> Vec<u8> {
@@ -323,4 +331,97 @@ fn a_write_makes_the_model_stale() {
     run(writer.begin().wipe()).unwrap();
     let mut bytes = vec![0; view.len() as usize];
     assert_eq!(run(view.read(0, &mut bytes)), Err(ViewError::Stale));
+}
+
+/// A device whose next `failing` reads fail, then read `inner` again.
+struct FlakyReads {
+    inner: &'static RamNor,
+    failing: AtomicUsize,
+}
+
+impl NorDevice for FlakyReads {
+    fn capacity(&self) -> u32 {
+        self.inner.capacity()
+    }
+    fn read(&self, address: u32, buf: &mut [u8]) -> Result<(), DeviceError> {
+        let failing = self.failing.load(Ordering::SeqCst);
+        if failing > 0 {
+            self.failing.store(failing - 1, Ordering::SeqCst);
+            return Err(DeviceError);
+        }
+        self.inner.read(address, buf)
+    }
+    fn erase_sector(&self, address: u32) -> Result<(), DeviceError> {
+        self.inner.erase_sector(address)
+    }
+    fn program(&self, address: u32, bytes: &[u8]) -> Result<(), DeviceError> {
+        self.inner.program(address, bytes)
+    }
+}
+
+/// The current signature region of the Nix board with `file` in `sig_0`,
+/// split over a device whose reads can be made to fail, and the device.
+fn flaky_region(
+    file: &[u8],
+) -> (
+    SignatureRegion<'static, CurrentSignature>,
+    &'static FlakyReads,
+) {
+    let board = nix_board();
+    board.poke(layout::SIG_0.offset, file);
+    let device: &'static FlakyReads = Box::leak(Box::new(FlakyReads {
+        inner: Box::leak(Box::new(board)),
+        failing: AtomicUsize::new(0),
+    }));
+    let lent: &'static mut dyn NorDevice = Box::leak(Box::new(Lend(device)));
+    let flash = Box::leak(Box::new(Flash::new(lent)));
+    let storage = run(split(flash, layout::OTA_0.offset));
+    let Handles::Boot(handles, _) = storage.handles else {
+        panic!("{:?}", storage.report.tier);
+    };
+    (SignatureRegion::new(handles.current_signature), device)
+}
+
+/// A shared device as one `split` can take mutably.
+struct Lend(&'static FlakyReads);
+
+impl NorDevice for Lend {
+    fn capacity(&self) -> u32 {
+        self.0.capacity()
+    }
+    fn read(&self, address: u32, buf: &mut [u8]) -> Result<(), DeviceError> {
+        self.0.read(address, buf)
+    }
+    fn erase_sector(&self, address: u32) -> Result<(), DeviceError> {
+        self.0.erase_sector(address)
+    }
+    fn program(&self, address: u32, bytes: &[u8]) -> Result<(), DeviceError> {
+        self.0.program(address, bytes)
+    }
+}
+
+#[test]
+fn a_read_the_device_fails_is_tried_again() {
+    let (region, device) = flaky_region(&good());
+    let mut buf = [0; FILE_MAX];
+
+    // Fewer failures than attempts: the region still parses and verifies.
+    device.failing.store(READ_ATTEMPTS - 1, Ordering::SeqCst);
+    region.load(&mut buf).unwrap();
+    let model = region.model().unwrap();
+    assert!(matches!(model.content(), Content::File(_)));
+    device.failing.store(READ_ATTEMPTS - 1, Ordering::SeqCst);
+    let judged = region
+        .check(&model, &trust(), &sha256(IMAGE), &mut buf)
+        .unwrap();
+    assert!(matches!(judged.signature(), Signature::Verified { .. }));
+
+    // As many failures as attempts: the region can't be read.
+    let (region, device) = flaky_region(&good());
+    device.failing.store(READ_ATTEMPTS, Ordering::SeqCst);
+    region.load(&mut buf).unwrap();
+    assert_eq!(
+        *region.model().unwrap().content(),
+        Content::Invalid(Invalid::Read)
+    );
 }

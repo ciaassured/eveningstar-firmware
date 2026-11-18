@@ -228,6 +228,29 @@ pub enum Signature {
     Invalid(Invalid),
 }
 
+/// A region's [`Signature`] with the region's epoch it was judged at: it
+/// holds for the region's bytes only while the region is stable at that
+/// epoch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SlotSignature {
+    epoch: Epoch,
+    signature: Signature,
+}
+
+impl SlotSignature {
+    /// The region's epoch the signature was judged at.
+    #[must_use]
+    pub const fn epoch(&self) -> Epoch {
+        self.epoch
+    }
+
+    /// The signature.
+    #[must_use]
+    pub const fn signature(&self) -> &Signature {
+        &self.signature
+    }
+}
+
 /// A signature region's content module: its reader and the model last
 /// parsed.
 pub struct SignatureRegion<'f, R: SignatureRole> {
@@ -282,8 +305,9 @@ impl<'f, R: SignatureRole> SignatureRegion<'f, R> {
     }
 
     /// The signature of the region `model` describes, under `trust`, for the
-    /// image whose whole file has the SHA-256 `file_sha256`. A file is read
-    /// again into `buf` at the model's epoch and verified.
+    /// image whose whole file has the SHA-256 `file_sha256`, with the model's
+    /// epoch. A file is read again into `buf` at the model's epoch and
+    /// verified.
     ///
     /// # Errors
     ///
@@ -295,24 +319,31 @@ impl<'f, R: SignatureRole> SignatureRegion<'f, R> {
         trust: &TrustSet,
         file_sha256: &[u8; 32],
         buf: &mut FileBuf,
-    ) -> Result<Signature, LoadError> {
-        let file = match model.content {
-            Content::Unsigned => return Ok(Signature::Unsigned),
-            Content::Invalid(invalid) => return Ok(Signature::Invalid(invalid)),
-            Content::File(file) => file,
-        };
-        let snapshot = at(&self.reader, model.epoch)?;
-        let Some(bytes) = buf.get_mut(..file.len as usize) else {
-            return Ok(Signature::Invalid(Invalid::Read));
-        };
-        match snapshot.read(0, bytes) {
-            Ok(()) => {}
-            Err(ReadError::Stale) => return Err(LoadError::Stale),
-            Err(ReadError::Device | ReadError::OutOfRange) => {
-                return Ok(Signature::Invalid(Invalid::Read));
+    ) -> Result<SlotSignature, LoadError> {
+        let signature = match model.content {
+            Content::Unsigned => Signature::Unsigned,
+            Content::Invalid(invalid) => Signature::Invalid(invalid),
+            Content::File(file) => {
+                let snapshot = at(&self.reader, model.epoch)?;
+                let Some(bytes) = buf.get_mut(..file.len as usize) else {
+                    return Ok(SlotSignature {
+                        epoch: model.epoch,
+                        signature: Signature::Invalid(Invalid::Read),
+                    });
+                };
+                match read_retrying(&snapshot, bytes) {
+                    Ok(()) => judge(bytes, trust, file_sha256),
+                    Err(ReadError::Stale) => return Err(LoadError::Stale),
+                    Err(ReadError::Device | ReadError::OutOfRange) => {
+                        Signature::Invalid(Invalid::Read)
+                    }
+                }
             }
-        }
-        Ok(judge(bytes, trust, file_sha256))
+        };
+        Ok(SlotSignature {
+            epoch: model.epoch,
+            signature,
+        })
     }
 
     /// The view of the file `model` describes, its comment's text served as
@@ -353,11 +384,38 @@ fn content_of<R: SignatureRole>(
     let Some(bytes) = buf.get_mut(..len) else {
         return Ok(Content::Invalid(Invalid::Read));
     };
-    match snapshot.read(0, bytes) {
+    match read_retrying(snapshot, bytes) {
         Ok(()) => Ok(parse_region(bytes)),
         Err(ReadError::Stale) => Err(LoadError::Stale),
         Err(ReadError::Device | ReadError::OutOfRange) => Ok(Content::Invalid(Invalid::Read)),
     }
+}
+
+/// How many times a read the device fails is tried before the region is
+/// judged unreadable: a result is kept for the region's whole epoch, so one
+/// failed read would otherwise mark the region invalid until it is next
+/// written.
+const READ_ATTEMPTS: usize = 3;
+
+/// Reads `bytes` from the start of the region `snapshot` reads, trying a
+/// read the device fails up to [`READ_ATTEMPTS`] times. A read that finds
+/// the region written fails at once.
+///
+/// # Errors
+///
+/// The last read's error.
+fn read_retrying<R: SignatureRole>(
+    snapshot: &Snapshot<'_, R>,
+    bytes: &mut [u8],
+) -> Result<(), ReadError> {
+    let mut result = Err(ReadError::Device);
+    for _ in 0..READ_ATTEMPTS {
+        result = snapshot.read(0, bytes);
+        if !matches!(result, Err(ReadError::Device)) {
+            break;
+        }
+    }
+    result
 }
 
 /// What the region whose bytes are `region` holds.
