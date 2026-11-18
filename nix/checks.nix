@@ -22,6 +22,10 @@ in
         .fromRustupToolchainFile ../rust-toolchain.toml;
     in
     {
+      # The pinned nightly, which only the `rust-test` group builds, so the
+      # other groups don't fetch it.
+      packages.rust-nightly = import ./_nightly.nix { inherit inputs pkgs; };
+
       # Every repository check, with a combined result, so the Git hooks and CI
       # share one entry point. Arguments select check groups: `lint` (rustfmt
       # and clippy, that the generated storage layout is current, and the web
@@ -31,7 +35,9 @@ in
       # checked against what Nix builds, and the Nix bootloader, table and the
       # built app image run through the storage crate's `check-images`) and
       # `test` (the tests of the
-      # crates that also build on the host, and the web UI's). With no
+      # crates that also build on the host, their doctests again with the
+      # pinned nightly, whose rustdoc checks the error codes of the
+      # `compile_fail` ones, and the web UI's). With no
       # arguments, every group runs. `lint` and `test` are each two finer
       # groups, `rust-lint` and `web-lint`, `rust-test` and `web-test`, which CI
       # runs as separate jobs. `fuzz` runs the fuzz targets for a minute each;
@@ -134,6 +140,18 @@ in
           }
           release_built=0
 
+          # The host crates' doctests with the pinned nightly, in a target
+          # directory of their own, so the two compilers don't rebuild each
+          # other's artifacts.
+          # shellcheck disable=SC2329 # run through run_check
+          nightly_doctests() {
+            local nightly
+            nightly="$(nix build --no-link --print-out-paths .#rust-nightly)" || return 1
+            CARGO_TARGET_DIR="$CARGO_TARGET_DIR/nightly" RUSTC="$nightly/bin/rustc" \
+              RUSTDOC="$nightly/bin/rustdoc" "$nightly/bin/cargo" test --doc --all-features \
+              "''${host_crates[@]/#/--package=}" --target "$host_target"
+          }
+
           # A separate target directory, so these checks and builds with another
           # cargo don't keep invalidating each other's artifacts.
           export CARGO_TARGET_DIR="''${CARGO_TARGET_DIR:-target/checks}"
@@ -207,6 +225,10 @@ in
                 # binary, and fail rather than skip when it's missing here.
                 EVENINGSTAR_REQUIRE_SIGNIFY=1 run_check "host tests" cargo test --all-features \
                   "''${host_crates[@]/#/--package=}" --target "$host_target"
+                # Stable rustdoc only checks that a `compile_fail` doctest fails
+                # to compile; the pinned nightly's also checks that the error
+                # code it names is among its errors.
+                run_check "doctest error codes" nightly_doctests
                 ;;
               web-test)
                 run_check "web tests" nix build --no-link .#web-test

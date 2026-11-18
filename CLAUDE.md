@@ -68,7 +68,9 @@ and update it when a design decision changes.
   information block right after its descriptor or whose layout entry isn't
   the generated layout, or an app over 75% of its slot) and
   `nix run .#checks -- test` (tests of the crates that also build on the host,
-  run on the host target, and the web UI's tests) run one group. `lint` and
+  run on the host target, their doctests again with the pinned nightly, whose
+  rustdoc fails a `compile_fail` doctest that doesn't fail with the error code
+  it names, and the web UI's tests) run one group. `lint` and
   `test` are each two finer groups, `rust-lint` and `web-lint`, `rust-test`
   and `web-test`, which CI runs as separate jobs.
   `nix run .#checks -- fuzz` runs each fuzz target for a minute; it is a CI
