@@ -129,9 +129,10 @@ flash-all
 ```
 
 writes the bootloader, the partition table and the app built from the
-checkout, and selects the app for the next boot. `flash-app` writes the app
-and clears the boot selection, so the board starts it. Both pass the port
-with `-p PORT` when there is more than one board.
+checkout into the first slot, and clears the boot selection, so the board
+starts it. `flash-app` writes only the app and clears the boot selection.
+Both take the port with `-p PORT` when there is more than one board, and an
+ELF to flash instead of the checkout's build.
 
 ### With a release
 

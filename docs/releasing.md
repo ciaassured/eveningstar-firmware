@@ -3,9 +3,8 @@
 How a firmware release is built, checked, signed and published. A release is
 four files: the app image, its ELF (for symbolized logs), `SHA256`, the list
 of their SHA-256 digests, and `SHA256.sig`, a signify signature over that
-list. Devices install only images
-signed by a release key their firmware trusts, so a mistake here reaches
-every device that installs the release.
+list. Devices install only images signed by a release key their firmware
+trusts, so a mistake here reaches every device that installs the release.
 
 > [!IMPORTANT]
 > The signed update path is designed in `specs/ota-signing.md` and isn't
