@@ -219,6 +219,76 @@ fn a_finished_session_returns_the_state_it_leaves() {
 }
 
 #[test]
+fn an_ended_session_keeps_its_epoch_and_lets_the_region_be_read() {
+    let flash = flash();
+    let (reader, mut writer) = alternate(&flash);
+    let mut session = writer.begin();
+    run(session.program(0, &[0xA5; 4])).unwrap();
+    let ended = session.end().unwrap();
+    assert_eq!(reader.write_state(), WriteState::Stable(ended.epoch()));
+    assert!(ended.is_unchanged());
+    assert_eq!(ended.span(), Span::from(OTA_1));
+
+    // No session is open, so a snapshot reads what the session wrote, at
+    // its epoch.
+    let snapshot = reader.snapshot(Span::new(0, 4)).unwrap();
+    assert_eq!(snapshot.epoch(), ended.epoch());
+    let mut bytes = [0; 4];
+    snapshot.read(0, &mut bytes).unwrap();
+    assert_eq!(bytes, [0xA5; 4]);
+}
+
+#[test]
+fn an_ended_session_without_a_device_call_keeps_the_epoch_it_started_from() {
+    let flash = flash();
+    let (reader, mut writer) = alternate(&flash);
+    let before = stable(reader.write_state());
+    assert_eq!(writer.begin().end().unwrap().epoch(), before);
+}
+
+#[test]
+fn an_ended_region_opens_a_session_again() {
+    let flash = flash();
+    let (reader, mut writer) = alternate(&flash);
+    {
+        let mut session = writer.begin();
+        run(session.program(0, &[0; 4])).unwrap();
+        let first = session.end().unwrap();
+        let first_epoch = first.epoch();
+
+        let mut session = first.begin();
+        assert_eq!(reader.write_state(), WriteState::Writing(first_epoch));
+        run(session.erase(0, SECTOR)).unwrap();
+        let second = session.end().unwrap();
+        assert_ne!(second.epoch(), first_epoch);
+        assert!(second.is_unchanged());
+    }
+    // The writer is free once the region's value is gone.
+    assert!(writer.begin().finish().is_stable());
+}
+
+#[test]
+fn an_ended_region_is_changed_only_by_a_write_the_state_doesnt_see() {
+    let flash = flash();
+    let (_reader, mut writer) = alternate(&flash);
+    let ended = writer.begin().end().unwrap();
+    // The only writer is borrowed, so only a raw write reaches the region;
+    // the write state doesn't see one, and `is_unchanged` stays true.
+    flash.device().poke(OTA_1.offset, &[0; 4]);
+    assert!(ended.is_unchanged());
+}
+
+#[test]
+fn a_session_whose_counter_ran_out_has_no_end() {
+    let flash = flash();
+    let (reader, mut writer) = alternate(&flash);
+    let mut session = writer.begin();
+    flash.exhaust(Span::from(OTA_1));
+    run(session.program(0, &[0; 4])).unwrap();
+    assert_eq!(session.end().err(), Some(Exhausted));
+    assert!(!reader.write_state().is_stable());
+}
+#[test]
 fn a_session_dropped_mid_erase_ends_at_a_new_epoch() {
     let flash = flash();
     let (reader, mut writer) = alternate(&flash);

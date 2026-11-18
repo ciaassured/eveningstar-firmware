@@ -12,7 +12,7 @@ use super::{Flash, NorDevice, SECTOR_SIZE, State, WORD_SIZE};
 use crate::guard::{CHUNK_LEN, is_protected};
 use crate::roles::{Internal, Programmable, Role, Writable};
 use crate::span::Span;
-use crate::state::{Spans, WriteState};
+use crate::state::{Epoch, Spans, WriteState};
 use crate::{AccessError, Entry, ReadError, Slot, Source};
 
 /// The absolute address of the `len` bytes at `offset` in `span`.
@@ -524,6 +524,101 @@ impl<'w, R: Writable<Device = Internal>> Session<'w, R> {
         let extent = self.extent;
         drop(self);
         extent.write_state()
+    }
+
+    /// Ends the session, as dropping it does, and keeps the writer's borrow
+    /// with the epoch the region ended at ([`Ended`]): the region can be
+    /// read again, through its readers' snapshots, while nothing else can
+    /// write it.
+    ///
+    /// # Errors
+    ///
+    /// [`Exhausted`] when the region's write counter ran out, so the region
+    /// stays written to for the rest of the boot and has no epoch.
+    pub fn end(self) -> Result<Ended<'w, R>, Exhausted> {
+        let (extent, running) = (self.extent, self.running);
+        match self.finish() {
+            WriteState::Stable(epoch) => Ok(Ended {
+                extent,
+                running,
+                epoch,
+                role: PhantomData,
+            }),
+            WriteState::Writing(_) => Err(Exhausted),
+        }
+    }
+}
+
+/// Why a session's end gave no epoch: the region's write counter ran out,
+/// so the region stays written to for the rest of the boot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Exhausted;
+
+/// A region whose writer's session ended at an epoch, with the writer still
+/// borrowed: from [`Session::end`].
+///
+/// No session is open, so the region's readers can take snapshots of it, at
+/// the epoch the session ended at; and as the writer stays mutably borrowed
+/// for as long as the value lives, nothing else can open a session on the
+/// region meanwhile. A value that holds an `Ended` for each region it wrote
+/// knows they still hold what it wrote, without reading them again.
+/// [`begin`](Self::begin) opens a session again, giving the value up.
+///
+/// A writer can't be used while its region's `Ended` lives:
+///
+/// ```compile_fail,E0499
+/// use eveningstar_storage::nor::Writer;
+/// use eveningstar_storage::roles::AlternateApp;
+///
+/// fn write_twice(writer: &mut Writer<'_, AlternateApp>) {
+///     let ended = writer.begin().end().unwrap();
+///     let _ = writer.begin();
+///     let _ = ended.epoch();
+/// }
+/// ```
+pub struct Ended<'w, R: Writable<Device = Internal>> {
+    extent: Extent<'w>,
+    running: Slot,
+    epoch: Epoch,
+    role: PhantomData<fn() -> R>,
+}
+
+impl<'w, R: Writable<Device = Internal>> Ended<'w, R> {
+    /// The region's epoch when its session ended.
+    #[must_use]
+    pub const fn epoch(&self) -> Epoch {
+        self.epoch
+    }
+
+    /// Whether the region is stable at the epoch its session ended at. Only
+    /// a write the write state doesn't see, from outside the firmware, can
+    /// make it otherwise.
+    #[must_use]
+    pub fn is_unchanged(&self) -> bool {
+        self.extent.write_state() == WriteState::Stable(self.epoch)
+    }
+
+    /// The region's span, from the start of the device.
+    #[must_use]
+    pub const fn span(&self) -> Span {
+        self.extent.span
+    }
+
+    /// Opens a session on the region again, giving up the epoch: the
+    /// session's [`end`](Session::end) gives the next one.
+    #[must_use]
+    pub fn begin(self) -> Session<'w, R> {
+        Session::new(self.extent, self.running)
+    }
+}
+
+impl<R: Writable<Device = Internal>> fmt::Debug for Ended<'_, R> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Ended")
+            .field("role", &R::NAME)
+            .field("span", &self.extent.span)
+            .field("epoch", &self.epoch)
+            .finish()
     }
 }
 
