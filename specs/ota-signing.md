@@ -1919,6 +1919,14 @@ first proposed, so earlier references hold; 38 isn't used.
     required before confirmation, so a release whose own verifier is broken
     rolls back instead of being confirmed into a state where it can't take
     the fix; the image's own signature is advisory.
+46. **Verification runs synchronously.** `verify_strict` takes 29.5 ms on
+    the ESP32-C6 and runs without yielding, holding the executor for that
+    long: once per slot with a signature file at boot, and about three times
+    per update (the uploaded file's early check, the first verification and
+    the slot's check after the first word is programmed). A pause that rare
+    doesn't justify a second executor or a preemptible thread; revisit if
+    network latency during an update matters (decided with the user,
+    2026-11-18).
 
 ## Order of work
 
@@ -1962,8 +1970,6 @@ Each step is a PR on a stack, each passing `nix run .#checks`.
   `large_stack_frames` lint. Its time on the ESP32-C6 is measured (2026-11-18,
   CPU at its maximum clock): 29.5 ms per verification of a one-line manifest,
   the same over 8 runs; parsing the same file without the cryptography takes
-  0.2 ms. The verification runs without yielding, so it holds the executor
-  for that long, once per slot at boot, once per write of a signature region,
-  and once per update.
+  0.2 ms. That it runs without yielding is decided (decision 46).
 - Code size of ed25519-dalek and curve25519-dalek in the image.
 - Whether the web UI's update page takes both files in one drop.
